@@ -3,6 +3,7 @@
 mod app;
 mod arrange;
 mod block_edit;
+mod frame;
 mod header;
 mod icons;
 mod launch;
@@ -10,6 +11,7 @@ mod layout;
 mod menu;
 mod parameters;
 mod project;
+mod scroll;
 mod session;
 mod slider;
 mod text_input;

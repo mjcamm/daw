@@ -18,22 +18,26 @@ use crate::block_edit::{
     edge_at, has_loop_handle, hit_test, loop_band, move_point, new_block, next_block_id, phase_at,
     point_at, point_positions, remove_point, room_around, scrub, value_to_y, y_to_value,
 };
+use crate::frame::Timeline;
 use crate::icons::{Icon, icon};
-use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
+use crate::layout::{
+    BEATS_PER_BAR, MIN_GRID_SPACING, PIXELS_PER_BEAT, grid_bar_step, timeline_bars,
+};
 use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget};
+use crate::scroll;
 use crate::slider;
 use crate::theme::{ContentColor, MONO_FONT, Theme};
-use crate::zoom::{self, Axis, Zoom, ZoomDrag, keep_anchor, zoom_anchor};
+use crate::zoom::Zoom;
 use daw_automation::{Automation, CompiledBlock};
 use daw_engine::{
     BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId,
     ParamSnapshot, Snapshot, Ticks,
 };
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Div, FontWeight, Hsla, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point,
-    SharedString, Window, canvas, div, fill, point, prelude::*, px, size,
+    AnyElement, Bounds, ClickEvent, Context, Div, FontWeight, Hsla, Modifiers, MouseButton,
+    MouseDownEvent, PathBuilder, Pixels, Point, SharedString, Window, canvas, div, fill, point,
+    prelude::*, px, size,
 };
 use std::borrow::Cow;
 
@@ -317,20 +321,6 @@ fn row_slider_length(row_height: f32) -> f32 {
     (row_height - 10.).max(16.)
 }
 
-/// Closest spacing of grid lines, in pixels.
-const MIN_GRID_SPACING: f32 = 6.;
-
-/// Show a bar line every this many bars, so bar lines stay at least
-/// `MIN_GRID_SPACING` apart.
-fn grid_bar_step(pixels_per_beat: f32) -> u32 {
-    let bar = pixels_per_beat * BEATS_PER_BAR as f32;
-    let mut step = 1;
-    while bar * (step as f32) < MIN_GRID_SPACING {
-        step *= 2;
-    }
-    step
-}
-
 /// An id no layer in the project uses yet.
 fn next_layer_id(snapshot: &Snapshot) -> LayerId {
     let highest = snapshot
@@ -354,7 +344,7 @@ impl ProjectView {
         let snapshot = self.session.snapshot();
         let color = theme.content(snapshot.node.color);
         let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
-        let zoom = self.parameters_zoom;
+        let zoom = self.parameters_view.zoom;
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
         let position = self.session.position_beats();
         let selected = self.selected_block(snapshot);
@@ -414,14 +404,14 @@ impl ProjectView {
                 cell
             })
             .collect();
-        let lanes = div()
+        let lanes = scroll::axis_locked(div())
             .id("parameter-lanes")
             .flex_1()
             .min_w_0()
             // A row, so the content stretches to the full height.
             .flex()
             .overflow_x_scroll()
-            .track_scroll(&self.parameters_scroll)
+            .track_scroll(&self.parameters_view.x)
             .child(
                 div()
                     .relative()
@@ -429,14 +419,14 @@ impl ProjectView {
                     .w(px(width))
                     .flex()
                     .flex_col()
-                    .child(self.lanes_tracker(cx))
+                    .child(self.lanes_tracker())
                     .children(grid_lines)
                     .children(right_cells)
                     .child(playhead),
             );
 
         // The ruler follows the lanes' horizontal scroll.
-        let scroll_x = self.parameters_scroll.offset().x;
+        let scroll_x = self.parameters_view.x.offset().x;
         let top = div()
             .h(px(RULER_HEIGHT))
             .flex_none()
@@ -475,13 +465,16 @@ impl ProjectView {
                         .w(px(width))
                         .child(self.render_ruler(theme, bars, zoom.pixels_per_beat, cx)),
                 ),
+            )
+            .child(
+                div()
+                    .w(px(scroll::THICKNESS))
+                    .flex_none()
+                    .bg(theme.sidebar)
+                    .border_l_1()
+                    .border_color(theme.hairline),
             );
 
-        let [vertical, horizontal] = zoom::corner(
-            self.zoom_slider(Axis::Vertical, theme, cx),
-            self.zoom_slider(Axis::Horizontal, theme, cx),
-            theme,
-        );
         let settings = selected.map(|(id, _, block)| {
             let shown = match &self.block_drag {
                 Some(drag) if drag.id == id => &drag.preview,
@@ -497,37 +490,33 @@ impl ProjectView {
             .flex_col()
             .child(top)
             .child(
-                // The zoom sliders float in the bottom-right corner, over the
-                // scrolling rows.
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .relative()
-                    .child(
-                        div()
-                            .id("parameter-body")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                // Grows to fill the page when there are few rows (so
-                                // the column and grid reach the bottom) and beyond it
-                                // when there are many. Percentage heights do not work
-                                // inside a vertical scroll, so this uses flex growth.
-                                div()
-                                    .flex()
-                                    .flex_grow()
-                                    .flex_shrink_0()
-                                    .child(left)
-                                    .child(lanes),
-                            ),
-                    )
-                    .child(vertical)
-                    .child(horizontal),
+                self.timeline_frame(
+                    Timeline::Parameters,
+                    scroll::axis_locked(div())
+                        .id("parameter-body")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.parameters_view.y)
+                        .flex()
+                        .flex_col()
+                        .child(
+                            // Grows to fill the page when there are few rows (so
+                            // the column and grid reach the bottom) and beyond it
+                            // when there are many. Percentage heights do not work
+                            // inside a vertical scroll, so this uses flex growth.
+                            div()
+                                .flex()
+                                .flex_grow()
+                                .flex_shrink_0()
+                                .child(left)
+                                .child(lanes),
+                        )
+                        .into_any_element(),
+                    LEFT_WIDTH,
+                    theme,
+                    cx,
+                ),
             )
             .children(settings)
     }
@@ -538,88 +527,15 @@ impl ProjectView {
         find_block(snapshot, id).map(|(layer, block)| (id, layer, block))
     }
 
-    /// Records where the lanes are drawn, and while a block is being dragged,
-    /// follows the mouse anywhere in the window until it is released.
-    fn lanes_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Records where the lanes are drawn, to turn presses into positions.
+    fn lanes_tracker(&self) -> impl IntoElement {
         let bounds_cell = self.lanes_bounds.clone();
-        let dragging = self.block_drag.is_some()
-            || self.base_drag.is_some()
-            || self.mix_drag.is_some()
-            || self.zoom_drag.is_some();
-        let view = cx.entity().downgrade();
         canvas(
             move |bounds, _, _| bounds_cell.set(bounds),
-            move |_, (), window, _| {
-                if !dragging {
-                    return;
-                }
-                let moved = view.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                    if phase == DispatchPhase::Capture {
-                        let _ = moved.update(cx, |this, cx| {
-                            this.drag_to(event.position, event.modifiers);
-                            cx.notify();
-                        });
-                    }
-                });
-                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                    if phase == DispatchPhase::Capture {
-                        let _ = view.update(cx, |this, cx| {
-                            this.finish_drag();
-                            cx.notify();
-                        });
-                    }
-                });
-            },
+            |_, (), _, _| {},
         )
         .absolute()
         .size_full()
-    }
-
-    /// A zoom slider for this page.
-    fn zoom_slider(
-        &self,
-        axis: Axis,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<Div> {
-        let active = self.zoom_drag.is_some_and(|d| d.axis == axis);
-        let id = match axis {
-            Axis::Horizontal => "zoom-horizontal",
-            Axis::Vertical => "zoom-vertical",
-        };
-        zoom::slider(id, axis, self.parameters_zoom.position(axis), active, theme).on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                this.zoom_drag = Some(ZoomDrag {
-                    axis,
-                    origin: event.position,
-                    original: this.parameters_zoom,
-                });
-            }),
-        )
-    }
-
-    /// Follows a zoom slider drag; false if none is in progress. Horizontal
-    /// zoom holds the playhead still if it is in view, else the middle.
-    fn drag_zoom(&mut self, position: Point<Pixels>) -> bool {
-        let Some(drag) = self.zoom_drag else {
-            return false;
-        };
-        let zoom = drag.zoom_at(position);
-        let old = self.parameters_zoom.pixels_per_beat;
-        if zoom.pixels_per_beat != old {
-            let offset = self.parameters_scroll.offset();
-            let view = self.parameters_scroll.bounds().size.width / px(1.);
-            let scrolled = -offset.x / px(1.);
-            let playhead = self.session.position_beats() as f32 * old;
-            let anchor = zoom_anchor(playhead, scrolled, view);
-            let scrolled = keep_anchor(scrolled, anchor, old, zoom.pixels_per_beat);
-            self.parameters_scroll
-                .set_offset(point(px(-scrolled), offset.y));
-        }
-        self.parameters_zoom = zoom;
-        true
     }
 
     /// The custom cursor for a lane, if the pointer is over (or dragging) a
@@ -633,7 +549,7 @@ impl ProjectView {
         pointer: Point<Pixels>,
     ) -> Option<LaneCursor> {
         let lanes = self.lanes_bounds.get();
-        let zoom = self.parameters_zoom;
+        let zoom = self.parameters_view.zoom;
         let x = (pointer.x - lanes.origin.x) / px(1.);
         let y = (pointer.y - lanes.origin.y) / px(1.) - top;
         let kind_of = |hit: Hit| match hit {
@@ -691,7 +607,7 @@ impl ProjectView {
         };
         let lanes = self.lanes_bounds.get();
         let x = (event.position.x - lanes.origin.x) / px(1.);
-        let zoom = self.parameters_zoom;
+        let zoom = self.parameters_view.zoom;
         let ppb = zoom.pixels_per_beat;
         let at = Ticks::from_beats_f64(zoom.x_to_beats(x));
         let snap = self.snap_for(event.modifiers);
@@ -754,7 +670,7 @@ impl ProjectView {
             return;
         };
         let lanes = self.lanes_bounds.get();
-        let zoom = self.parameters_zoom;
+        let zoom = self.parameters_view.zoom;
         let x =
             (event.position.x - lanes.origin.x) / px(1.) - zoom.beat_to_x(block.start.as_beats());
         let y = (event.position.y - lanes.origin.y) / px(1.) - top - BLOCK_INSET;
@@ -791,8 +707,8 @@ impl ProjectView {
     }
 
     /// Updates the preview of whatever is being dragged.
-    fn drag_to(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
-        if self.drag_zoom(position) {
+    pub(crate) fn drag_to(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
+        if self.drag_frame(position) {
             return;
         }
         if let Some(drag) = &mut self.base_drag {
@@ -806,7 +722,7 @@ impl ProjectView {
             return;
         }
         let snap = self.snap_for(modifiers);
-        let ppb = self.parameters_zoom.pixels_per_beat;
+        let ppb = self.parameters_view.zoom.pixels_per_beat;
         let Some(drag) = &mut self.block_drag else {
             return;
         };
@@ -838,8 +754,8 @@ impl ProjectView {
     }
 
     /// Ends a drag, sending the change as one edit.
-    fn finish_drag(&mut self) {
-        self.zoom_drag = None;
+    pub(crate) fn finish_drag(&mut self) {
+        self.frame_drag = None;
         if let Some(drag) = self.mix_drag.take()
             && drag.preview != drag.original
         {
@@ -891,7 +807,7 @@ impl ProjectView {
             "base-slider-{:?}-{}",
             param_id.device, param_id.index
         ));
-        let length = row_slider_length(self.parameters_zoom.row_height);
+        let length = row_slider_length(self.parameters_view.zoom.row_height);
         slider::slider(
             id,
             slider::Axis::Vertical,
@@ -934,7 +850,7 @@ impl ProjectView {
         let original = mix;
         let mix = self.mix_of(layer, mix);
         let dragging = self.mix_drag.as_ref().is_some_and(|d| d.layer == layer);
-        let length = row_slider_length(self.parameters_zoom.row_height);
+        let length = row_slider_length(self.parameters_view.zoom.row_height);
         let control = slider::slider(
             ("layer-mix", layer.0),
             slider::Axis::Vertical,
@@ -996,7 +912,7 @@ impl ProjectView {
         block: &Block,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> Div {
         let hover = theme.hover;
         let fields = Setting::ALL.map(|setting| {
             div()
@@ -1094,7 +1010,7 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let cell = div()
-            .h(px(row.height(self.parameters_zoom.row_height)))
+            .h(px(row.height(self.parameters_view.zoom.row_height)))
             .flex_none()
             .flex()
             .items_center()
@@ -1459,7 +1375,7 @@ impl ProjectView {
         pointer: Point<Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let zoom = self.parameters_zoom;
+        let zoom = self.parameters_view.zoom;
         let height = row.height(zoom.row_height);
         let cell = div().h(px(height)).flex_none().w(px(width)).relative();
         let drag = self.block_drag.as_ref();

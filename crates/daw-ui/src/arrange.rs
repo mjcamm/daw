@@ -1,18 +1,21 @@
-//! The Arrange page: the node list on the left, the timeline beside it.
+//! The Arrange page: the node list on the left, the timeline beside it,
+//! framed by scrollbars and zoom sliders (see `frame.rs`).
 
+use crate::frame::Timeline;
 use crate::layout::{
-    BEATS_PER_BAR, PIXELS_PER_BEAT, beat_to_x, meter_height, note_rows, ruler_label_step,
+    BEATS_PER_BAR, MIN_GRID_SPACING, grid_bar_step, meter_height, note_rows, ruler_label_step,
     timeline_bars, x_to_snapped_position,
 };
 use crate::project::{ProjectView, RenameTarget};
+use crate::scroll;
 use crate::theme::{ContentColor, Theme};
+use crate::zoom::Zoom;
 use daw_engine::{ClipId, Command, Edit, MidiClip};
 use gpui::{
     ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
 };
 
 const RULER_HEIGHT: f32 = 28.;
-const ROW_HEIGHT: f32 = 56.;
 const NODE_LIST_WIDTH: f32 = 260.;
 const CLIP_INSET: f32 = 4.;
 const CLIP_LABEL_HEIGHT: f32 = 16.;
@@ -20,18 +23,92 @@ const METER_HEIGHT: f32 = 32.;
 
 impl ProjectView {
     pub(crate) fn render_arrange(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let snapshot = self.session.snapshot();
+        let zoom = self.arrange_view.zoom;
+        let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
+        let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
+
+        // The ruler stays at the top and follows the lanes' sideways scroll.
+        let scroll_x = self.arrange_view.x.offset().x;
+        let top = div()
+            .h(px(RULER_HEIGHT))
+            .flex_none()
+            .flex()
+            .child(
+                div()
+                    .w(px(NODE_LIST_WIDTH))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .px(px(12.))
+                    .bg(theme.sidebar)
+                    .border_r_1()
+                    .border_b_1()
+                    .border_color(theme.edge)
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_tertiary)
+                    .child("NODES"),
+            )
+            .child(
+                div().flex_1().min_w_0().overflow_hidden().child(
+                    div()
+                        .relative()
+                        .left(scroll_x)
+                        .w(px(width))
+                        .child(self.render_ruler(theme, bars, zoom.pixels_per_beat, cx)),
+                ),
+            )
+            .child(
+                div()
+                    .w(px(scroll::THICKNESS))
+                    .flex_none()
+                    .bg(theme.sidebar)
+                    .border_l_1()
+                    .border_b_1()
+                    .border_color(theme.hairline),
+            );
+
+        let body = scroll::axis_locked(div())
+            .id("arrange-body")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.arrange_view.y)
+            .flex()
+            .flex_col()
+            .child(
+                // Grows to fill the page (flex growth: percentage heights do
+                // not work inside a vertical scroll).
+                div()
+                    .flex()
+                    .flex_grow()
+                    .flex_shrink_0()
+                    .child(self.render_node_list(theme, cx))
+                    .child(self.render_timeline(theme, bars, width)),
+            );
+
         div()
             .flex_1()
             .min_h_0()
             .flex()
-            .child(self.render_node_list(theme, cx))
-            .child(self.render_timeline(theme, cx))
+            .flex_col()
+            .child(top)
+            .child(self.timeline_frame(
+                Timeline::Arrange,
+                body.into_any_element(),
+                NODE_LIST_WIDTH,
+                theme,
+                cx,
+            ))
     }
 
     fn render_node_list(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let node = &self.session.snapshot().node;
         let meter = self.session.meter();
         let color = theme.content(node.color);
+        let row_height = self.arrange_view.zoom.row_height;
+        let meter_size = (row_height - 16.).clamp(10., METER_HEIGHT);
 
         let toggle = |id: &'static str, label: &'static str, on: bool, on_bg: Hsla, on_fg: Hsla| {
             div()
@@ -80,7 +157,8 @@ impl ProjectView {
         selected_bg.a = 0.16;
         let row = div()
             .id("node-row")
-            .h(px(ROW_HEIGHT))
+            .h(px(row_height))
+            .flex_none()
             .flex()
             .items_center()
             .gap(px(10.))
@@ -89,7 +167,13 @@ impl ProjectView {
             .border_color(theme.hairline)
             .when(self.node_selected, |d| d.bg(selected_bg))
             .on_click(cx.listener(|this, _, _, _| this.node_selected = true))
-            .child(div().w(px(4.)).h(px(32.)).rounded(px(2.)).bg(color.detail))
+            .child(
+                div()
+                    .w(px(4.))
+                    .h(px(meter_size))
+                    .rounded(px(2.))
+                    .bg(color.detail),
+            )
             .child(
                 div().flex_1().flex().flex_col().child(node_name).child(
                     div()
@@ -102,8 +186,8 @@ impl ProjectView {
                 div()
                     .flex()
                     .gap(px(2.))
-                    .child(meter_bar(meter.left, theme))
-                    .child(meter_bar(meter.right, theme)),
+                    .child(meter_bar(meter.left, meter_size, theme))
+                    .child(meter_bar(meter.right, meter_size, theme)),
             )
             .child(mute)
             .child(solo);
@@ -116,19 +200,6 @@ impl ProjectView {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.edge)
-            .child(
-                div()
-                    .h(px(RULER_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .px(px(12.))
-                    .border_b_1()
-                    .border_color(theme.hairline)
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_tertiary)
-                    .child("NODES"),
-            )
             .child(row)
             .child(
                 // Clicking the empty space below the nodes clears the selection.
@@ -139,60 +210,79 @@ impl ProjectView {
             )
     }
 
-    fn render_timeline(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The lanes: sideways-scrolling, as wide as the song.
+    fn render_timeline(&self, theme: &Theme, bars: u32, width: f32) -> impl IntoElement {
         let snapshot = self.session.snapshot();
-        let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
-        let width = beat_to_x(f64::from(bars) * BEATS_PER_BAR);
+        let zoom = self.arrange_view.zoom;
         let color = if snapshot.node.muted {
             theme.muted_content
         } else {
             theme.content(snapshot.node.color)
         };
 
-        // Bar lines, stronger than the beat lines between them.
-        let grid_lines = (0..bars * 4).map(|beat| {
-            let strong = beat % 4 == 0;
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(px(beat_to_x(f64::from(beat))))
-                .w(px(1.))
-                .bg(if strong { theme.hairline } else { theme.grid })
-        });
+        // Bar lines, stronger than the beat lines between them, thinned out
+        // when zoomed out.
+        let bar_step = grid_bar_step(zoom.pixels_per_beat);
+        let show_beats = zoom.pixels_per_beat >= MIN_GRID_SPACING;
+        let grid_lines = (0..bars * 4)
+            .filter(move |beat| {
+                if beat % 4 == 0 {
+                    (beat / 4) % bar_step == 0
+                } else {
+                    show_beats
+                }
+            })
+            .map(|beat| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(zoom.beat_to_x(f64::from(beat))))
+                    .w(px(1.))
+                    .bg(if beat % 4 == 0 {
+                        theme.hairline
+                    } else {
+                        theme.grid
+                    })
+            });
 
         let lane = div()
             .relative()
-            .h(px(ROW_HEIGHT))
+            .h(px(zoom.row_height))
+            .flex_none()
             .border_b_1()
             .border_color(theme.hairline)
             .children(
                 snapshot
                     .clips
                     .iter()
-                    .map(|(id, clip)| clip_view(*id, clip, &snapshot.node.name, color)),
+                    .map(|(id, clip)| clip_view(*id, clip, &snapshot.node.name, color, zoom)),
             );
 
         let playhead = div()
             .absolute()
             .top_0()
             .bottom_0()
-            .left(px(beat_to_x(self.session.position_beats())))
+            .left(px(zoom.beat_to_x(self.session.position_beats())))
             .w(px(1.))
             .bg(theme.accent);
 
-        div()
+        scroll::axis_locked(div())
             .id("timeline")
             .flex_1()
             .min_w_0()
+            // A row, so the content stretches to the full height.
+            .flex()
             .overflow_x_scroll()
+            .track_scroll(&self.arrange_view.x)
             .child(
                 div()
                     .relative()
+                    .flex_shrink_0()
                     .w(px(width))
-                    .h_full()
+                    .flex()
+                    .flex_col()
                     .children(grid_lines)
-                    .child(self.render_ruler(theme, bars, PIXELS_PER_BEAT, cx))
                     .child(lane)
                     .child(playhead),
             )
@@ -264,11 +354,11 @@ impl ProjectView {
     }
 }
 
-fn meter_bar(peak: f32, theme: &Theme) -> impl IntoElement {
+fn meter_bar(peak: f32, size: f32, theme: &Theme) -> impl IntoElement {
     let height = meter_height(peak);
     div()
         .w(px(4.))
-        .h(px(METER_HEIGHT))
+        .h(px(size))
         .rounded(px(1.))
         .bg(theme.control)
         .flex()
@@ -277,7 +367,7 @@ fn meter_bar(peak: f32, theme: &Theme) -> impl IntoElement {
         .child(
             div()
                 .w_full()
-                .h(px(METER_HEIGHT * height))
+                .h(px(size * height))
                 .rounded(px(1.))
                 .bg(if height > 0.98 {
                     theme.meter_high
@@ -287,10 +377,16 @@ fn meter_bar(peak: f32, theme: &Theme) -> impl IntoElement {
         )
 }
 
-fn clip_view(id: ClipId, clip: &MidiClip, label: &str, color: ContentColor) -> impl IntoElement {
-    let left = beat_to_x(clip.start.as_beats());
-    let width = beat_to_x(clip.length.as_beats());
-    let note_area = ROW_HEIGHT - 2. * CLIP_INSET - CLIP_LABEL_HEIGHT - 6.;
+fn clip_view(
+    id: ClipId,
+    clip: &MidiClip,
+    label: &str,
+    color: ContentColor,
+    zoom: Zoom,
+) -> impl IntoElement {
+    let left = zoom.beat_to_x(clip.start.as_beats());
+    let width = zoom.beat_to_x(clip.length.as_beats());
+    let note_area = (zoom.row_height - 2. * CLIP_INSET - CLIP_LABEL_HEIGHT - 6.).max(0.);
     let notes = clip
         .notes
         .iter()
@@ -300,9 +396,11 @@ fn clip_view(id: ClipId, clip: &MidiClip, label: &str, color: ContentColor) -> i
             let end = (note.start + note.length).min(clip.length);
             div()
                 .absolute()
-                .left(px(beat_to_x(note.start.as_beats())))
+                .left(px(zoom.beat_to_x(note.start.as_beats())))
                 .top(px(CLIP_LABEL_HEIGHT + row * note_area))
-                .w(px((beat_to_x((end - note.start).as_beats()) - 1.).max(2.)))
+                .w(px(
+                    (zoom.beat_to_x((end - note.start).as_beats()) - 1.).max(2.)
+                ))
                 .h(px(3.))
                 .rounded(px(1.))
                 .bg(color.detail)
@@ -313,7 +411,7 @@ fn clip_view(id: ClipId, clip: &MidiClip, label: &str, color: ContentColor) -> i
         .left(px(left))
         .top(px(CLIP_INSET))
         .w(px(width))
-        .h(px(ROW_HEIGHT - 2. * CLIP_INSET))
+        .h(px(zoom.row_height - 2. * CLIP_INSET))
         .rounded(px(5.))
         .bg(color.fill)
         .border_1()

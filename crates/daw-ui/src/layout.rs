@@ -3,7 +3,7 @@
 
 use daw_engine::{LoopRange, MidiClip, Ticks};
 
-/// Horizontal zoom of the timeline.
+/// Starting horizontal zoom of a timeline page (each page zooms on its own).
 pub const PIXELS_PER_BEAT: f32 = 24.0;
 pub const BEATS_PER_BAR: f64 = 4.0;
 /// Empty bars shown after the last content.
@@ -20,15 +20,25 @@ pub fn format_position(beats: f64) -> String {
     format!("{bar} · {beat} · {sixteenth}")
 }
 
-pub fn beat_to_x(beats: f64) -> f32 {
-    beats as f32 * PIXELS_PER_BEAT
-}
-
 /// The song position under a horizontal offset at `pixels_per_beat`,
 /// snapped to sixteenths and never before the start.
 pub fn x_to_snapped_position(x: f32, pixels_per_beat: f32) -> Ticks {
     let beats = f64::from(x / pixels_per_beat).max(0.0);
     Ticks::from_beats_f64((beats * 4.0).round() / 4.0)
+}
+
+/// Closest spacing of grid lines, in pixels.
+pub const MIN_GRID_SPACING: f32 = 6.;
+
+/// Show a bar line every this many bars, so bar lines stay at least
+/// `MIN_GRID_SPACING` apart when zoomed out.
+pub fn grid_bar_step(pixels_per_beat: f32) -> u32 {
+    let bar = pixels_per_beat * BEATS_PER_BAR as f32;
+    let mut step = 1;
+    while bar * (step as f32) < MIN_GRID_SPACING {
+        step *= 2;
+    }
+    step
 }
 
 /// Label every this many bars on a ruler, so labels stay readable when
@@ -139,6 +149,13 @@ mod tests {
         );
         assert_eq!(x_to_snapped_position(-50.0, 24.), Ticks::ZERO);
         assert_eq!(x_to_snapped_position(26., 10.), Ticks::from_beats_f64(2.5));
+    }
+
+    #[test]
+    fn grid_lines_thin_out_when_zoomed_out() {
+        assert_eq!(grid_bar_step(24.), 1);
+        assert_eq!(grid_bar_step(1.), 2);
+        assert_eq!(grid_bar_step(0.25), 8);
     }
 
     #[test]

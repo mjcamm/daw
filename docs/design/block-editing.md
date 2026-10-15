@@ -59,14 +59,22 @@ One slider design everywhere (`crates/daw-ui/src/slider.rs`): a hairline track f
 - **Zoom:** the corner zoom sliders use the same slider on a small pill.
 - Row sliders are sized to the row (zoomed row height minus 10 px). All preview live and send one edit on release.
 
-## Zoom
+## Scrollbars and zoom
 
-Every timeline page gets two short slim sliders in its bottom-right corner (`crates/daw-ui/src/zoom.rs`, built to be reused on Arrange and Signals): one standing against the right edge for **vertical zoom** (row height) and one along the bottom for **horizontal zoom** (pixels per beat). Each page keeps its own zoom.
+Every timeline page (Arrange and Parameters now, Signals later) is framed the same way (`crates/daw-ui/src/frame.rs`), as the user chose:
 
-- Wide, log-scale ranges, so it works as a zoom tool: rows 28 to 400 px, timeline 2 to 400 px per beat. Drag right or up to zoom in.
-- On the Parameters page, result rows and layer rows are always the same height, set by vertical zoom (default 40 px). Selecting a block no longer grows its lane; zoom in for room to edit points.
+```text
+[ body                                  ][v-scroll]
+[                                       ][v-zoom  ]
+[ (left column) ][ h-scroll   ][ h-zoom ][corner  ]
+```
+
+- **Scrollbars** (`scroll.rs`): always visible, slim (12 px bar, 8 px thumb), quiet grey thumb sized to how much is in view; drag the thumb to scroll. The horizontal one runs under the lanes only, not the left column.
+- **Zoom sliders** sit at the scrollbars' ends: horizontal zoom at the right end of the horizontal scrollbar, vertical zoom at the bottom of the vertical one. Same slider design as everywhere (`slider.rs`).
+- **Wheel:** plain wheel scrolls up and down only; Shift+wheel scrolls sideways (the sideways lanes are axis-locked, see `docs/gpui-notes.md`).
+- **Zoom ranges** are wide, on a log scale: rows 28 to 400 px, timeline 2 to 400 px per beat. Each page keeps its own zoom and scroll position. On Parameters, result rows and layer rows share the row height (default 40 px); on Arrange it is the node row height (default 56 px).
 - Horizontal zoom holds the playhead still on screen when it is in view (so zooming at the song start keeps the start in place); otherwise it holds the middle of the view. Grid lines and ruler labels thin out when zoomed far out.
-- Zoom is view state, not saved in the project and not undoable.
+- Zoom and scroll are view state: not saved, not undoable.
 
 ## Undo
 

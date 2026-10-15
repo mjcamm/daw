@@ -3,12 +3,12 @@
 //! corner. The sliders work on a log scale, so every bit of travel zooms by
 //! the same proportion across a wide range. Each page keeps its own `Zoom`.
 //!
-//! Shared by every timeline page (Parameters now; Arrange and Signals
-//! later): the page holds a `Zoom`, draws `corner`, and forwards drags.
+//! Shared by every timeline page: the page's frame (`frame.rs`) holds a
+//! `Zoom` and draws the sliders at the ends of its scrollbars.
 
 use crate::slider;
 use crate::theme::Theme;
-use gpui::{AnyElement, Div, ElementId, Pixels, Point, Stateful, div, prelude::*, px};
+use gpui::{Div, ElementId, Pixels, Point, Stateful, px};
 
 const MIN_PIXELS_PER_BEAT: f32 = 2.;
 const MAX_PIXELS_PER_BEAT: f32 = 400.;
@@ -16,11 +16,6 @@ const MIN_ROW_HEIGHT: f32 = 28.;
 const MAX_ROW_HEIGHT: f32 = 400.;
 /// Length of a slider's travel.
 const SLIDER_LENGTH: f32 = 80.;
-/// Gap between the sliders' pills and the page edges.
-const CORNER_GAP: f32 = 4.;
-/// Padding inside a slider's pill, and the pill's cross size.
-const PILL_PADDING: f32 = 1.;
-const PILL: f32 = slider::THICKNESS + 2. * PILL_PADDING + 2.;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
@@ -140,8 +135,8 @@ impl ZoomDrag {
 }
 
 /// A zoom slider: the app's standard slider (see `slider.rs`), `position`
-/// along its travel. Attach `on_mouse_down` to start a drag; place it with
-/// [`corner`].
+/// along its travel. Attach `on_mouse_down` to start a drag. Timeline
+/// pages place these at the ends of their scrollbars (see `frame.rs`).
 pub fn slider(
     id: impl Into<ElementId>,
     axis: Axis,
@@ -154,34 +149,6 @@ pub fn slider(
         Axis::Vertical => slider::Axis::Vertical,
     };
     slider::slider(id, orientation, position, SLIDER_LENGTH, active, theme)
-}
-
-/// Places a vertical slider against the right edge and a horizontal slider
-/// along the bottom, meeting at the bottom-right corner of the nearest
-/// `relative()` parent. Each sits on a small pill so it reads over content.
-pub fn corner(vertical: impl IntoElement, horizontal: impl IntoElement, theme: &Theme) -> [Div; 2] {
-    let pill = |child: AnyElement| {
-        div()
-            .p(px(PILL_PADDING))
-            .rounded(px(PILL / 2.))
-            .bg(theme.sidebar)
-            .border_1()
-            .border_color(theme.hairline)
-            .child(child)
-    };
-    let beside = CORNER_GAP * 2. + PILL;
-    [
-        div()
-            .absolute()
-            .right(px(CORNER_GAP))
-            .bottom(px(beside))
-            .child(pill(vertical.into_any_element())),
-        div()
-            .absolute()
-            .right(px(beside))
-            .bottom(px(CORNER_GAP))
-            .child(pill(horizontal.into_any_element())),
-    ]
 }
 
 #[cfg(test)]

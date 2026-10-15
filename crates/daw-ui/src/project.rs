@@ -1,16 +1,18 @@
 //! An open project: header and the current page.
 
 use crate::block_edit::Snap;
+use crate::frame::{FrameDrag, TimelineView};
+use crate::layout::PIXELS_PER_BEAT;
 use crate::menu::OpenMenu;
 use crate::parameters::{BaseDrag, BlockDrag, DEFAULT_ZOOM, MixDrag};
 use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
-use crate::zoom::{Zoom, ZoomDrag};
+use crate::zoom::Zoom;
 use daw_engine::{BlockId, Command, Edit, LayerId, LoopRange};
 use gpui::{
-    Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, ScrollHandle,
-    Subscription, Window, actions, div, prelude::*, px,
+    Bounds, Context, DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, MouseMoveEvent,
+    MouseUpEvent, Pixels, Subscription, Window, actions, canvas, div, prelude::*, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -73,9 +75,6 @@ pub struct ProjectView {
     /// Whether the node is selected; the Parameters page shows the selected
     /// node.
     pub(crate) node_selected: bool,
-    /// Horizontal scroll of the Parameters page timeline, shared with its
-    /// ruler.
-    pub(crate) parameters_scroll: ScrollHandle,
     /// Where the Parameters page lanes were last drawn: the top-left is
     /// beat 0 of the first row.
     pub(crate) lanes_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -90,10 +89,11 @@ pub struct ProjectView {
     pub(crate) base_drag: Option<BaseDrag>,
     /// A layer's mix being dragged with its slider; one edit on release.
     pub(crate) mix_drag: Option<MixDrag>,
-    /// The Parameters page's zoom (each page keeps its own).
-    pub(crate) parameters_zoom: Zoom,
-    /// A zoom slider being dragged.
-    pub(crate) zoom_drag: Option<ZoomDrag>,
+    /// Each timeline page's zoom and scroll position.
+    pub(crate) arrange_view: TimelineView,
+    pub(crate) parameters_view: TimelineView,
+    /// A scrollbar or zoom slider being dragged.
+    pub(crate) frame_drag: Option<FrameDrag>,
     pub(crate) rename: Option<Rename>,
     pub(crate) save_error: Option<String>,
     window_title: String,
@@ -114,15 +114,15 @@ impl ProjectView {
             ruler_bounds: Rc::default(),
             open_menu: None,
             node_selected: false,
-            parameters_scroll: ScrollHandle::new(),
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
             selected_block: None,
             block_drag: None,
             base_drag: None,
             mix_drag: None,
-            parameters_zoom: DEFAULT_ZOOM,
-            zoom_drag: None,
+            arrange_view: TimelineView::new(Zoom::new(PIXELS_PER_BEAT, 56.)),
+            parameters_view: TimelineView::new(DEFAULT_ZOOM),
+            frame_drag: None,
             rename: None,
             save_error: None,
             window_title: String::new(),
@@ -266,8 +266,10 @@ impl Render for ProjectView {
 
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
+            .child(self.drag_tracker(cx))
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &TogglePlay, _, _| this.toggle_play()))
@@ -284,6 +286,51 @@ impl Render for ProjectView {
             )
             .children(self.save_error.clone().map(banner))
             .child(page)
+    }
+}
+
+impl ProjectView {
+    /// Whether anything is being dragged (a block, slider, scrollbar...).
+    fn dragging(&self) -> bool {
+        self.block_drag.is_some()
+            || self.base_drag.is_some()
+            || self.mix_drag.is_some()
+            || self.frame_drag.is_some()
+    }
+
+    /// While something is being dragged, follows the mouse anywhere in the
+    /// window until it is released. Element mouse handlers only fire while
+    /// hovered, so these are window-level listeners, registered each frame.
+    fn drag_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let dragging = self.dragging();
+        let view = cx.entity().downgrade();
+        canvas(
+            |_, _, _| {},
+            move |_, (), window, _| {
+                if !dragging {
+                    return;
+                }
+                let moved = view.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = moved.update(cx, |this, cx| {
+                            this.drag_to(event.position, event.modifiers);
+                            cx.notify();
+                        });
+                    }
+                });
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = view.update(cx, |this, cx| {
+                            this.finish_drag();
+                            cx.notify();
+                        });
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
     }
 }
 
