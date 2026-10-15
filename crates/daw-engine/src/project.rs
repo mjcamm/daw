@@ -334,6 +334,21 @@ impl Project {
                     layer,
                 })
             }
+            Edit::MoveLayer { id, index } => {
+                let (param, from) = node
+                    .find_layer(id)
+                    .ok_or(CommandError::UnknownLayer { id })?;
+                let stack = &mut node.param_mut(param)?.layers;
+                if index >= stack.len() {
+                    return Err(CommandError::IndexOutOfRange {
+                        index,
+                        len: stack.len(),
+                    });
+                }
+                let layer = stack.remove(from);
+                stack.insert(index, layer);
+                Ok(Edit::MoveLayer { id, index: from })
+            }
             Edit::RenameLayer { id, name } => {
                 let name = clean_name(&name)?;
                 let layer = node.layer_mut(id)?;
@@ -977,5 +992,66 @@ mod name_tests {
             );
         }
         assert_eq!(project.node.name, "Synth");
+    }
+}
+
+#[cfg(test)]
+mod move_layer_tests {
+    use super::*;
+    use daw_protocol::BlendMode;
+
+    const VOLUME: ParamId = ParamId {
+        device: DeviceRef::Channel,
+        index: 0,
+    };
+
+    fn stack(project: &Project) -> Vec<u64> {
+        project.node.channel[0]
+            .layers
+            .iter()
+            .map(|(id, _)| id.0)
+            .collect()
+    }
+
+    fn with_three_layers() -> Project {
+        let mut project = Project::default();
+        for id in 1..=3 {
+            project
+                .apply(Edit::AddLayer {
+                    param: VOLUME,
+                    id: LayerId(id),
+                    index: (id - 1) as usize,
+                    layer: Layer::new(BlendMode::Add),
+                })
+                .unwrap();
+        }
+        project
+    }
+
+    #[test]
+    fn moving_a_layer_reorders_its_stack_and_undoes() {
+        let mut project = with_three_layers();
+        let inverse = project
+            .apply(Edit::MoveLayer {
+                id: LayerId(1),
+                index: 2,
+            })
+            .unwrap();
+        assert_eq!(stack(&project), [2, 3, 1]);
+        project.apply(inverse).unwrap();
+        assert_eq!(stack(&project), [1, 2, 3]);
+    }
+
+    #[test]
+    fn moves_must_stay_inside_the_stack() {
+        let mut project = with_three_layers();
+        assert_eq!(
+            project.apply(Edit::MoveLayer {
+                id: LayerId(1),
+                index: 3
+            }),
+            Err(CommandError::IndexOutOfRange { index: 3, len: 3 })
+        );
+        assert_eq!(stack(&project), [1, 2, 3]);
     }
 }

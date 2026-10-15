@@ -57,8 +57,11 @@ enum Row<'a> {
     NoEffects,
     /// A parameter with layers: shows the final result.
     Set(&'a ParamSnapshot),
-    /// A layer of a set.
+    /// A layer of a set, with its position in the engine.s bottom-to-top
+    /// stack.
     Layer {
+        param: ParamId,
+        index: usize,
         id: LayerId,
         layer: &'a Layer,
     },
@@ -110,8 +113,13 @@ fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot) {
     for param in device.params.iter().filter(|p| !p.layers.is_empty()) {
         rows.push(Row::Set(param));
         // Like image-editor layers: the last applied is listed first.
-        for (id, layer) in param.layers.iter().rev() {
-            rows.push(Row::Layer { id: *id, layer });
+        for (index, (id, layer)) in param.layers.iter().enumerate().rev() {
+            rows.push(Row::Layer {
+                param: param.id,
+                index,
+                id: *id,
+                layer,
+            });
         }
         rows.push(Row::AddLayer(param));
     }
@@ -307,15 +315,21 @@ impl ProjectView {
                     )
                     .into_any_element()
             }
-            Row::Layer { id, layer, .. } => self
-                .layer_header(*id, layer, cell, theme, cx)
+            Row::Layer {
+                param,
+                index,
+                id,
+                layer,
+            } => self
+                .layer_header(*param, *index, *id, layer, cell, theme, cx)
                 .into_any_element(),
             Row::AddLayer(param) => {
                 let (param_id, count) = (param.id, param.layers.len());
                 quiet_action(cell.pl(px(32.)), ("add-layer", index), "Add Layer", theme)
                     .on_click(cx.listener(move |this, _, _, _| {
                         let name = format!("Layer {}", count + 1);
-                        this.add_layer(param_id, count, &name);
+                        // New layers go at the bottom, beside the button.
+                        this.add_layer(param_id, 0, &name);
                     }))
                     .into_any_element()
             }
@@ -342,8 +356,11 @@ impl ProjectView {
     }
 
     /// Name, blend mode, on/off and delete for one layer.
+    #[allow(clippy::too_many_arguments, reason = "plain row data, passed through")]
     fn layer_header(
         &self,
+        param: ParamId,
+        index: usize,
         id: LayerId,
         layer: &Layer,
         cell: Div,
@@ -436,11 +453,43 @@ impl ProjectView {
             }))
             .child(icon(Icon::Close, theme.text_secondary, 12.));
 
+        let dragged = DraggedLayer {
+            param,
+            id,
+            name: layer.name.clone(),
+        };
+        let grip = div()
+            .id(("layer-grip", id.0))
+            .cursor_move()
+            .child(icon(Icon::GripVertical, theme.text_tertiary, 13.))
+            .on_drag(dragged, |dragged: &DraggedLayer, _, _, cx| {
+                cx.new(|_| dragged.clone())
+            });
+        let mut drop_highlight = theme.accent;
+        drop_highlight.a = 0.18;
+
         cell.id(("layer-row", id.0))
             .group(group)
-            .pl(px(32.))
+            .pl(px(18.))
             .pr(px(8.))
             .gap(px(6.))
+            .drag_over::<DraggedLayer>(move |style, dragged, _, _| {
+                if dragged.param == param {
+                    style.bg(drop_highlight)
+                } else {
+                    style
+                }
+            })
+            .on_drop(cx.listener(move |this, dragged: &DraggedLayer, _, _| {
+                // Layers only move within their own parameter.
+                if dragged.param == param && dragged.id != id {
+                    this.session.apply(Command::Edit(Edit::MoveLayer {
+                        id: dragged.id,
+                        index,
+                    }));
+                }
+            }))
+            .child(grip)
             .child(name)
             .child(mode_chip)
             .child(toggle)
@@ -782,5 +831,31 @@ mod tests {
         ));
         let block = CompiledBlock::compile(&layer.blocks[0].1);
         assert!((block.sample(2.0).0 - 0.5).abs() < 1e-9);
+    }
+}
+
+/// A layer being dragged to a new place in its stack. Also its own drag
+/// preview: a small chip with the layer's name.
+#[derive(Debug, Clone)]
+struct DraggedLayer {
+    param: ParamId,
+    id: LayerId,
+    name: String,
+}
+
+impl Render for DraggedLayer {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::get(cx);
+        div()
+            .px(px(8.))
+            .py(px(3.))
+            .rounded(px(5.))
+            .bg(theme.group)
+            .border_1()
+            .border_color(theme.accent)
+            .shadow_md()
+            .text_size(px(12.))
+            .text_color(theme.text)
+            .child(self.name.clone())
     }
 }

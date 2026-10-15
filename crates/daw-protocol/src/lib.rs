@@ -95,6 +95,11 @@ pub enum Edit {
         id: LayerId,
         name: String,
     },
+    /// Move a layer to `index` in its parameter.s stack (0 is the bottom).
+    MoveLayer {
+        id: LayerId,
+        index: usize,
+    },
     SetLayerOptions {
         id: LayerId,
         mode: BlendMode,
