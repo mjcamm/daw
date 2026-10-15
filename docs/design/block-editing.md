@@ -41,7 +41,7 @@ Each parameter's result row has a small vertical slider just right of its name. 
 
 ## Centre line and actual effect
 
-Every layer lane has a centre line (no effect): shapes above it push up, below it pull down (see `parameters-and-layers.md`). Inside each block, the bright line is the shape as drawn; a faint second line shows what the layer actually does, with depth, fades and mix applied: `0.5 + (x - 0.5) · weight · mix`, around the centre line.
+Every layer lane has a centre line (no effect): shapes above it push up, below it pull down (see `parameters-and-layers.md`). The centre line is deliberately faint; the split between rows (result and layers) is a darker 2 px line across both the name column and the lanes, so splits and centre lines are easy to tell apart. Inside each block, the bright line is the shape as drawn; a faint second line shows what the layer actually does, with depth, fades and mix applied: `0.5 + (x - 0.5) · weight · mix`, around the centre line.
 
 ## Sliders
 

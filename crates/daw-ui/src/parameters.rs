@@ -1002,7 +1002,11 @@ impl ProjectView {
             .h(px(row.height(self.parameters_zoom.row_height)))
             .flex_none()
             .flex()
-            .items_center();
+            .items_center()
+            // The same split as on the lanes, so each layer reads as one band.
+            .when(matches!(row, Row::Set(_) | Row::Layer { .. }), |d| {
+                d.border_b_2().border_color(theme.edge)
+            });
         match row {
             Row::Section(label) => cell
                 .px(px(12.))
@@ -1371,8 +1375,8 @@ impl ProjectView {
                 let automation = Automation::compile_layers(self.base_of(param), &layers);
                 let (line, fill) = (color.detail, color.fill);
                 cell.bg(theme.window)
-                    .border_b_1()
-                    .border_color(theme.hairline)
+                    .border_b_2()
+                    .border_color(theme.edge)
                     .child(
                         canvas(
                             |_, _, _| {},
@@ -1402,8 +1406,8 @@ impl ProjectView {
                 let mix = self.mix_of(layer_id, layer.mix);
                 // The centre line: no effect.
                 let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
-                cell.border_b_1()
-                    .border_color(theme.hairline)
+                cell.border_b_2()
+                    .border_color(theme.edge)
                     .child(
                         div()
                             .absolute()
@@ -1411,7 +1415,7 @@ impl ProjectView {
                             .right_0()
                             .top(px(centre - 0.5))
                             .h(px(1.))
-                            .bg(theme.hairline),
+                            .bg(theme.grid),
                     )
                     .children(blocks.iter().map(|(id, block)| {
                         block_view(
@@ -1514,7 +1518,9 @@ fn block_view(
                         ),
                         size(bounds.size.width, px(1.)),
                     );
-                    window.paint_quad(fill(centre, colors.outline));
+                    let mut centre_color = colors.outline;
+                    centre_color.a *= 0.4;
+                    window.paint_quad(fill(centre, centre_color));
                     // Faint: what the layer actually does, with depth, fades
                     // and mix applied, around the centre line.
                     let mut faint = colors.detail;
