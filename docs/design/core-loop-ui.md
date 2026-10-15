@@ -32,6 +32,10 @@ Header control (magnet): Snap or Slide, grid 1 bar to 1/64, default 1/4. Alt dur
 - In a block, the bright line is the shape as drawn; a faint second line is what the layer actually does, with depth, fades and mix applied.
 - The **result row** shows the final value, clamped once at the end, so it often runs flat at the floor or ceiling and can look unlike any one layer. A faint line marks the resting value: where every layer's centre line lands.
 
+## Layer rows
+
+Two lines (asked for by the user so signal names have room): the name on the first, with show/hide and delete at the right; the type chip (Drawn, or the signal with a go-to icon) and the blend mode on the second. The mix slider stands between them and the buttons, across both lines. The Parameters page opens at 56 px rows.
+
 ## Sliders
 
 One design everywhere (`slider.rs`): hairline track, fill, round thumb, relative drags (200 px full range, Shift five times finer).
@@ -49,7 +53,7 @@ One design everywhere (`slider.rs`): hairline track, fill, round thumb, relative
 ```
 
 - `frame.rs` builds it; `scroll.rs` draws the scrollbars (GPUI has none); `zoom.rs` holds zoom maths.
-- Zoom is wide and logarithmic: rows 28 to 400 px, 2 to 400 px per beat. Horizontal zoom holds the playhead still when it is on screen, else the middle of the view. Each page keeps its own zoom and scroll; neither is saved.
+- Zoom is wide and logarithmic: rows 44 to 400 px (always two lines of text), 2 to 400 px per beat. Horizontal zoom holds the playhead still when it is on screen, else the middle of the view. Each page keeps its own zoom and scroll; neither is saved.
 - Wheel scrolls up and down only, Shift+wheel sideways: nested scroll areas are axis-locked (see `docs/gpui-notes.md`).
 
 ## Undo

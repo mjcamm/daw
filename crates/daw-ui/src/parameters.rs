@@ -47,7 +47,7 @@ const RULER_HEIGHT: f32 = 28.;
 const SECTION_HEIGHT: f32 = 30.;
 const DEVICE_HEIGHT: f32 = 30.;
 /// Starting zoom: result rows and layer rows are all one lane height.
-pub(crate) const DEFAULT_ZOOM: Zoom = Zoom::new(PIXELS_PER_BEAT, 40.);
+pub(crate) const DEFAULT_ZOOM: Zoom = Zoom::new(PIXELS_PER_BEAT, 56.);
 const ADD_HEIGHT: f32 = 26.;
 const SETTINGS_HEIGHT: f32 = 34.;
 /// Gap between a lane's edges and its blocks.
@@ -59,6 +59,8 @@ const BLOCK_INSET: f32 = BLOCK_MARGIN + 1.;
 const POINT_DOT: f32 = 3.;
 /// Half the width of the resize zone on a looped block's first cycle end.
 const CYCLE_EDGE_HALF: f32 = 4.;
+/// One line of text in a two-line row.
+const LINE_HEIGHT: f32 = 20.;
 /// How long a layer jumped to from elsewhere stays highlighted.
 pub(crate) const HIGHLIGHT_TIME: std::time::Duration = std::time::Duration::from_millis(1500);
 
@@ -1419,12 +1421,42 @@ impl ProjectView {
                 }
             }))
             .child(grip)
-            .child(name)
+            // Two lines: the name, then what the layer is and how it blends.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(div().h(px(LINE_HEIGHT)).flex().items_center().child(name))
+                    .child(
+                        div()
+                            .h(px(LINE_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(source)
+                            .child(mode_chip),
+                    ),
+            )
             .child(self.mix_slider(id, layer.mix, theme, cx))
-            .child(source)
-            .child(mode_chip)
-            .child(toggle)
-            .child(delete)
+            // Show/hide and delete sit on the first line.
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .h(px(LINE_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .child(toggle)
+                            .child(delete),
+                    )
+                    .child(div().h(px(LINE_HEIGHT))),
+            )
     }
 
     fn blend_mode_menu(

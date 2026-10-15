@@ -6,7 +6,7 @@
 
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
-- **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to) and **listening layers on Parameters** (type picked when adding, then fixed; chip with hover explanation and go-to; windows show the signal). Driven and checked by Claude via `scripts/ui-drive.ps1`; not yet tried by the user.
+- **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to) and **listening layers on Parameters** (type picked when adding, then fixed; chip with hover explanation and go-to; windows show the signal). Driven and checked by Claude via `scripts/ui-drive.ps1`; not yet tried by the user. Layer rows are two lines (name; type chip and blend mode) and rows on every timeline page are at least 44 px; not yet seen running.
 
 ## In the app (`cargo run -p daw-ui`)
 
@@ -33,8 +33,7 @@
 
 ## Next up
 
-1. Parameters layer rows at double height (two lines of text) with a larger minimum row height (asked 2026-10-15; layout being agreed).
-2. "Publish as signal" on Arrange with the notes-signal bottom bar. Ask about details before building.
+1. "Publish as signal" on Arrange with the notes-signal bottom bar. Ask about details before building.
 2. The milestone gate ("does shaping movement feel great?").
 
 ## Design rules the user has set

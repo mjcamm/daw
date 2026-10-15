@@ -12,7 +12,8 @@ use gpui::{Div, ElementId, Pixels, Point, Stateful, px};
 
 const MIN_PIXELS_PER_BEAT: f32 = 2.;
 const MAX_PIXELS_PER_BEAT: f32 = 400.;
-const MIN_ROW_HEIGHT: f32 = 28.;
+/// Rows always fit two lines of text.
+const MIN_ROW_HEIGHT: f32 = 44.;
 const MAX_ROW_HEIGHT: f32 = 400.;
 /// Length of a slider's travel.
 const SLIDER_LENGTH: f32 = 80.;
@@ -157,7 +158,7 @@ mod tests {
 
     #[test]
     fn slider_positions_span_the_range_on_a_log_scale() {
-        let zoom = Zoom::new(24., 40.);
+        let zoom = Zoom::new(24., 56.);
         let out = zoom.with_position(Axis::Horizontal, 0.);
         let in_ = zoom.with_position(Axis::Horizontal, 1.);
         assert_eq!(out.pixels_per_beat, MIN_PIXELS_PER_BEAT);
@@ -165,26 +166,26 @@ mod tests {
         let middle = zoom.with_position(Axis::Horizontal, 0.5).pixels_per_beat;
         let geometric = (MIN_PIXELS_PER_BEAT * MAX_PIXELS_PER_BEAT).sqrt();
         assert!((middle - geometric).abs() < 1e-3);
-        assert_eq!(out.row_height, 40., "the other axis is untouched");
+        assert_eq!(out.row_height, 56., "the other axis is untouched");
     }
 
     #[test]
     fn positions_round_trip() {
-        let zoom = Zoom::new(24., 40.);
+        let zoom = Zoom::new(24., 56.);
         let p = zoom.position(Axis::Horizontal);
         let back = zoom.with_position(Axis::Horizontal, p).pixels_per_beat;
         assert!((back - 24.).abs() < 1e-3);
         let rows = zoom.with_position(Axis::Vertical, zoom.position(Axis::Vertical));
-        assert_eq!(rows.row_height, 40.);
+        assert_eq!(rows.row_height, 56.);
     }
 
     #[test]
     fn dragging_right_or_up_zooms_in() {
-        let zoom = Zoom::new(24., 40.);
+        let zoom = Zoom::new(24., 56.);
         let wider = zoom.dragged(Axis::Horizontal, Point { x: 10., y: 0. });
         assert!(wider.pixels_per_beat > 24.);
         let taller = zoom.dragged(Axis::Vertical, Point { x: 0., y: -10. });
-        assert!(taller.row_height > 40.);
+        assert!(taller.row_height > 56.);
         let shorter = zoom.dragged(Axis::Vertical, Point { x: 0., y: 500. });
         assert_eq!(shorter.row_height, MIN_ROW_HEIGHT);
     }
