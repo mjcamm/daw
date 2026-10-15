@@ -36,6 +36,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 1. Phase 4's "done when": build a kick ducking several parameters, all in the UI, and see what is missing. The demo song has no kick (one synth node), so the synth's notes stand in until Phase 5. (Showing a node's pitches on notes lanes is deferred by the user; the range picker is enough for now.)
 2. **Milestone gate** (after Phase 4, as `build-plan.md` has it): the user says shaping movement feels great, so it passes once the walkthrough finds nothing missing. Then Phase 5 (node tree).
+3. **Mixer layout is agreed** (`docs/design/mixer.md`): a flat, aligned desk with a nesting map along the bottom. Built with the node tree in Phase 5.
 
 ## Design rules the user has set
 
