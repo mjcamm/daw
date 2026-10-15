@@ -1,131 +1,130 @@
-//! The root view: header and the current page.
+//! The root view: the launch page, or an open project.
 
+use crate::launch::{LaunchEvent, LaunchView};
+use crate::project::{ProjectEvent, ProjectView};
 use crate::session::Session;
 use crate::theme::{Theme, UI_FONT};
-use daw_engine::{Command, LoopRange};
-use gpui::{
-    Bounds, Context, FocusHandle, Pixels, Subscription, Window, actions, div, prelude::*, px,
-};
-use std::cell::Cell;
-use std::rc::Rc;
+use daw_host::projects::{self, RecentProjects};
+use gpui::{Context, Entity, Subscription, Window, div, prelude::*, px};
 
-actions!(daw, [TogglePlay]);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
-    Arrange,
-    Parameters,
-    Signals,
-    Mixer,
-}
-
-impl Page {
-    pub const ALL: [Self; 4] = [Self::Arrange, Self::Parameters, Self::Signals, Self::Mixer];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Arrange => "Arrange",
-            Self::Parameters => "Parameters",
-            Self::Signals => "Signals",
-            Self::Mixer => "Mixer",
-        }
-    }
+enum Screen {
+    Launch(Entity<LaunchView>),
+    Project(Entity<ProjectView>),
 }
 
 pub struct AppView {
-    pub(crate) session: Session,
-    pub(crate) page: Page,
-    /// The loop region to restore when looping is switched back on.
-    pub(crate) saved_loop: Option<LoopRange>,
-    /// Where the timeline ruler was last drawn, for turning clicks into
-    /// song positions.
-    pub(crate) ruler_bounds: Rc<Cell<Bounds<Pixels>>>,
-    focus: FocusHandle,
+    screen: Screen,
+    recent: RecentProjects,
+    _screen_events: Subscription,
     _appearance: Subscription,
 }
 
 impl AppView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let focus = cx.focus_handle();
-        window.focus(&focus);
         let appearance = cx.observe_window_appearance(window, |_, window, cx| {
             cx.set_global(Theme::for_appearance(window.appearance()));
             cx.notify();
         });
-        let session = Session::start();
-        let saved_loop = session.snapshot().loop_range;
+        let recent = RecentProjects::load_default();
+        let (screen, events) = launch_screen(&recent, window, cx);
         Self {
-            session,
-            page: Page::Arrange,
-            saved_loop,
-            ruler_bounds: Rc::default(),
-            focus,
+            screen,
+            recent,
+            _screen_events: events,
             _appearance: appearance,
         }
     }
 
-    pub(crate) fn toggle_play(&mut self) {
-        let command = if self.session.snapshot().playing {
-            Command::Stop
-        } else {
-            Command::Play
-        };
-        self.session.apply(command);
+    fn show_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (screen, events) = launch_screen(&self.recent, window, cx);
+        self.screen = screen;
+        self._screen_events = events;
+        window.set_window_title("DAW");
+        cx.notify();
     }
 
-    pub(crate) fn toggle_loop(&mut self) {
-        let current = self.session.snapshot().loop_range;
-        if current.is_some() {
-            self.saved_loop = current;
-            self.session.apply(Command::SetLoop(None));
-        } else if let Some(range) = self.saved_loop {
-            self.session.apply(Command::SetLoop(Some(range)));
+    fn handle_launch(&mut self, event: &LaunchEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let result = match event {
+            LaunchEvent::Open(folder) => Session::open(folder.clone()),
+            LaunchEvent::Create(name) => {
+                projects::create_folder(&projects::default_projects_dir(), name)
+                    .map_err(|e| format!("Could not create the project folder: {e}"))
+                    .and_then(|folder| Session::create(folder, name))
+            }
+        };
+        match result {
+            Ok(session) => self.show_project(session, window, cx),
+            Err(error) => {
+                if let Screen::Launch(launch) = &self.screen {
+                    launch.update(cx, |launch, cx| launch.show_error(error, cx));
+                }
+            }
+        }
+    }
+
+    fn show_project(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+        self.remember(&session);
+        let view = cx.new(|cx| ProjectView::new(session, window, cx));
+        self._screen_events = cx.subscribe_in(
+            &view,
+            window,
+            |this, view, event: &ProjectEvent, window, cx| match event {
+                ProjectEvent::Close => {
+                    let session = view.read(cx).session();
+                    let (folder, name) = (
+                        session.folder().to_owned(),
+                        session.snapshot().song_name.clone(),
+                    );
+                    if let Err(e) = this.recent.touch(&folder, &name) {
+                        eprintln!("could not update recent projects: {e}");
+                    }
+                    this.show_launch(window, cx);
+                }
+            },
+        );
+        self.screen = Screen::Project(view);
+        cx.notify();
+    }
+
+    /// Puts a project at the top of the recent list.
+    fn remember(&mut self, session: &Session) {
+        let name = session.snapshot().song_name.clone();
+        if let Err(e) = self.recent.touch(session.folder(), &name) {
+            eprintln!("could not update recent projects: {e}");
         }
     }
 }
 
+fn launch_screen(
+    recent: &RecentProjects,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> (Screen, Subscription) {
+    let projects = recent.existing().cloned().collect();
+    let launch = cx.new(|_| LaunchView::new(projects, None));
+    let events = cx.subscribe_in(
+        &launch,
+        window,
+        |this, _, event: &LaunchEvent, window, cx| {
+            this.handle_launch(event, window, cx);
+        },
+    );
+    (Screen::Launch(launch), events)
+}
+
 impl Render for AppView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Redraw every frame: the playhead and meters move continuously.
-        window.request_animation_frame();
-        self.session.tick();
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
-
-        let page = match self.page {
-            Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),
-            other => placeholder(&theme, other).into_any_element(),
+        let content = match &self.screen {
+            Screen::Launch(view) => view.clone().into_any_element(),
+            Screen::Project(view) => view.clone().into_any_element(),
         };
-
         div()
             .size_full()
-            .flex()
-            .flex_col()
             .bg(theme.window)
             .text_color(theme.text)
             .font_family(UI_FONT)
             .text_size(px(12.))
-            .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &TogglePlay, _, _| this.toggle_play()))
-            .child(self.render_header(&theme, cx))
-            .children(self.session.audio_error.as_ref().map(|e| {
-                div()
-                    .px(px(18.))
-                    .py(px(6.))
-                    .bg(theme.warning)
-                    .text_color(theme.on_warning)
-                    .child(format!("No audio output: {e}"))
-            }))
-            .child(page)
+            .child(content)
     }
-}
-
-fn placeholder(theme: &Theme, page: Page) -> impl IntoElement {
-    div()
-        .flex_1()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(theme.text_tertiary)
-        .text_size(px(13.))
-        .child(format!("{} page: not built yet", page.label()))
 }

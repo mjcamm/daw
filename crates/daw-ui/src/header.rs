@@ -1,33 +1,61 @@
 //! The header bar: song details, page tabs, then the transport.
 
-use crate::app::{AppView, Page};
 use crate::icons::{Icon, icon};
 use crate::layout::format_position;
+use crate::project::{Page, ProjectView, RenameTarget};
 use crate::theme::{MONO_FONT, Theme};
 use daw_engine::{Command, Ticks};
-use gpui::{Context, FontWeight, Hsla, SharedString, div, prelude::*, px};
+use gpui::{
+    ClickEvent, Context, FontWeight, Hsla, SharedString, anchored, deferred, div, point,
+    prelude::*, px,
+};
 
-impl AppView {
+impl ProjectView {
     pub(crate) fn render_header(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.session.snapshot();
         let details = format!("{:.0} BPM · 4/4", snapshot.tempo_bpm);
+
+        let status = if self.session.is_edited() {
+            "Edited"
+        } else {
+            "Saved"
+        };
+        let name: gpui::AnyElement = match self.rename_input(RenameTarget::Song) {
+            Some(input) => div()
+                .w(px(180.))
+                .text_size(px(13.))
+                .child(input)
+                .into_any_element(),
+            None => div()
+                .id("song-name")
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .cursor_pointer()
+                .child(snapshot.song_name.clone())
+                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    if event.click_count() >= 2 {
+                        this.start_rename(RenameTarget::Song, window, cx);
+                    } else {
+                        this.menu_open = !this.menu_open;
+                    }
+                }))
+                .into_any_element(),
+        };
 
         let song = div()
             .flex()
             .flex_col()
             .min_w(px(140.))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(snapshot.song_name.clone()),
-            )
+            .child(name)
             .child(
                 div()
                     .text_size(px(11.))
                     .text_color(theme.text_secondary)
-                    .child(details),
-            );
+                    .child(format!("{details} · {status}")),
+            )
+            .when(self.menu_open, |d| {
+                d.child(self.render_song_menu(theme, cx))
+            });
 
         div()
             .h(px(52.))
@@ -147,4 +175,58 @@ fn transport_button(id: &'static str, theme: &Theme, active: bool) -> gpui::Stat
         .justify_center()
         .when(active, |d| d.bg(active_bg))
         .hover(move |s| s.bg(hover))
+}
+
+/// The save shortcut as the platform writes it.
+const SAVE_SHORTCUT: &str = if cfg!(target_os = "macos") {
+    "⌘S"
+} else {
+    "Ctrl+S"
+};
+
+impl ProjectView {
+    /// The menu under the song name: save, rename, back to projects.
+    fn render_song_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let hover = theme.hover;
+        let item = |id: &'static str, label: &'static str, hint: &'static str| {
+            div()
+                .id(id)
+                .flex()
+                .justify_between()
+                .gap(px(24.))
+                .px(px(10.))
+                .py(px(5.))
+                .rounded(px(5.))
+                .text_size(px(13.))
+                .hover(move |s| s.bg(hover))
+                .child(label)
+                .child(div().text_color(theme.text_tertiary).child(hint))
+        };
+        let menu = div()
+            .occlude()
+            .min_w(px(220.))
+            .p(px(4.))
+            .rounded(px(9.))
+            .bg(theme.group)
+            .border_1()
+            .border_color(theme.edge)
+            .shadow_lg()
+            .text_color(theme.text)
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.menu_open = false))
+            .child(
+                item("menu-save", "Save", SAVE_SHORTCUT)
+                    .on_click(cx.listener(|this, _, _, _| this.save())),
+            )
+            .child(item("menu-rename", "Rename", "Double-click").on_click(
+                cx.listener(|this, _, window, cx| {
+                    this.start_rename(RenameTarget::Song, window, cx)
+                }),
+            ))
+            .child(div().my(px(4.)).h(px(1.)).bg(theme.hairline))
+            .child(
+                item("menu-close", "Back to projects", "")
+                    .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+            );
+        deferred(anchored().offset(point(px(0.), px(4.))).child(menu))
+    }
 }

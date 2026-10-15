@@ -1,12 +1,14 @@
 //! The Arrange page: the node list on the left, the timeline beside it.
 
-use crate::app::AppView;
 use crate::layout::{
     BEATS_PER_BAR, beat_to_x, meter_height, note_rows, timeline_bars, x_to_snapped_position,
 };
+use crate::project::{ProjectView, RenameTarget};
 use crate::theme::{ContentColor, Theme};
 use daw_engine::{ClipId, Command, Edit, MidiClip};
-use gpui::{Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px};
+use gpui::{
+    ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
+};
 
 const RULER_HEIGHT: f32 = 28.;
 const ROW_HEIGHT: f32 = 56.;
@@ -15,7 +17,7 @@ const CLIP_INSET: f32 = 4.;
 const CLIP_LABEL_HEIGHT: f32 = 16.;
 const METER_HEIGHT: f32 = 32.;
 
-impl AppView {
+impl ProjectView {
     pub(crate) fn render_arrange(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex_1()
@@ -59,6 +61,20 @@ impl AppView {
             }),
         );
 
+        let node_name: gpui::AnyElement = match self.rename_input(RenameTarget::Node) {
+            Some(input) => div().text_size(px(13.)).child(input).into_any_element(),
+            None => div()
+                .id("node-name")
+                .text_size(px(13.))
+                .child(node.name.clone())
+                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    if event.click_count() >= 2 {
+                        this.start_rename(RenameTarget::Node, window, cx);
+                    }
+                }))
+                .into_any_element(),
+        };
+
         let row = div()
             .h(px(ROW_HEIGHT))
             .flex()
@@ -69,17 +85,12 @@ impl AppView {
             .border_color(theme.hairline)
             .child(div().w(px(4.)).h(px(32.)).rounded(px(2.)).bg(color.detail))
             .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(div().text_size(px(13.)).child(node.name.clone()))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(theme.text_secondary)
-                            .child("MIDI · Synth"),
-                    ),
+                div().flex_1().flex().flex_col().child(node_name).child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.text_secondary)
+                        .child("MIDI · Synth"),
+                ),
             )
             .child(
                 div()

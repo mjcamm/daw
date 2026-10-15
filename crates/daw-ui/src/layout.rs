@@ -69,6 +69,26 @@ pub fn note_rows(clip: &MidiClip) -> impl Iterator<Item = f32> + '_ {
         .map(move |n| 1.0 - f32::from(n.pitch - lowest) / span)
 }
 
+/// How long ago a time was, in words, for lists like recent projects. Times
+/// are seconds since 1970.
+pub fn format_age(now: u64, then: u64) -> String {
+    let seconds = now.saturating_sub(then);
+    let plural = |n: u64, unit: &str| {
+        if n == 1 {
+            format!("1 {unit} ago")
+        } else {
+            format!("{n} {unit}s ago")
+        }
+    };
+    match seconds {
+        0..60 => "just now".to_owned(),
+        60..3_600 => plural(seconds / 60, "minute"),
+        3_600..86_400 => plural(seconds / 3_600, "hour"),
+        86_400..604_800 => plural(seconds / 86_400, "day"),
+        _ => plural(seconds / 604_800, "week"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +160,20 @@ mod tests {
     fn a_single_pitch_does_not_divide_by_zero() {
         let c = clip(0, 4, &[60, 60]);
         assert!(note_rows(&c).all(|y| y == 1.0));
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::format_age;
+
+    #[test]
+    fn ages_read_naturally() {
+        assert_eq!(format_age(1_000, 1_000), "just now");
+        assert_eq!(format_age(1_000, 2_000), "just now", "clock skew");
+        assert_eq!(format_age(120, 0), "2 minutes ago");
+        assert_eq!(format_age(3_600, 0), "1 hour ago");
+        assert_eq!(format_age(3 * 86_400, 0), "3 days ago");
+        assert_eq!(format_age(15 * 86_400, 0), "2 weeks ago");
     }
 }

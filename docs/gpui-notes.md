@@ -63,3 +63,30 @@ Application::new()
 
 - `svg().path("icons/play.svg").size(px(14.)).text_color(color)`. The SVG is used as a mask and coloured by `text_color`, so stroke-based icon sets (Lucide) work.
 - Paths are resolved through the app's `AssetSource` (`load(&self, path) -> gpui::Result<Option<Cow<'static, [u8]>>>` and `list`). This app embeds icons with `include_bytes!` in `crates/daw-ui/src/icons.rs`.
+
+## Text input
+
+- GPUI has no text field widget. `crates/daw-ui/src/text_input.rs` is ours, adapted from `examples/input.rs`: cursor, selection, IME, clipboard, Enter/Escape events. Create with `cx.new(|cx| TextInput::new(text, placeholder, cx))`, focus with `window.focus(&input.read(cx).focus_handle(cx))` (needs the `Focusable` trait in scope), and listen with `cx.subscribe_in`.
+- `gpui-component` (a widget library) is built on a republished GPUI fork (`gpui-pre`), not crates.io `gpui`, so its types don't mix with ours.
+
+## Events between views
+
+- A view that emits: `impl EventEmitter<MyEvent> for MyView {}`, then `cx.emit(MyEvent::X)`.
+- Listen with `cx.subscribe_in(&entity, window, |this, emitter, event: &MyEvent, window, cx| ...)` (gives `window`), or `cx.subscribe(...)` without it. Keep the `Subscription`.
+- Child views render by putting the `Entity` in the tree: `.child(entity.clone())`.
+
+## Keys
+
+- `secondary-` in a binding is Cmd on macOS and Ctrl elsewhere: `KeyBinding::new("secondary-s", Save, ctx)`.
+- Bindings take a context predicate: set `.key_context("Workspace")` on an element, then bind with `Some("Workspace && !TextInput")` so shortcuts like space don't steal typing in text fields.
+
+## Clicks, menus and dialogs
+
+- Double-click: `ClickEvent::click_count() >= 2` in `on_click`.
+- Popup menus: `deferred(anchored().offset(point(px(0.), px(4.))).child(menu))` placed where the menu should appear. `deferred` paints it above everything; on the menu use `.occlude()` (blocks clicks through) and `.on_mouse_down_out(...)` to close it.
+- Native folder picker: `cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(..) })` returns a receiver; await it in `cx.spawn(async move |this, cx| { ... this.update(cx, |view, cx| ...) })` and `.detach()` the task.
+- Window title: `window.set_window_title(..)`. Only call it when the title changes; render runs every frame.
+
+## Gotchas
+
+- On Windows, building fails with "failed to remove file ... daw.exe" while the app is running. Close it first.

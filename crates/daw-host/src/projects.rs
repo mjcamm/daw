@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PROJECT_FILE: &str = "project.json";
+/// Background backup written while there are unsaved changes, so work can
+/// be recovered after a crash. Removed by a normal save.
+pub const AUTOSAVE_FILE: &str = "project.autosave.json";
 /// Most projects kept in the recent list.
 const MAX_RECENT: usize = 20;
 
@@ -70,11 +73,23 @@ pub fn folder_name(name: &str) -> String {
 /// Saves a project into its folder. The file is written beside the old one
 /// and then swapped in, so a crash mid-save never damages the existing file.
 pub fn save(folder: &Path, file: &ProjectFile) -> io::Result<()> {
+    write_atomically(folder, PROJECT_FILE, file)?;
+    match std::fs::remove_file(folder.join(AUTOSAVE_FILE)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Writes the crash-recovery backup, leaving the saved project untouched.
+pub fn autosave(folder: &Path, file: &ProjectFile) -> io::Result<()> {
+    write_atomically(folder, AUTOSAVE_FILE, file)
+}
+
+fn write_atomically(folder: &Path, name: &str, file: &ProjectFile) -> io::Result<()> {
     std::fs::create_dir_all(folder)?;
-    let target = folder.join(PROJECT_FILE);
-    let temporary = folder.join(format!("{PROJECT_FILE}.saving"));
+    let temporary = folder.join(format!("{name}.saving"));
     std::fs::write(&temporary, file.to_json())?;
-    std::fs::rename(&temporary, &target)
+    std::fs::rename(&temporary, folder.join(name))
 }
 
 /// Why a project folder could not be opened.
@@ -227,6 +242,17 @@ mod tests {
         save(&dir, &song("Second Save")).unwrap();
         assert_eq!(open(&dir).unwrap().name, "Second Save");
         assert!(!dir.join("project.json.saving").exists());
+    }
+
+    #[test]
+    fn autosave_leaves_the_saved_project_alone_until_the_next_save() {
+        let dir = scratch("autosave");
+        save(&dir, &song("Saved")).unwrap();
+        autosave(&dir, &song("Unsaved changes")).unwrap();
+        assert_eq!(open(&dir).unwrap().name, "Saved");
+        assert!(dir.join(AUTOSAVE_FILE).is_file());
+        save(&dir, &song("Saved again")).unwrap();
+        assert!(!dir.join(AUTOSAVE_FILE).exists());
     }
 
     #[test]

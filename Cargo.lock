@@ -1431,6 +1431,7 @@ dependencies = [
  "daw-host",
  "daw-rt",
  "gpui",
+ "unicode-segmentation",
 ]
 
 [[package]]

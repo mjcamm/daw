@@ -135,3 +135,24 @@ fn a_file_that_fails_to_open_changes_nothing() {
     assert!(engine.load(broken).is_err());
     assert_eq!(engine.snapshot(), before);
 }
+
+#[test]
+fn only_saved_content_counts_as_a_change() {
+    let (mut engine, mut processor) = Engine::new(EngineConfig::default());
+    let start = engine.content_revision();
+    engine.apply(Command::Play).unwrap();
+    engine
+        .apply(Command::Locate {
+            position: Ticks::from_beats(2),
+        })
+        .unwrap();
+    render(&mut engine, &mut processor, 100, &[100]);
+    engine.apply(Command::Stop).unwrap();
+    assert_eq!(engine.content_revision(), start, "transport is not content");
+
+    apply(&mut engine, Edit::SetTempo { bpm: 100.0 });
+    let edited = engine.content_revision();
+    assert_ne!(edited, start);
+    engine.apply(Command::Undo).unwrap();
+    assert_ne!(engine.content_revision(), edited);
+}

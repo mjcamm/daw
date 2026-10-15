@@ -1,0 +1,254 @@
+//! An open project: header and the current page.
+
+use crate::session::Session;
+use crate::text_input::{TextInput, TextInputEvent};
+use crate::theme::Theme;
+use daw_engine::{Command, Edit, LoopRange};
+use gpui::{
+    Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Subscription, Window,
+    actions, div, prelude::*, px,
+};
+use std::cell::Cell;
+use std::rc::Rc;
+
+actions!(daw, [TogglePlay, Save, Undo, Redo]);
+
+/// The key context of an open project, for its shortcuts.
+pub const KEY_CONTEXT: &str = "Workspace";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Arrange,
+    Parameters,
+    Signals,
+    Mixer,
+}
+
+impl Page {
+    pub const ALL: [Self; 4] = [Self::Arrange, Self::Parameters, Self::Signals, Self::Mixer];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Arrange => "Arrange",
+            Self::Parameters => "Parameters",
+            Self::Signals => "Signals",
+            Self::Mixer => "Mixer",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameTarget {
+    Song,
+    Node,
+}
+
+/// A name being edited in place.
+pub(crate) struct Rename {
+    pub target: RenameTarget,
+    pub input: Entity<TextInput>,
+    _subscription: Subscription,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectEvent {
+    /// Go back to the launch page.
+    Close,
+}
+
+pub struct ProjectView {
+    pub(crate) session: Session,
+    pub(crate) page: Page,
+    /// The loop region to restore when looping is switched back on.
+    pub(crate) saved_loop: Option<LoopRange>,
+    /// Where the timeline ruler was last drawn, for turning clicks into
+    /// song positions.
+    pub(crate) ruler_bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub(crate) menu_open: bool,
+    pub(crate) rename: Option<Rename>,
+    pub(crate) save_error: Option<String>,
+    window_title: String,
+    focus: FocusHandle,
+}
+
+impl EventEmitter<ProjectEvent> for ProjectView {}
+
+impl ProjectView {
+    pub fn new(session: Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus);
+        let saved_loop = session.snapshot().loop_range;
+        Self {
+            session,
+            page: Page::Arrange,
+            saved_loop,
+            ruler_bounds: Rc::default(),
+            menu_open: false,
+            rename: None,
+            save_error: None,
+            window_title: String::new(),
+            focus,
+        }
+    }
+
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    pub(crate) fn toggle_play(&mut self) {
+        let command = if self.session.snapshot().playing {
+            Command::Stop
+        } else {
+            Command::Play
+        };
+        self.session.apply(command);
+    }
+
+    pub(crate) fn toggle_loop(&mut self) {
+        let current = self.session.snapshot().loop_range;
+        if current.is_some() {
+            self.saved_loop = current;
+            self.session.apply(Command::SetLoop(None));
+        } else if let Some(range) = self.saved_loop {
+            self.session.apply(Command::SetLoop(Some(range)));
+        }
+    }
+
+    pub(crate) fn save(&mut self) {
+        self.menu_open = false;
+        self.save_error = self
+            .session
+            .save()
+            .err()
+            .map(|e| format!("Could not save: {e}"));
+    }
+
+    /// Saves any changes, then asks to go back to the launch page.
+    pub(crate) fn close(&mut self, cx: &mut Context<Self>) {
+        if self.session.is_edited() {
+            self.save();
+            if self.save_error.is_some() {
+                return;
+            }
+        }
+        cx.emit(ProjectEvent::Close);
+    }
+
+    pub(crate) fn start_rename(
+        &mut self,
+        target: RenameTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu_open = false;
+        let snapshot = self.session.snapshot();
+        let current = match target {
+            RenameTarget::Song => snapshot.song_name.clone(),
+            RenameTarget::Node => snapshot.node.name.clone(),
+        };
+        let input = cx.new(|cx| TextInput::new(&current, "Name", cx));
+        window.focus(&input.read(cx).focus_handle(cx));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            move |this, _, event: &TextInputEvent, window, cx| {
+                let name = match event {
+                    TextInputEvent::Confirm(name) => Some(name.clone()),
+                    TextInputEvent::Cancel => None,
+                };
+                this.finish_rename(name, window, cx);
+            },
+        );
+        self.rename = Some(Rename {
+            target,
+            input,
+            _subscription: subscription,
+        });
+    }
+
+    /// Ends renaming, applying `name` if given. Empty names are refused by
+    /// the engine, leaving the old name.
+    pub(crate) fn finish_rename(
+        &mut self,
+        name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let (Some(rename), Some(name)) = (self.rename.take(), name) {
+            let edit = match rename.target {
+                RenameTarget::Song => Edit::RenameSong { name },
+                RenameTarget::Node => Edit::RenameNode { name },
+            };
+            self.session.apply(Command::Edit(edit));
+        }
+        self.rename = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    /// The text of the field being edited for `target`, if any.
+    pub(crate) fn rename_input(&self, target: RenameTarget) -> Option<Entity<TextInput>> {
+        self.rename
+            .as_ref()
+            .filter(|r| r.target == target)
+            .map(|r| r.input.clone())
+    }
+}
+
+impl Render for ProjectView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Redraw every frame: the playhead and meters move continuously.
+        window.request_animation_frame();
+        self.session.tick();
+        let title = format!("{} — DAW", self.session.snapshot().song_name);
+        if title != self.window_title {
+            window.set_window_title(&title);
+            self.window_title = title;
+        }
+        let theme = Theme::get(cx);
+
+        let page = match self.page {
+            Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),
+            other => placeholder(&theme, other).into_any_element(),
+        };
+        let banner = |text: String| {
+            div()
+                .px(px(18.))
+                .py(px(6.))
+                .bg(theme.warning)
+                .text_color(theme.on_warning)
+                .child(text)
+        };
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &TogglePlay, _, _| this.toggle_play()))
+            .on_action(cx.listener(|this, _: &Save, _, _| this.save()))
+            .on_action(cx.listener(|this, _: &Undo, _, _| this.session.apply(Command::Undo)))
+            .on_action(cx.listener(|this, _: &Redo, _, _| this.session.apply(Command::Redo)))
+            .child(self.render_header(&theme, cx))
+            .children(
+                self.session
+                    .audio_error
+                    .clone()
+                    .map(|e| banner(format!("No audio output: {e}"))),
+            )
+            .children(self.save_error.clone().map(banner))
+            .child(page)
+    }
+}
+
+fn placeholder(theme: &Theme, page: Page) -> impl IntoElement {
+    div()
+        .flex_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(theme.text_tertiary)
+        .text_size(px(13.))
+        .child(format!("{} page: not built yet", page.label()))
+}

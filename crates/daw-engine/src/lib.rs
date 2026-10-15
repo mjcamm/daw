@@ -65,6 +65,9 @@ pub struct Engine {
     project: Project,
     history: History,
     revision: u64,
+    /// Like `revision`, but only for changes that are saved in the project
+    /// file (not play, stop or locate).
+    content_revision: u64,
     playing: bool,
     loop_range: Option<LoopRange>,
     outbox: VecDeque<AudioMsg>,
@@ -99,6 +102,7 @@ impl Engine {
             project,
             history: History::default(),
             revision: 0,
+            content_revision: 0,
             playing: false,
             loop_range: None,
             outbox: VecDeque::new(),
@@ -139,18 +143,22 @@ impl Engine {
                     check_loop(range)?;
                 }
                 self.set_loop(range);
+                self.content_revision += 1;
             }
             Command::Edit(edit) => {
                 self.history.edit(&mut self.project, edit)?;
                 self.publish_state();
+                self.content_revision += 1;
             }
             Command::Undo => {
                 self.history.undo(&mut self.project)?;
                 self.publish_state();
+                self.content_revision += 1;
             }
             Command::Redo => {
                 self.history.redo(&mut self.project)?;
                 self.publish_state();
+                self.content_revision += 1;
             }
         }
         self.revision += 1;
@@ -212,6 +220,13 @@ impl Engine {
         self.revision
     }
 
+    /// Changes whenever saved content changes: edits, undo, redo, the loop
+    /// region, or loading. Compare with a stored value to know whether the
+    /// project has unsaved changes.
+    pub fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+
     /// Transport position in beats, as last reported by the audio side.
     /// Cheap enough to call every UI frame.
     pub fn position_beats(&self) -> f64 {
@@ -256,6 +271,7 @@ impl Engine {
         self.set_loop(loop_range);
         self.publish_state();
         self.revision += 1;
+        self.content_revision += 1;
         self.maintain();
         Ok(())
     }

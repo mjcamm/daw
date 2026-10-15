@@ -17,6 +17,7 @@ daw-engine.workspace = true
 daw-host.workspace = true
 daw-rt.workspace = true
 gpui = "0.2.2"
+unicode-segmentation.workspace = true
 
 [lints]
 workspace = true

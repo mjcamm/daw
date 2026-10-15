@@ -4,25 +4,43 @@ mod app;
 mod arrange;
 mod header;
 mod icons;
+mod launch;
 mod layout;
+mod project;
 mod session;
+mod text_input;
 mod theme;
 
-use app::{AppView, TogglePlay};
+use app::AppView;
 use gpui::{
     App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
     px, size,
 };
+use project::{Redo, Save, TogglePlay, Undo};
 use theme::Theme;
 
 #[global_allocator]
 static ALLOCATOR: daw_rt::GuardedAllocator = daw_rt::GuardedAllocator;
 
+/// App shortcuts. `secondary` is Cmd on macOS and Ctrl elsewhere. Shortcuts
+/// that would steal typing are off while a text field has focus.
+fn key_bindings() -> Vec<KeyBinding> {
+    let project = Some(project::KEY_CONTEXT);
+    let not_typing = Some("Workspace && !TextInput");
+    vec![
+        KeyBinding::new("space", TogglePlay, not_typing),
+        KeyBinding::new("secondary-s", Save, project),
+        KeyBinding::new("secondary-z", Undo, not_typing),
+        KeyBinding::new("secondary-shift-z", Redo, not_typing),
+    ]
+}
+
 fn main() {
     Application::new()
         .with_assets(icons::Assets)
         .run(|cx: &mut App| {
-            cx.bind_keys([KeyBinding::new("space", TogglePlay, None)]);
+            cx.bind_keys(text_input::key_bindings());
+            cx.bind_keys(key_bindings());
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

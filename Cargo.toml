@@ -24,6 +24,7 @@ dirs = "7.0.0"
 hound = "3.5.1"
 rtrb = "0.4.0"
 serde = { version = "1.0.229", features = ["derive"] }
+unicode-segmentation = "1.13.2"
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 
 [workspace.lints.rust]
