@@ -14,20 +14,28 @@
 mod audio;
 mod history;
 mod project;
+mod schedule;
+mod transport;
 
-pub use audio::{AudioProcessor, RenderState};
-pub use daw_protocol::{Command, CommandError, Edit, Snapshot};
-pub use project::{DEFAULT_TEMPO_BPM, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Project};
+pub use audio::AudioProcessor;
+pub use daw_protocol::{
+    ClipId, ClipSummary, Command, CommandError, Edit, InvalidClip, LoopRange, MidiClip, MidiNote,
+    Snapshot, TICKS_PER_BEAT, Ticks,
+};
+pub use project::{DEFAULT_TEMPO_BPM, MAX_TEMPO_BPM, MAX_VOLUME_DB, MIN_TEMPO_BPM, Node, Project};
+pub use schedule::{RenderState, ScheduledNote};
 
 use audio::{AudioMsg, SharedStatus};
 use history::History;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 /// Capacity of each control/audio queue. Generous, because a full queue only
 /// delays delivery until the next [`Engine::maintain`].
 const QUEUE_CAPACITY: usize = 1024;
+
+/// Shortest allowed loop: a 64th note.
+pub const MIN_LOOP_LENGTH: Ticks = Ticks(TICKS_PER_BEAT / 16);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineConfig {
@@ -51,6 +59,7 @@ pub struct Engine {
     history: History,
     revision: u64,
     playing: bool,
+    loop_range: Option<LoopRange>,
     outbox: VecDeque<AudioMsg>,
     to_audio: rtrb::Producer<AudioMsg>,
     garbage: rtrb::Consumer<Box<RenderState>>,
@@ -62,18 +71,18 @@ impl Engine {
     ///
     /// # Panics
     ///
-    /// If `config.channels` is zero.
+    /// If `config.channels` or `config.sample_rate` is zero.
     pub fn new(config: EngineConfig) -> (Self, AudioProcessor) {
         assert!(config.channels > 0, "engine needs at least one channel");
+        assert!(config.sample_rate > 0, "engine needs a sample rate");
         let project = Project::default();
         let (to_audio, from_control) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
-        // Every message carries at most one state, so the audio side can never
-        // hold more retired states than this while the control side keeps up.
         let (garbage_tx, garbage) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let status = Arc::new(SharedStatus::default());
         let processor = AudioProcessor::new(
+            config.sample_rate,
             usize::from(config.channels),
-            Box::new(render_state(&project)),
+            Box::new(RenderState::compile(&project)),
             from_control,
             garbage_tx,
             Arc::clone(&status),
@@ -84,6 +93,7 @@ impl Engine {
             history: History::default(),
             revision: 0,
             playing: false,
+            loop_range: None,
             outbox: VecDeque::new(),
             to_audio,
             garbage,
@@ -103,8 +113,33 @@ impl Engine {
     /// Applies a command. A rejected command changes nothing.
     pub fn apply(&mut self, command: Command) -> Result<(), CommandError> {
         match command {
-            Command::Play => self.set_playing(true),
-            Command::Stop => self.set_playing(false),
+            Command::Play => {
+                self.playing = true;
+                self.outbox.push_back(AudioMsg::SetPlaying(true));
+            }
+            Command::Stop => {
+                self.playing = false;
+                self.outbox.push_back(AudioMsg::SetPlaying(false));
+            }
+            Command::Locate { position } => {
+                if position < Ticks::ZERO {
+                    return Err(CommandError::NegativePosition { position });
+                }
+                self.outbox.push_back(AudioMsg::Locate(position.as_beats()));
+            }
+            Command::SetLoop(range) => {
+                if let Some(range) = range
+                    && (range.start < Ticks::ZERO || range.end - range.start < MIN_LOOP_LENGTH)
+                {
+                    return Err(CommandError::InvalidLoop {
+                        range,
+                        min_length: MIN_LOOP_LENGTH,
+                    });
+                }
+                self.loop_range = range;
+                let beats = range.map(|r| (r.start.as_beats(), r.end.as_beats()));
+                self.outbox.push_back(AudioMsg::SetLoop(beats));
+            }
             Command::Edit(edit) => {
                 self.history.edit(&mut self.project, edit)?;
                 self.publish_state();
@@ -124,11 +159,25 @@ impl Engine {
     }
 
     pub fn snapshot(&self) -> Snapshot {
+        let node = &self.project.node;
         Snapshot {
             revision: self.revision,
             tempo_bpm: self.project.tempo_bpm,
             playing: self.playing,
-            position_frames: self.status.position_frames.load(Ordering::Relaxed),
+            position_beats: self.status.position_beats(),
+            loop_range: self.loop_range,
+            volume_db: node.volume_db,
+            pan: node.pan,
+            clips: node
+                .clips
+                .iter()
+                .map(|(&id, clip)| ClipSummary {
+                    id,
+                    start: clip.start,
+                    length: clip.length,
+                    note_count: clip.notes.len(),
+                })
+                .collect(),
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
         }
@@ -148,23 +197,12 @@ impl Engine {
         }
     }
 
-    fn set_playing(&mut self, playing: bool) {
-        self.playing = playing;
-        self.outbox.push_back(AudioMsg::SetPlaying(playing));
-    }
-
     fn publish_state(&mut self) {
         // Only the newest state matters; drop any that were never delivered.
         self.outbox
             .retain(|msg| !matches!(msg, AudioMsg::SwapState(_)));
-        let state = Box::new(render_state(&self.project));
+        let state = Box::new(RenderState::compile(&self.project));
         self.outbox.push_back(AudioMsg::SwapState(state));
-    }
-}
-
-fn render_state(project: &Project) -> RenderState {
-    RenderState {
-        tempo_bpm: project.tempo_bpm,
     }
 }
 

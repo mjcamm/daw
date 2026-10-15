@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+daw-dsp.workspace = true
 daw-protocol.workspace = true
 daw-rt.workspace = true
 rtrb.workspace = true

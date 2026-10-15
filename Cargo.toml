@@ -17,6 +17,7 @@ daw-protocol = { path = "crates/daw-protocol" }
 daw-rt = { path = "crates/daw-rt" }
 daw-testkit = { path = "crates/daw-testkit" }
 
+cpal = "0.18.2"
 hound = "3.5.1"
 rtrb = "0.4.0"
 

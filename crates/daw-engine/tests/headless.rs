@@ -24,17 +24,22 @@ fn empty_engine_renders_silence() {
 fn transport_position_follows_play_and_stop() {
     let (mut engine, mut processor) = engine();
     render(&mut engine, &mut processor, 100, &[64]);
-    assert_eq!(engine.snapshot().position_frames, 0, "stopped engine moved");
+    assert_eq!(
+        engine.snapshot().position_beats,
+        0.0,
+        "stopped engine moved"
+    );
 
     engine.apply(Command::Play).unwrap();
-    render(&mut engine, &mut processor, 500, VARIED_BLOCKS);
-    assert_eq!(engine.snapshot().position_frames, 500);
+    render(&mut engine, &mut processor, 12_000, VARIED_BLOCKS);
+    // 120 BPM at 48 kHz is 24,000 frames per beat.
+    assert_eq!(engine.snapshot().position_beats, 0.5);
 
     engine.apply(Command::Stop).unwrap();
-    render(&mut engine, &mut processor, 500, VARIED_BLOCKS);
+    render(&mut engine, &mut processor, 12_000, VARIED_BLOCKS);
     let snapshot = engine.snapshot();
     assert!(!snapshot.playing);
-    assert_eq!(snapshot.position_frames, 500);
+    assert_eq!(snapshot.position_beats, 0.5);
 }
 
 #[test]
@@ -103,7 +108,8 @@ fn edits_queued_without_rendering_are_delivered_later() {
     for _ in 0..10 {
         render(&mut engine, &mut processor, 10, &[10]);
     }
-    let before = engine.snapshot().position_frames;
-    render(&mut engine, &mut processor, 100, &[100]);
-    assert_eq!(engine.snapshot().position_frames, before + 100);
+    let before = engine.snapshot().position_beats;
+    render(&mut engine, &mut processor, 2_400, &[2_400]);
+    let moved = engine.snapshot().position_beats - before;
+    assert!((moved - 0.1).abs() < 1e-12, "{moved}");
 }

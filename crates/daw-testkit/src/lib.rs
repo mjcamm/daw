@@ -119,7 +119,7 @@ mod tests {
         let rendered = render(&mut engine, &mut processor, 1000, VARIED_BLOCKS);
         assert_eq!(rendered.frames(), 1000);
         assert_eq!(rendered.channels, 2);
-        assert_eq!(engine.snapshot().position_frames, 1000);
+        assert_eq!(engine.snapshot().position_beats, 1000.0 / 24_000.0);
     }
 
     #[test]

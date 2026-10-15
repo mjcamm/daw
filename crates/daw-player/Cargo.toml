@@ -1,0 +1,19 @@
+[package]
+name = "daw-player"
+description = "Command-line player: hear the engine live, or render it to WAV."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal.workspace = true
+daw-engine.workspace = true
+daw-rt.workspace = true
+hound.workspace = true
+rtrb.workspace = true
+
+[lints]
+workspace = true
