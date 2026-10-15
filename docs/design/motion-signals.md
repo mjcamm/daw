@@ -1,6 +1,6 @@
 # Motion Signals (Phase 4 design)
 
-*Status: **engine side built and tested** (headless, test-driven) while the user was away: protocol types, edits, evaluation, snapshot "Used by", file version 2. Proven by `crates/daw-engine/tests/signals.rs`. The Signals page and the linking UI on the Parameters page are **not** started: their layout gets agreed with the user first. Decisions marked **(confirm)** were made without the user and should be checked.*
+*Status: engine built and tested (`crates/daw-engine/tests/signals.rs`); UI not started. Decisions marked **(confirm)** await the user.*
 
 ## What a signal is
 
