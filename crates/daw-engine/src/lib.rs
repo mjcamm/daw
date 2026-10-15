@@ -253,6 +253,13 @@ impl Engine {
         }
     }
 
+    /// Forgets undo history, so the current state becomes the starting
+    /// point. Used after setting up a new project.
+    pub fn clear_history(&mut self) {
+        self.history = History::default();
+        self.revision += 1;
+    }
+
     /// The project as a file, ready to save.
     pub fn to_file(&self) -> ProjectFile {
         ProjectFile::new(&self.project, self.loop_range)

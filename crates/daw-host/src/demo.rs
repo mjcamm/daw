@@ -32,14 +32,21 @@ const PROGRESSION: [(u8, [u8; 4]); BARS as usize] = [
 /// Order the chord tones are played in across a beat pair: up then down.
 const ARP_ORDER: [usize; 8] = [0, 1, 2, 3, 2, 1, 0, 1];
 
+/// The full demo: the starter notes, shaped by layers.
 pub fn load(engine: &mut Engine) -> Result<(), CommandError> {
     engine.apply(Command::Edit(Edit::RenameSong {
         name: "Demo".to_owned(),
     }))?;
+    add_starter_notes(engine)?;
+    add_layers(engine)
+}
+
+/// What every new song starts with: the bass and arpeggio clips at the
+/// demo tempo, looping, with no effects or layers yet.
+pub fn add_starter_notes(engine: &mut Engine) -> Result<(), CommandError> {
     engine.apply(Command::Edit(Edit::SetTempo { bpm: TEMPO_BPM }))?;
     add(engine, 1, bass())?;
     add(engine, 2, arpeggio())?;
-    add_layers(engine)?;
     engine.apply(Command::SetLoop(Some(LoopRange {
         start: Ticks::ZERO,
         end: Ticks::from_bars(BARS),

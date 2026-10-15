@@ -156,3 +156,13 @@ fn only_saved_content_counts_as_a_change() {
     engine.apply(Command::Undo).unwrap();
     assert_ne!(engine.content_revision(), edited);
 }
+
+#[test]
+fn clearing_history_keeps_the_project() {
+    let (mut engine, _processor) = busy_engine();
+    assert!(engine.snapshot().can_undo);
+    engine.clear_history();
+    let snapshot = engine.snapshot();
+    assert!(!snapshot.can_undo && !snapshot.can_redo);
+    assert_eq!(snapshot.song_name, "Saved Song");
+}

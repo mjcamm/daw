@@ -5,7 +5,7 @@
 
 use crate::layout::METER_FALL_PER_FRAME;
 use daw_engine::{Command, Edit, Engine, EngineConfig, Meter, Snapshot};
-use daw_host::{AudioOutput, OutputDevice, projects};
+use daw_host::{AudioOutput, OutputDevice, demo, projects};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -30,14 +30,19 @@ pub struct Session {
 }
 
 impl Session {
-    /// Creates a new, empty project called `name` in `folder` and saves it.
+    /// Creates a new project called `name` in `folder`, starting with the
+    /// demo notes, and saves it.
     pub fn create(folder: PathBuf, name: &str) -> Result<Self, String> {
         let mut session = Self::boot(folder, |engine| {
             engine
                 .apply(Command::Edit(Edit::RenameSong {
                     name: name.to_owned(),
                 }))
-                .map_err(|e| e.to_string())
+                .and_then(|()| demo::add_starter_notes(engine))
+                .map_err(|e| e.to_string())?;
+            // The starting content is not something to undo.
+            engine.clear_history();
+            Ok(())
         })?;
         session.save().map_err(|e| format!("could not save: {e}"))?;
         Ok(session)
