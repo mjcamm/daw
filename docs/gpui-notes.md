@@ -109,6 +109,7 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 
 - Launch with `Start-Process target\debug\daw.exe`; quit with `type "^q"` so it saves and frees the exe for the next build.
 - Test in a throwaway project, not the user's own songs. Remember that every `^z` really undoes.
+- To look mid-drag: `down x y`, one or more `move x y`, `shot`, then `up x y`.
 
 ## Gotchas
 
@@ -133,6 +134,7 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 
 ## Free-form drags (moving, resizing, scrubbing)
 
+- **Overlapping elements both get the press.** Mouse handlers fire on every hovered hitbox under the pointer, not just the top one, unless an element `.occlude()`s what is behind it. A resize edge hanging 2 px over a scrollbar started a scrollbar drag too, which won. Keep handles inside their own element and `.occlude()` them.
 - `.on_mouse_move` only fires while the element is hovered, so it loses a drag once the pointer leaves. To follow the mouse anywhere, register window-level listeners while dragging, from a `canvas` paint closure: `window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| ...)` (and `MouseUpEvent` to finish). They last one frame, so register them on every frame while the drag is active (fine here: the view redraws every frame). They see both phases; act on one (`DispatchPhase::Capture`). Reach the view with a `cx.entity().downgrade()` captured from `render`, then `weak.update(cx, |this, cx| ...)`.
 - `MouseDownEvent` has `click_count` (double-click without `on_click`) and `modifiers` (`.alt`, `.shift`, `.platform`).
 - Cursors: `.cursor_ew_resize()`, `.cursor_grab()`, `.cursor_crosshair()` and so on, from `gpui-macros` `styles.rs`. An invisible absolutely-positioned child with a cursor style gives a zone its own cursor without blocking the parent's mouse handlers.

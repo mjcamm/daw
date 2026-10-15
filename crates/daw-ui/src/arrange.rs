@@ -2,12 +2,17 @@
 //! framed by scrollbars and zoom sliders (see `frame.rs`).
 
 use crate::frame::{Timeline, grid_lines};
+use crate::icons::{Icon, icon};
 use crate::layout::{
     BEATS_PER_BAR, meter_height, note_rows, ruler_label_step, timeline_bars, x_to_snapped_position,
 };
+use crate::menu::{self, OpenMenu};
+use crate::parameters::small_button;
 use crate::project::{ProjectView, RenameTarget};
 use crate::scroll;
+use crate::signals::{node_has_notes, published_signals};
 use crate::theme::{ContentColor, Theme};
+use crate::tooltip;
 use crate::zoom::Zoom;
 use daw_engine::{ClipId, Command, Edit, MidiClip};
 use gpui::{
@@ -138,6 +143,7 @@ impl ProjectView {
             }),
         );
 
+        let publish = self.publish_button(theme, cx);
         let node_name: gpui::AnyElement = match self.rename_input(RenameTarget::Node) {
             Some(input) => div().text_size(px(13.)).child(input).into_any_element(),
             None => div()
@@ -188,6 +194,7 @@ impl ProjectView {
                     .child(meter_bar(meter.left, meter_size, theme))
                     .child(meter_bar(meter.right, meter_size, theme)),
             )
+            .child(publish)
             .child(mute)
             .child(solo);
 
@@ -207,6 +214,108 @@ impl ProjectView {
                     .flex_1()
                     .on_click(cx.listener(|this, _, _, _| this.node_selected = false)),
             )
+    }
+
+    /// The node's signal button: publish as a signal, and the signals it
+    /// publishes, each with a go-to icon. Tinted in the first published
+    /// signal's colour once it publishes any.
+    fn publish_button(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let snapshot = self.session.snapshot();
+        let color = published_signals(snapshot)
+            .next()
+            .map_or(theme.text_secondary, |s| theme.content(s.color).detail);
+        let open = self.open_menu == Some(OpenMenu::NodeSignals);
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(
+                small_button("node-signals", theme)
+                    .w(px(20.))
+                    .h(px(18.))
+                    .when(open, |d| d.bg(theme.control))
+                    .child(icon(Icon::Signal, color, 13.))
+                    // Hidden while the menu is open, so it never covers it.
+                    .when(!open, |d| d.tooltip(tooltip::text("Publish as signal")))
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.toggle_menu(OpenMenu::NodeSignals);
+                    })),
+            )
+            .when(open, |d| d.child(self.publish_menu(theme, cx)))
+    }
+
+    /// Publishing stays on Arrange with the menu open, so the new signal
+    /// appears in it with its go-to icon.
+    fn publish_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let snapshot = self.session.snapshot();
+        let unavailable = |id: &'static str, label: &'static str, hint: &'static str| {
+            div()
+                .id(id)
+                .flex()
+                .justify_between()
+                .gap(px(24.))
+                .px(px(10.))
+                .py(px(5.))
+                .text_color(theme.text_tertiary)
+                .child(label)
+                .child(hint)
+        };
+        let notes = if node_has_notes(snapshot) {
+            menu::item(theme, "publish-notes", "Publish notes as motion signal", "")
+                .on_click(cx.listener(|this, _, _, _| this.publish_notes()))
+        } else {
+            unavailable(
+                "publish-notes",
+                "Publish notes as motion signal",
+                "no notes",
+            )
+        };
+        let hover = theme.hover;
+        let published: Vec<_> = published_signals(snapshot)
+            .map(|signal| {
+                let id = signal.id;
+                div()
+                    .id(("published-signal", id.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .py(px(5.))
+                    .rounded(px(5.))
+                    .hover(move |s| s.bg(hover))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .rounded(px(4.))
+                            .bg(theme.content(signal.color).detail),
+                    )
+                    .child(div().flex_1().child(signal.name.clone()))
+                    .child(icon(Icon::GoTo, theme.text_secondary, 12.))
+                    .tooltip(tooltip::text("Go to this signal"))
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.open_menu = None;
+                        this.go_to_signal(id);
+                    }))
+            })
+            .collect();
+        menu::float(
+            menu::panel(theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
+                .child(notes)
+                .child(unavailable(
+                    "publish-sound-motion",
+                    "Publish sound as motion signal",
+                    "coming later",
+                ))
+                .child(unavailable(
+                    "publish-sound-audio",
+                    "Publish sound as audio signal",
+                    "coming later",
+                ))
+                .when(!published.is_empty(), |d| {
+                    d.child(menu::separator(theme)).children(published)
+                }),
+        )
     }
 
     /// The lanes: sideways-scrolling, as wide as the song.

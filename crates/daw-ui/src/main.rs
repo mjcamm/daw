@@ -6,6 +6,7 @@ mod block_edit;
 mod frame;
 mod header;
 mod icons;
+mod inspector;
 mod launch;
 mod layout;
 mod menu;

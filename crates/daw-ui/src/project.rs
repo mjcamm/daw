@@ -101,6 +101,16 @@ pub struct ProjectView {
     /// A layer just jumped to from elsewhere, highlighted briefly so it is
     /// easy to spot.
     pub(crate) highlight: Option<(LayerId, std::time::Instant)>,
+    /// The signal selected on the Signals page; the inspector shows it.
+    pub(crate) selected_signal: Option<SignalId>,
+    /// Whether the inspector is open, and how wide. UI state, not saved.
+    pub(crate) inspector_open: bool,
+    pub(crate) inspector_width: f32,
+    /// The inspector's edge being dragged to resize it.
+    pub(crate) inspector_resize: Option<crate::inspector::ResizeDrag>,
+    /// A notes signal setting being dragged in the inspector; one edit on
+    /// release.
+    pub(crate) notes_drag: Option<crate::inspector::NotesDrag>,
     /// A signal just jumped to from elsewhere, highlighted briefly.
     pub(crate) signal_highlight: Option<(SignalId, std::time::Instant)>,
     /// Every signal compiled, for drawing what listening layers do; kept
@@ -145,6 +155,11 @@ impl ProjectView {
             signals_view: TimelineView::new(crate::signals::DEFAULT_ZOOM),
             highlight: None,
             signal_highlight: None,
+            selected_signal: None,
+            inspector_open: false,
+            inspector_width: crate::inspector::DEFAULT_WIDTH,
+            inspector_resize: None,
+            notes_drag: None,
             signal_cache: std::cell::RefCell::default(),
             layer_menu: crate::parameters::LayerMenu::Kind,
             pending_param: None,
@@ -330,7 +345,7 @@ impl Render for ProjectView {
                     .map(|e| banner(format!("No audio output: {e}"))),
             )
             .children(self.save_error.clone().map(banner))
-            .child(page)
+            .child(self.with_inspector(page, &theme, cx))
     }
 }
 
@@ -363,6 +378,8 @@ impl ProjectView {
             || self.base_drag.is_some()
             || self.mix_drag.is_some()
             || self.frame_drag.is_some()
+            || self.inspector_resize.is_some()
+            || self.notes_drag.is_some()
     }
 
     /// While something is being dragged, follows the mouse anywhere in the

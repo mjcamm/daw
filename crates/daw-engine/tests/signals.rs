@@ -47,7 +47,8 @@ fn kick_envelope(decay: f64) -> NotesSource {
         decay: beats(decay),
         sustain: 0.0,
         release: Ticks::ZERO,
-        velocity: 0.0,
+        velocity_min: 1.0,
+        velocity_max: 1.0,
     }
 }
 

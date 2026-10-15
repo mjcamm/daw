@@ -59,11 +59,11 @@ Every phase follows the foundation principles: test-driven, engine-owned state, 
 
 - Motion signals in song time, with repetition via linked copies.
 - Sources: drawn, and from MIDI notes.
-- Blocks linked to signals, with per-use range mapping.
+- Layers listening to signals, their blocks acting as windows (depth and invert per block, no range mapping; revised in `docs/design/motion-signals.md`).
 - "Used by" tracking.
-- The Signals view, and linking blocks to signals in the Parameters view.
+- The Signals view, listening layers in the Parameters view, publishing from Arrange, and the inspector for signal settings.
 
-**Done when:** a MIDI kick pattern publishes a ducking signal that is linked into several parameters and stays in sync everywhere, all done in the UI.
+**Done when:** a MIDI kick pattern publishes a ducking signal that several parameters listen to and stays in sync everywhere, all done in the UI.
 
 > **Milestone gate:** does shaping movement feel great? Review and iterate on phases 2 to 4 before building outward.
 

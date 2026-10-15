@@ -206,14 +206,16 @@ pub struct NotesSource {
     /// Level held while the note is held, as a fraction of the peak, `0..=1`.
     pub sustain: f64,
     pub release: Ticks,
-    /// How much velocity scales the peak, `0..=1`. At 0 every hit reaches
-    /// the top; at 1 the peak is `velocity / 127`.
-    pub velocity: f64,
+    /// A hit's peak is its velocity (`velocity / 127`) clamped to
+    /// `velocity_min..=velocity_max`, both within `0..=1`. With both at 1
+    /// every hit reaches the top.
+    pub velocity_min: f64,
+    pub velocity_max: f64,
 }
 
 impl NotesSource {
-    /// Every note, as a short, snappy hit: straight up, then back down over
-    /// half a beat.
+    /// Every note, as a short, snappy hit: straight up as high as its
+    /// velocity, then back down over half a beat.
     pub fn new() -> Self {
         Self {
             lowest: 0,
@@ -222,7 +224,8 @@ impl NotesSource {
             decay: Ticks(480),
             sustain: 0.0,
             release: Ticks(240),
-            velocity: 0.0,
+            velocity_min: 0.0,
+            velocity_max: 1.0,
         }
     }
 }

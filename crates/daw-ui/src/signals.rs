@@ -57,6 +57,29 @@ fn next_signal_color(snapshot: &Snapshot) -> u8 {
         .unwrap_or((snapshot.signals.len() % usize::from(PALETTE_SIZE)) as u8)
 }
 
+/// "<node> notes", numbered if that name is taken.
+fn notes_signal_name(snapshot: &Snapshot) -> String {
+    let base = format!("{} notes", snapshot.node.name);
+    std::iter::once(base.clone())
+        .chain((2..).map(|n| format!("{base} {n}")))
+        .find(|name| !snapshot.signals.iter().any(|s| &s.name == name))
+        .unwrap_or(base)
+}
+
+/// The signals the node publishes. Until the node tree there is one node,
+/// so these are all the notes signals.
+pub(crate) fn published_signals(snapshot: &Snapshot) -> impl Iterator<Item = &SignalSnapshot> {
+    snapshot
+        .signals
+        .iter()
+        .filter(|s| matches!(s.source, SignalSource::Notes(_)))
+}
+
+/// Whether the node has any notes to publish.
+pub(crate) fn node_has_notes(snapshot: &Snapshot) -> bool {
+    snapshot.clips.iter().any(|(_, c)| !c.notes.is_empty())
+}
+
 /// The chip text for how many layers listen to a signal.
 fn uses_label(count: usize) -> String {
     match count {
@@ -128,24 +151,54 @@ fn compile_all(snapshot: &Snapshot) -> Signals {
 
 impl ProjectView {
     /// Every signal compiled, recompiled only when the project changes.
+    /// While a notes signal's settings are being dragged, that signal is
+    /// compiled with the preview, so every lane and layer shows the change.
     pub(crate) fn compiled_signals(&self) -> Rc<Signals> {
         let snapshot = self.session.snapshot();
-        let mut cache = self.signal_cache.borrow_mut();
-        match &*cache {
-            Some((revision, signals)) if *revision == snapshot.revision => signals.clone(),
-            _ => {
-                let signals = Rc::new(compile_all(snapshot));
-                *cache = Some((snapshot.revision, signals.clone()));
-                signals
+        let signals = {
+            let mut cache = self.signal_cache.borrow_mut();
+            match &*cache {
+                Some((revision, signals)) if *revision == snapshot.revision => signals.clone(),
+                _ => {
+                    let signals = Rc::new(compile_all(snapshot));
+                    *cache = Some((snapshot.revision, signals.clone()));
+                    signals
+                }
             }
-        }
+        };
+        let Some(drag) = &self.notes_drag else {
+            return signals;
+        };
+        let Some(signal) = snapshot.signals.iter().find(|s| s.id == drag.signal) else {
+            return signals;
+        };
+        let preview = Signal {
+            name: signal.name.clone(),
+            color: signal.color,
+            source: SignalSource::Notes(drag.preview.clone()),
+        };
+        let mut signals = (*signals).clone();
+        signals.insert(
+            drag.signal,
+            CompiledSignal::compile(&preview, signal_notes(snapshot)),
+        );
+        Rc::new(signals)
     }
 
-    /// Shows a signal on the Signals page: scrolled into view and
-    /// highlighted for a moment.
+    /// Shows a signal on the Signals page: scrolled into view, highlighted
+    /// for a moment and selected, with the inspector open if it has
+    /// settings there.
     pub(crate) fn go_to_signal(&mut self, id: SignalId) {
         self.page = crate::project::Page::Signals;
         let snapshot = self.session.snapshot();
+        self.selected_signal = Some(id);
+        if snapshot
+            .signals
+            .iter()
+            .any(|s| s.id == id && matches!(s.source, SignalSource::Notes(_)))
+        {
+            self.inspector_open = true;
+        }
         let row = self.signals_view.zoom.row_height;
         let index = snapshot
             .signals
@@ -206,6 +259,15 @@ impl ProjectView {
                     .text_size(px(11.))
                     .text_color(theme.text_tertiary)
                     .child("Nodes can publish their notes as signals from the Arrange page."),
+            )
+            .child(
+                // Clicking the empty space below the signals clears the
+                // selection.
+                div()
+                    .id("signal-list-space")
+                    .flex_1()
+                    .min_h(px(24.))
+                    .on_click(cx.listener(|this, _, _, _| this.selected_signal = None)),
             );
 
         let mut top = 0.;
@@ -348,7 +410,12 @@ impl ProjectView {
     }
 
     /// A signal in the list: colour, name and source, uses, delete.
-    fn signal_row(&self, signal: &SignalSnapshot, theme: &Theme, cx: &mut Context<Self>) -> Div {
+    fn signal_row(
+        &self,
+        signal: &SignalSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let id = signal.id;
         let colors = theme.content(signal.color);
         let row_height = self.signals_view.zoom.row_height;
@@ -358,6 +425,9 @@ impl ProjectView {
             .is_some_and(|(s, at)| s == id && at.elapsed() < crate::parameters::HIGHLIGHT_TIME);
         let mut highlight = theme.accent;
         highlight.a = 0.18;
+        let mut selected_bg = theme.accent;
+        selected_bg.a = 0.16;
+        let selected = self.selected_signal == Some(id);
 
         let color_open = self.open_menu == Some(OpenMenu::SignalColor(id));
         let swatch = div()
@@ -453,9 +523,12 @@ impl ProjectView {
             }));
 
         div()
+            .id(("signal-row", id.0))
             .h(px(row_height))
             .flex_none()
+            .when(selected, |d| d.bg(selected_bg))
             .when(highlighted, |d| d.bg(highlight))
+            .on_click(cx.listener(move |this, _, _, _| this.selected_signal = Some(id)))
             .flex()
             .items_center()
             .gap(px(8.))
@@ -574,8 +647,24 @@ impl ProjectView {
         self.session.apply(Command::Edit(edit));
     }
 
+    /// Publishes the node's notes as a new motion signal: every note, a
+    /// short snappy hit.
+    pub(crate) fn publish_notes(&mut self) {
+        let snapshot = self.session.snapshot();
+        let edit = Edit::AddSignal {
+            id: next_signal_id(snapshot),
+            signal: Signal {
+                name: notes_signal_name(snapshot),
+                color: next_signal_color(snapshot),
+                source: SignalSource::Notes(daw_engine::NotesSource::new()),
+            },
+            listeners: Vec::new(),
+        };
+        self.session.apply(Command::Edit(edit));
+    }
+
     /// Shows the node on the Arrange page, selected.
-    fn go_to_node(&mut self) {
+    pub(crate) fn go_to_node(&mut self) {
         self.page = crate::project::Page::Arrange;
         self.node_selected = true;
     }
@@ -665,6 +754,25 @@ mod tests {
             .map(|c| add(u64::from(c) + 1, drawn("S", c)))
             .collect();
         assert_eq!(next_signal_color(&snapshot_with(all)), 0, "round again");
+    }
+
+    #[test]
+    fn published_notes_signals_are_named_after_the_node() {
+        let snapshot = snapshot_with(vec![]);
+        let node = snapshot.node.name.clone();
+        assert_eq!(notes_signal_name(&snapshot), format!("{node} notes"));
+        let notes = |name: String| Signal {
+            name,
+            color: 0,
+            source: SignalSource::Notes(NotesSource::new()),
+        };
+        let snapshot = snapshot_with(vec![
+            add(1, notes(format!("{node} notes"))),
+            add(2, drawn("Sweep", 1)),
+        ]);
+        assert_eq!(notes_signal_name(&snapshot), format!("{node} notes 2"));
+        let published: Vec<SignalId> = published_signals(&snapshot).map(|s| s.id).collect();
+        assert_eq!(published, [SignalId(1)], "drawn signals are not the node's");
     }
 
     #[test]

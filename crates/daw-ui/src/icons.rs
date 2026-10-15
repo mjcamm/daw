@@ -26,10 +26,12 @@ pub enum Icon {
     Inbound,
     ChevronLeft,
     ChevronRight,
+    Signal,
+    Panel,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 17] = [
+const ICONS: [(Icon, &str, &[u8]); 19] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -114,6 +116,16 @@ const ICONS: [(Icon, &str, &[u8]); 17] = [
         Icon::ChevronRight,
         "icons/chevron-right.svg",
         include_bytes!("../assets/icons/chevron-right.svg"),
+    ),
+    (
+        Icon::Signal,
+        "icons/radio.svg",
+        include_bytes!("../assets/icons/radio.svg"),
+    ),
+    (
+        Icon::Panel,
+        "icons/panel-right.svg",
+        include_bytes!("../assets/icons/panel-right.svg"),
     ),
 ];
 

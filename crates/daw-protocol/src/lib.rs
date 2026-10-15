@@ -429,8 +429,10 @@ pub enum InvalidBlock {
 pub enum InvalidSignal {
     /// Attack, decay and release cannot be negative.
     EnvelopeTime,
-    /// Sustain and velocity amount must be within `0..=1`.
+    /// Sustain must be within `0..=1`.
     EnvelopeLevel,
+    /// The velocity clamp needs `0 <= min <= max <= 1`.
+    VelocityRange,
     /// A notes filter needs `lowest <= highest <= 127`.
     PitchRange,
 }
@@ -530,7 +532,8 @@ impl fmt::Display for InvalidSignal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EnvelopeTime => f.write_str("envelope time is negative"),
-            Self::EnvelopeLevel => f.write_str("sustain or velocity amount is outside 0..=1"),
+            Self::EnvelopeLevel => f.write_str("sustain is outside 0..=1"),
+            Self::VelocityRange => f.write_str("velocity clamp is not 0 <= min <= max <= 1"),
             Self::PitchRange => f.write_str("pitch range is empty or above 127"),
         }
     }

@@ -29,8 +29,12 @@ pub fn validate_notes_source(source: &NotesSource) -> Result<(), InvalidSignal> 
     {
         return Err(InvalidSignal::EnvelopeTime);
     }
-    if !(0.0..=1.0).contains(&source.sustain) || !(0.0..=1.0).contains(&source.velocity) {
+    if !(0.0..=1.0).contains(&source.sustain) {
         return Err(InvalidSignal::EnvelopeLevel);
+    }
+    let (min, max) = (source.velocity_min, source.velocity_max);
+    if !(0.0..=1.0).contains(&min) || !(min..=1.0).contains(&max) {
+        return Err(InvalidSignal::VelocityRange);
     }
     if source.lowest > source.highest || source.highest > 127 {
         return Err(InvalidSignal::PitchRange);
@@ -156,10 +160,28 @@ mod tests {
         for change in [
             (|s: &mut NotesSource| s.sustain = 1.5) as fn(&mut NotesSource),
             |s| s.sustain = f64::NAN,
-            |s| s.velocity = -0.1,
         ] {
             assert_eq!(with(change), Err(InvalidSignal::EnvelopeLevel));
         }
+        for change in [
+            (|s: &mut NotesSource| s.velocity_min = -0.1) as fn(&mut NotesSource),
+            |s| s.velocity_max = 1.1,
+            |s| s.velocity_max = f64::NAN,
+            |s| {
+                s.velocity_min = 0.8;
+                s.velocity_max = 0.2;
+            },
+        ] {
+            assert_eq!(with(change), Err(InvalidSignal::VelocityRange));
+        }
+        assert_eq!(
+            with(|s| {
+                s.velocity_min = 0.5;
+                s.velocity_max = 0.5;
+            }),
+            Ok(()),
+            "a fixed height"
+        );
         assert_eq!(with(|s| s.lowest = 40), Err(InvalidSignal::PitchRange));
         assert_eq!(with(|s| s.highest = 128), Err(InvalidSignal::PitchRange));
     }

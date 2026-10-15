@@ -69,7 +69,8 @@ impl NotesEnvelope {
             .collect();
         notes.sort_by(|a, b| a.start.total_cmp(&b.start));
         for note in notes {
-            let peak = 1.0 - source.velocity * (1.0 - f64::from(note.velocity) / 127.0);
+            let peak =
+                (f64::from(note.velocity) / 127.0).clamp(source.velocity_min, source.velocity_max);
             let hit = Hit {
                 start: note.start,
                 end: note.end,
@@ -216,7 +217,8 @@ mod tests {
             decay: beats(decay),
             sustain,
             release: beats(release),
-            velocity: 0.0,
+            velocity_min: 1.0,
+            velocity_max: 1.0,
         }
     }
 
@@ -308,29 +310,27 @@ mod tests {
     }
 
     #[test]
-    fn velocity_amount_scales_the_peak() {
-        let soft = SignalNote {
-            velocity: 64,
+    fn velocity_sets_the_peak_within_the_clamp() {
+        let at = |velocity: u8| SignalNote {
+            velocity,
             ..kick(0.0)
         };
-        let source = envelope(0.0, 1.0, 0.0, 0.0);
+        let clamped = |min: f64, max: f64, velocity: u8| {
+            let source = NotesSource {
+                velocity_min: min,
+                velocity_max: max,
+                ..envelope(0.0, 1.0, 0.0, 0.0)
+            };
+            level(source, &[at(velocity)], 0.0).0
+        };
         assert!(
-            close(level(source.clone(), &[soft], 0.0).0, 1.0),
-            "amount 0"
+            close(clamped(0.0, 1.0, 64), 64.0 / 127.0),
+            "follows velocity"
         );
-        let full = NotesSource {
-            velocity: 1.0,
-            ..source.clone()
-        };
-        assert!(close(level(full, &[soft], 0.0).0, 64.0 / 127.0));
-        let half = NotesSource {
-            velocity: 0.5,
-            ..source
-        };
-        assert!(close(
-            level(half, &[soft], 0.0).0,
-            1.0 - 0.5 * (63.0 / 127.0)
-        ));
+        assert!(close(clamped(0.0, 1.0, 127), 1.0));
+        assert!(close(clamped(0.6, 1.0, 64), 0.6), "raised to the minimum");
+        assert!(close(clamped(0.0, 0.3, 127), 0.3), "held to the maximum");
+        assert!(close(clamped(1.0, 1.0, 1), 1.0), "every hit full");
     }
 
     #[test]

@@ -20,7 +20,7 @@ pub const FORMAT: &str = "daw-project";
 /// Version 2 added motion signals; version 3 centred the blend modes;
 /// version 4 moved listening to signals onto layers and made notes signals
 /// ADSR hits.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -209,7 +209,10 @@ impl ProjectFile {
             if header.version < 3 {
                 crate::upgrade::centre_blend_modes(&mut value);
             }
-            crate::upgrade::listen_to_signals(&mut value);
+            if header.version < 4 {
+                crate::upgrade::listen_to_signals(&mut value);
+            }
+            crate::upgrade::clamp_velocity(&mut value);
             return serde_json::from_value(value).map_err(LoadError::Json);
         }
         serde_json::from_str(json).map_err(LoadError::Json)
@@ -371,7 +374,8 @@ mod tests {
                         decay: Ticks(480),
                         sustain: 0.25,
                         release: Ticks(120),
-                        velocity: 0.5,
+                        velocity_min: 0.5,
+                        velocity_max: 0.9,
                     }),
                 },
                 listeners: Vec::new(),

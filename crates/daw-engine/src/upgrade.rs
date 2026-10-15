@@ -17,6 +17,12 @@
 //! to the same signal listens to it (link ranges are dropped); other links
 //! are dropped; an old notes envelope becomes a hit that decays over its
 //! length.
+//!
+//! Version 5 replaced the velocity amount (how much velocity scaled a hit's
+//! peak) with a clamp: the peak is the note's velocity held between a
+//! minimum and a maximum. Amount `a` becomes the clamp `1 - a ..= 1`, exact
+//! at 0 (every hit full) and 1 (the peak is the velocity), and close
+//! between: soft notes are lifted to the minimum rather than scaled.
 
 use serde_json::Value;
 
@@ -124,6 +130,27 @@ fn hit_from_envelope(notes: &mut Value) {
     notes.insert("sustain".to_owned(), 0.0.into());
     notes.insert("release".to_owned(), 0.into());
     notes.insert("velocity".to_owned(), 0.0.into());
+}
+
+/// Rewrites notes signals in a file before version 5: the velocity amount
+/// becomes a clamp.
+pub fn clamp_velocity(file: &mut Value) {
+    let signals = file.get_mut("signals").and_then(Value::as_array_mut);
+    for signal in signals.into_iter().flatten() {
+        let notes = signal
+            .get_mut("source")
+            .and_then(|s| s.get_mut("Notes"))
+            .and_then(Value::as_object_mut);
+        let Some(notes) = notes else {
+            continue;
+        };
+        let amount = notes
+            .remove("velocity")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        notes.insert("velocity_min".to_owned(), (1.0 - amount).into());
+        notes.insert("velocity_max".to_owned(), 1.0.into());
+    }
 }
 
 /// Converts one layer (on a parameter resting at `base`) to a centred mode.
@@ -304,11 +331,35 @@ mod tests {
             }]
         });
         listen_to_signals(&mut file);
+        clamp_velocity(&mut file);
         let source: daw_protocol::NotesSource =
             serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
         assert_eq!(source.decay, daw_protocol::Ticks(480));
         assert_eq!((source.lowest, source.highest), (36, 36));
         assert_eq!(source.attack, daw_protocol::Ticks::ZERO);
+    }
+
+    #[test]
+    fn velocity_amounts_become_a_clamp() {
+        let notes = |velocity: f64| {
+            let mut file = json!({
+                "nodes": [],
+                "signals": [{
+                    "id": 1, "name": "Kick", "color": 0,
+                    "source": { "Notes": {
+                        "lowest": 36, "highest": 36, "attack": 0, "decay": 480,
+                        "sustain": 0.0, "release": 0, "velocity": velocity
+                    }}
+                }]
+            });
+            clamp_velocity(&mut file);
+            let source: daw_protocol::NotesSource =
+                serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
+            (source.velocity_min, source.velocity_max)
+        };
+        assert_eq!(notes(0.0), (1.0, 1.0), "every hit full");
+        assert_eq!(notes(1.0), (0.0, 1.0), "follows velocity");
+        assert_eq!(notes(0.25), (0.75, 1.0), "softest hits lifted");
     }
 
     #[test]

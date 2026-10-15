@@ -796,7 +796,7 @@ impl ProjectView {
 
     /// Updates the preview of whatever is being dragged.
     pub(crate) fn drag_to(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
-        if self.drag_frame(position) {
+        if self.drag_frame(position) || self.drag_inspector(position, modifiers.shift) {
             return;
         }
         if let Some(drag) = &mut self.base_drag {
@@ -844,6 +844,7 @@ impl ProjectView {
     /// Ends a drag, sending the change as one edit.
     pub(crate) fn finish_drag(&mut self) {
         self.frame_drag = None;
+        self.finish_inspector_drag();
         if let Some(drag) = self.mix_drag.take()
             && drag.preview != drag.original
         {
