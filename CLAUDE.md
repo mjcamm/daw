@@ -6,13 +6,14 @@ Read `daw-foundation.md` (vision, principles, concepts) and `build-plan.md` (pha
 ## Commands
 
 ```sh
+./scripts/check.sh                           # everything below, plus release builds; must pass before committing
 cargo test --workspace                       # all tests (debug: realtime guard active)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 DAW_BLESS=1 cargo test -p <crate> --test <t> # write/update reference audio
 ```
 
-CI runs fmt, clippy, and tests in debug and release on Linux, Windows and macOS. Keep it green.
+There is no hosted CI; checks run locally. Run `./scripts/check.sh` before every commit.
 
 ## Crates
 

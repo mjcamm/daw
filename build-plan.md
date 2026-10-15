@@ -18,7 +18,7 @@ Every phase follows the foundation principles: test-driven, engine-owned state, 
 - Headless render harness and audio regression tests (render offline, then compare against reference output).
 - Skeleton of the engine/UI boundary: commands in, snapshots out, with undo/redo designed in from the start.
 
-**Done when:** an empty engine can be driven by commands, render silence headlessly, and pass CI with the safety checks active.
+**Done when:** an empty engine can be driven by commands, render silence headlessly, and pass the local checks with the safety checks active.
 
 ## Phase 1: Headless engine core
 
