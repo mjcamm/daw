@@ -26,6 +26,7 @@ thread_local! {
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(debug_assertions)]
 const VIOLATION_MESSAGE: &[u8] =
     b"daw-rt: memory was allocated or freed inside a realtime section; aborting\n";
 
@@ -87,8 +88,10 @@ fn violation() {
 
 /// Restores a thread-local counter when dropped, so panics cannot leave a
 /// section marked as entered.
+#[cfg(debug_assertions)]
 struct DepthGuard(&'static std::thread::LocalKey<Cell<u32>>);
 
+#[cfg(debug_assertions)]
 impl DepthGuard {
     fn enter(key: &'static std::thread::LocalKey<Cell<u32>>) -> Self {
         key.with(|d| d.set(d.get() + 1));
@@ -96,6 +99,7 @@ impl DepthGuard {
     }
 }
 
+#[cfg(debug_assertions)]
 impl Drop for DepthGuard {
     fn drop(&mut self) {
         self.0.with(|d| d.set(d.get() - 1));
