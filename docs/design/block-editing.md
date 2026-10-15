@@ -65,7 +65,7 @@ Every timeline page gets two short slim sliders in its bottom-right corner (`cra
 
 - Wide, log-scale ranges, so it works as a zoom tool: rows 28 to 400 px, timeline 2 to 400 px per beat. Drag right or up to zoom in.
 - On the Parameters page, result rows and layer rows are always the same height, set by vertical zoom (default 40 px). Selecting a block no longer grows its lane; zoom in for room to edit points.
-- Horizontal zoom keeps the middle of the view on the same beat. Grid lines and ruler labels thin out when zoomed far out.
+- Horizontal zoom holds the playhead still on screen when it is in view (so zooming at the song start keeps the start in place); otherwise it holds the middle of the view. Grid lines and ruler labels thin out when zoomed far out.
 - Zoom is view state, not saved in the project and not undoable.
 
 ## Undo

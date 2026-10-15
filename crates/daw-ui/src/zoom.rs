@@ -106,6 +106,20 @@ pub fn keep_anchor(scrolled: f32, anchor: f32, old_ppb: f32, new_ppb: f32) -> f3
     ((scrolled + anchor) * new_ppb / old_ppb - anchor).max(0.)
 }
 
+/// Where horizontal zoom should hold still, in pixels from the view's left
+/// edge: the playhead when it is in view (so zooming at the song start keeps
+/// the start in place), otherwise the middle of the view. `playhead` is the
+/// playhead's position on the timeline, `scrolled` how far the view is
+/// scrolled right and `view` its width, all in pixels.
+pub fn zoom_anchor(playhead: f32, scrolled: f32, view: f32) -> f32 {
+    let in_view = playhead - scrolled;
+    if (0.0..=view).contains(&in_view) {
+        in_view
+    } else {
+        view / 2.
+    }
+}
+
 /// A zoom slider being dragged.
 #[derive(Debug, Clone, Copy)]
 pub struct ZoomDrag {
@@ -218,6 +232,19 @@ mod tests {
             0.,
             "never before the start"
         );
+    }
+
+    #[test]
+    fn zoom_holds_the_playhead_still_when_it_is_in_view() {
+        assert_eq!(zoom_anchor(0., 0., 800.), 0., "at the song start");
+        assert_eq!(zoom_anchor(500., 200., 800.), 300.);
+        assert_eq!(
+            zoom_anchor(5000., 200., 800.),
+            400.,
+            "off screen: the middle"
+        );
+        // With the playhead at the start, zooming in keeps the start put.
+        assert_eq!(keep_anchor(0., zoom_anchor(0., 0., 800.), 24., 96.), 0.);
     }
 
     #[test]

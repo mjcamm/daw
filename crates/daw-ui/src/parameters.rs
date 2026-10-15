@@ -24,7 +24,7 @@ use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget};
 use crate::slider;
 use crate::theme::{ContentColor, MONO_FONT, Theme};
-use crate::zoom::{self, Axis, Zoom, ZoomDrag, keep_anchor};
+use crate::zoom::{self, Axis, Zoom, ZoomDrag, keep_anchor, zoom_anchor};
 use daw_automation::{Automation, CompiledBlock};
 use daw_engine::{
     BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId,
@@ -601,7 +601,7 @@ impl ProjectView {
     }
 
     /// Follows a zoom slider drag; false if none is in progress. Horizontal
-    /// zoom keeps the middle of the view on the same beat.
+    /// zoom holds the playhead still if it is in view, else the middle.
     fn drag_zoom(&mut self, position: Point<Pixels>) -> bool {
         let Some(drag) = self.zoom_drag else {
             return false;
@@ -611,7 +611,10 @@ impl ProjectView {
         if zoom.pixels_per_beat != old {
             let offset = self.parameters_scroll.offset();
             let view = self.parameters_scroll.bounds().size.width / px(1.);
-            let scrolled = keep_anchor(-offset.x / px(1.), view / 2., old, zoom.pixels_per_beat);
+            let scrolled = -offset.x / px(1.);
+            let playhead = self.session.position_beats() as f32 * old;
+            let anchor = zoom_anchor(playhead, scrolled, view);
+            let scrolled = keep_anchor(scrolled, anchor, old, zoom.pixels_per_beat);
             self.parameters_scroll
                 .set_offset(point(px(-scrolled), offset.y));
         }
