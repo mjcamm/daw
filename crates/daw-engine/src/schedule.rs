@@ -9,6 +9,8 @@ use daw_protocol::{DeviceId, EffectKind, ParamState};
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderState {
     pub tempo_bpm: f64,
+    /// False when muted, or when another node is soloed.
+    pub audible: bool,
     /// Every note on the timeline, sorted by start.
     pub notes: Vec<ScheduledNote>,
     /// One automation per instrument parameter, in index order.
@@ -62,8 +64,11 @@ impl RenderState {
             .collect();
         // Stable sort keeps clip order for simultaneous notes: deterministic.
         notes.sort_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
+        // With a single node, "another node is soloed" never applies yet.
+        let any_soloed = node.soloed;
         Self {
             tempo_bpm: project.tempo_bpm,
+            audible: !node.muted && (node.soloed || !any_soloed),
             notes,
             instrument: compile_params(&node.instrument),
             effects: node

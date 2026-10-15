@@ -8,7 +8,6 @@
 //! `--compare` records what the engine produced during live playback and
 //! checks it sample-for-sample against an offline render of the same song.
 
-mod demo;
 mod live;
 mod offline;
 
@@ -67,6 +66,6 @@ fn run(args: Vec<String>) -> Result<()> {
 
 /// Frames in `bars` bars of the demo at `sample_rate`.
 fn frames_for_bars(bars: u32, sample_rate: u32) -> usize {
-    let seconds = f64::from(bars) * 4.0 * 60.0 / demo::TEMPO_BPM;
+    let seconds = f64::from(bars) * 4.0 * 60.0 / daw_host::demo::TEMPO_BPM;
     (seconds * f64::from(sample_rate)).round() as usize
 }

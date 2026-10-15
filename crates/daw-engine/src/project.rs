@@ -27,6 +27,11 @@ pub struct Project {
 /// parameter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
+    pub name: String,
+    /// Index into the nine-colour content palette.
+    pub color: u8,
+    pub muted: bool,
+    pub soloed: bool,
     pub instrument: Vec<ParamState>,
     pub effects: Vec<(DeviceId, Effect)>,
     pub channel: Vec<ParamState>,
@@ -45,6 +50,10 @@ impl Default for Project {
 impl Default for Node {
     fn default() -> Self {
         Self {
+            name: "Synth".to_owned(),
+            color: 6,
+            muted: false,
+            soloed: false,
             instrument: default_params(&INSTRUMENT_PARAMS),
             effects: Vec::new(),
             channel: default_params(&CHANNEL_PARAMS),
@@ -230,6 +239,14 @@ impl Project {
                     .remove(&id)
                     .ok_or(CommandError::UnknownClip { id })?;
                 Ok(Edit::AddClip { id, clip })
+            }
+            Edit::SetMute { muted } => {
+                let previous = std::mem::replace(&mut node.muted, muted);
+                Ok(Edit::SetMute { muted: previous })
+            }
+            Edit::SetSolo { soloed } => {
+                let previous = std::mem::replace(&mut node.soloed, soloed);
+                Ok(Edit::SetSolo { soloed: previous })
             }
             Edit::SetParam { param, value } => {
                 check_normalized(value)?;
@@ -522,6 +539,8 @@ mod tests {
     fn every_edit_is_reverted_by_its_inverse() {
         let edits = [
             Edit::SetTempo { bpm: 140.0 },
+            Edit::SetMute { muted: true },
+            Edit::SetSolo { soloed: true },
             Edit::AddClip {
                 id: ClipId(1),
                 clip: clip(vec![note(60, 100, 240)]),

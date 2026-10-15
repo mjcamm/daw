@@ -20,10 +20,10 @@ mod transport;
 
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
-    BlendMode, Block, BlockId, ClipId, ClipSummary, Command, CommandError, DeviceId, DeviceRef,
-    DeviceSnapshot, Edit, Effect, EffectKind, InvalidBlock, InvalidClip, Layer, LayerId, LoopRange,
-    MidiClip, MidiNote, ParamId, ParamSnapshot, ParamState, Scale, Segment, Shape, ShapePoint,
-    Snapshot, TICKS_PER_BEAT, Ticks,
+    BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
+    Edit, Effect, EffectKind, InvalidBlock, InvalidClip, Layer, LayerId, LoopRange, Meter,
+    MidiClip, MidiNote, NodeSnapshot, ParamId, ParamSnapshot, ParamState, Scale, Segment, Shape,
+    ShapePoint, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use project::{DEFAULT_TEMPO_BPM, MAX_EFFECTS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Node, Project};
 pub use schedule::{EffectState, RenderState, ScheduledNote};
@@ -194,19 +194,38 @@ impl Engine {
                     }
                 })
                 .collect(),
+            node: NodeSnapshot {
+                name: node.name.clone(),
+                color: node.color,
+                muted: node.muted,
+                soloed: node.soloed,
+            },
             clips: node
                 .clips
                 .iter()
-                .map(|(&id, clip)| ClipSummary {
-                    id,
-                    start: clip.start,
-                    length: clip.length,
-                    note_count: clip.notes.len(),
-                })
+                .map(|(&id, clip)| (id, clip.clone()))
                 .collect(),
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
         }
+    }
+
+    /// Increases every time a command changes engine state; a front end
+    /// only needs a new [`Snapshot`] when this changes.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Transport position in beats, as last reported by the audio side.
+    /// Cheap enough to call every UI frame.
+    pub fn position_beats(&self) -> f64 {
+        self.status.position_beats()
+    }
+
+    /// Peak output levels since the last call. Call once per UI frame.
+    pub fn take_meter(&self) -> Meter {
+        let (left, right) = self.status.take_peaks();
+        Meter { left, right }
     }
 
     /// Delivers queued messages to the audio side and frees retired state.

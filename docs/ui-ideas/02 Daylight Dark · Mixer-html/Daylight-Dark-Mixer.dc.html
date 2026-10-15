@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Daylight Dark — Mixer</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:#0A84FF}a:hover{color:#409CFF}
+.ib{display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:inherit;font:inherit;cursor:default;padding:0}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+.tb{width:32px;height:28px;border-radius:6px;color:rgba(255,255,255,.72)}
+.tb:hover{background:rgba(255,255,255,.08)}
+.rec{height:18px;border-radius:4px;font-size:10px;font-weight:600}
+.pop{height:18px;border-radius:4px;display:flex;align-items:center;gap:4px;padding:0 5px;font-size:10px;background:rgba(255,255,255,.1);box-shadow:inset 0 .5px 0 rgba(255,255,255,.08),0 0 0 .5px rgba(0,0,0,.5)}
+.tl{width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.3)}
+.grp{border-radius:10px;background:#2C2C2E;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.07)}
+.row{display:flex;align-items:center;justify-content:space-between;min-height:32px;padding:0 12px;font-size:13px}
+.sep{height:.5px;background:rgba(255,255,255,.09);margin-left:12px}
+</style>
+</helmet>
+<div style="width:1440px;height:900px;display:flex;flex-direction:column;border-radius:12px;overflow:hidden;background:#1E1E1E;color:rgba(255,255,255,.86);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue',Helvetica,sans-serif;font-size:12px;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.14)">
+
+  <header style="height:52px;flex:none;display:flex;align-items:center;gap:6px;padding:0 12px 0 18px;background:#2B2B2D;border-bottom:.5px solid rgba(0,0,0,.7)">
+    <div style="display:flex;gap:8px;margin-right:14px">
+      <button class="ib tl" aria-label="Close" style="background:#FF5F57"></button>
+      <button class="ib tl" aria-label="Minimise" style="background:#FEBC2E"></button>
+      <button class="ib tl" aria-label="Zoom" style="background:#28C840"></button>
+    </div>
+    <div style="display:flex;flex-direction:column;margin:0 14px 0 6px;width:150px"><span style="font-size:13px;font-weight:600;color:rgba(255,255,255,.9)">Night Drive</span><span style="font-size:11px;color:rgba(255,255,255,.5)">Mixer</span></div>
+    <div style="flex:1;display:flex;justify-content:center;align-items:center;gap:10px">
+      <div style="display:flex;align-items:center;height:30px;padding:0 3px;border-radius:7px;background:rgba(255,255,255,.08);box-shadow:inset 0 .5px 0 rgba(255,255,255,.08),0 0 0 .5px rgba(0,0,0,.6)">
+        <button class="ib tb" aria-label="Play" style="height:24px;color:{{accent}}"><svg width="14" height="15" viewBox="0 0 15 16" aria-hidden="true"><path d="M3 2.6v10.8a.8.8 0 0 0 1.2.7l9-5.4a.8.8 0 0 0 0-1.4l-9-5.4A.8.8 0 0 0 3 2.6z" fill="currentColor"></path></svg></button>
+        <button class="ib tb" aria-label="Record" style="height:24px;color:#FF453A"><svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="currentColor"></circle></svg></button>
+      </div>
+      <span class="mono" style="font-size:15px;padding:0 12px;height:30px;line-height:30px;border-radius:7px;background:#1C1C1E;color:#fff;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.1)">13 · 3 · 1</span>
+    </div>
+    <div role="tablist" aria-label="View" style="display:flex;padding:1px;border-radius:6px;background:rgba(255,255,255,.08);box-shadow:inset 0 0 0 .5px rgba(0,0,0,.4)">
+      <a role="tab" aria-selected="false" href="Daylight-Dark-Arrange.dc.html" style="height:22px;line-height:22px;padding:0 14px;border-radius:5px;font-size:12px;text-decoration:none;color:rgba(255,255,255,.8)">Arrange</a>
+      <a role="tab" aria-selected="true" href="Daylight-Dark-Mixer.dc.html" style="height:22px;line-height:22px;padding:0 14px;border-radius:5px;font-size:12px;text-decoration:none;color:#fff;background:#636366;box-shadow:0 .5px 1px rgba(0,0,0,.4)">Mix</a>
+    </div>
+    <button class="ib tb" aria-label="Toggle inspector" style="margin-left:6px;background:rgba(255,255,255,.1)"><svg width="18" height="16" viewBox="0 0 18 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="1" y="1.5" width="16" height="13" rx="2.5"></rect><path d="M11.5 1.5v13"></path></svg></button>
+  </header>
+
+  <div style="flex:1;min-height:0;display:flex">
+    <div style="flex:1;min-width:0;display:flex;background:#1C1C1E">
+      <sc-for list="{{chans}}" as="ch" hint-placeholder-count="11">
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px;padding:10px 6px;border-right:.5px solid rgba(0,0,0,.6);background:{{ch.bg}}">
+          <div style="height:38px;border-radius:6px;background:#2C2C2E;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.06);position:relative;overflow:hidden">
+            <svg viewBox="0 0 100 40" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%" aria-hidden="true"><path d="M0 20H100" stroke="rgba(255,255,255,.08)" stroke-width="1" vector-effect="non-scaling-stroke"></path><path d="{{ch.eq}}" fill="none" stroke="{{ch.bright}}" stroke-width="1.5" vector-effect="non-scaling-stroke"></path></svg>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:3px;height:84px">
+            <sc-for list="{{ch.ins}}" as="fx" hint-placeholder-count="4">
+              <div class="pop" style="opacity:{{fx.op}}"><span style="width:5px;height:5px;border-radius:50%;background:{{fx.dot}}"></span><span style="flex:1;white-space:nowrap;overflow:hidden">{{fx.name}}</span></div>
+            </sc-for>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;height:30px">
+            <sc-for list="{{ch.sends}}" as="k" hint-placeholder-count="2">
+              <div style="display:flex;align-items:center;gap:5px"><span style="font-size:9px;color:rgba(255,255,255,.55);width:18px">{{k.label}}</span><div style="flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.12);position:relative"><div style="position:absolute;left:0;top:0;bottom:0;border-radius:2px;width:{{k.pct}}%;background:rgba(255,255,255,.55)"></div></div></div>
+            </sc-for>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;padding-top:4px">
+            <div style="height:3px;border-radius:2px;background:rgba(255,255,255,.12);position:relative"><span style="position:absolute;left:50%;top:-3px;width:1px;height:9px;background:rgba(255,255,255,.25)"></span><span style="position:absolute;top:50%;left:{{ch.panPos}}%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#E8E8E8;box-shadow:0 0 0 .5px rgba(0,0,0,.4),0 1px 2px rgba(0,0,0,.4)"></span></div>
+            <span class="mono" style="font-size:10px;color:rgba(255,255,255,.55);text-align:center">{{ch.pan}}</span>
+          </div>
+          <div style="flex:1;min-height:0;display:flex;justify-content:center;gap:10px;padding:6px 0">
+            <div style="position:relative;width:20px">
+              <div style="position:absolute;left:50%;top:0;bottom:0;width:4px;margin-left:-2px;border-radius:2px;background:rgba(0,0,0,.45);box-shadow:inset 0 0 0 .5px rgba(255,255,255,.06)"></div>
+              <div style="position:absolute;left:50%;bottom:0;width:4px;margin-left:-2px;border-radius:2px;height:{{ch.fp}}%;background:{{accent}}"></div>
+              <span style="position:absolute;left:50%;width:20px;height:20px;margin-left:-10px;bottom:calc({{ch.fp}}% - 10px);border-radius:50%;background:#E8E8E8;box-shadow:0 0 0 .5px rgba(0,0,0,.5),0 1px 3px rgba(0,0,0,.5)"></span>
+            </div>
+            <div style="width:4px;border-radius:2px;background:rgba(255,255,255,.06);position:relative;overflow:hidden"><div style="position:absolute;left:0;right:0;bottom:0;height:{{ch.meter}}%;background:linear-gradient(to top,#30D158 0 60px,#FFD60A 80%,#FF453A)"></div></div>
+          </div>
+          <span class="mono" style="text-align:center;font-size:12px;color:#fff">{{ch.db}}</span>
+          <div style="display:flex;gap:3px">
+            <button class="ib rec" aria-label="Mute" style="flex:1;background:{{ch.mBg}};color:{{ch.mFg}}">M</button>
+            <button class="ib rec" aria-label="Solo" style="flex:1;background:rgba(255,255,255,.1);color:rgba(255,255,255,.7)">S</button>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+            <span style="width:100%;height:3px;border-radius:2px;background:{{ch.bright}}"></span>
+            <span style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%">{{ch.name}}</span>
+          </div>
+        </div>
+      </sc-for>
+      <div style="width:96px;flex:none;display:flex;flex-direction:column;gap:8px;padding:10px 10px;background:#232325;border-right:.5px solid rgba(0,0,0,.6)">
+        <div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:11px;color:rgba(255,255,255,.55)">Loudness</span><span class="mono" style="font-size:18px;color:#fff">-9.8</span><span style="font-size:10px;color:rgba(255,255,255,.55)">LUFS-S</span></div>
+        <div style="flex:1;min-height:0;display:flex;justify-content:center;gap:8px;padding:6px 0">
+          <div style="position:relative;width:20px">
+            <div style="position:absolute;left:50%;top:0;bottom:0;width:4px;margin-left:-2px;border-radius:2px;background:rgba(0,0,0,.45)"></div>
+            <div style="position:absolute;left:50%;bottom:0;width:4px;margin-left:-2px;border-radius:2px;height:75%;background:{{accent}}"></div>
+            <span style="position:absolute;left:50%;width:22px;height:22px;margin-left:-11px;bottom:calc(75% - 11px);border-radius:50%;background:#E8E8E8;box-shadow:0 0 0 .5px rgba(0,0,0,.5),0 1px 3px rgba(0,0,0,.5)"></span>
+          </div>
+          <div style="width:5px;border-radius:2px;background:rgba(255,255,255,.06);position:relative;overflow:hidden"><div style="position:absolute;left:0;right:0;bottom:0;height:84%;background:linear-gradient(to top,#30D158 0 60%,#FFD60A 85%,#FF453A)"></div></div>
+          <div style="width:5px;border-radius:2px;background:rgba(255,255,255,.06);position:relative;overflow:hidden"><div style="position:absolute;left:0;right:0;bottom:0;height:82%;background:linear-gradient(to top,#30D158 0 60%,#FFD60A 85%,#FF453A)"></div></div>
+        </div>
+        <span class="mono" style="text-align:center;font-size:12px;color:#fff">0.0</span>
+        <span style="text-align:center;font-size:12px;font-weight:600">Stereo Out</span>
+      </div>
+    </div>
+
+    <aside aria-label="Channel inspector" style="width:320px;flex:none;box-sizing:border-box;background:#232325;border-left:.5px solid rgba(0,0,0,.6);padding:14px;display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px"><span style="font-size:13px;font-weight:600">Lead Vocal — EQ</span><span style="width:32px;height:18px;border-radius:9px;background:#30D158;position:relative"><span style="position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3)"></span></span></div>
+      <div class="grp" style="height:190px;position:relative;overflow:hidden;background-color:#1C1C1E;background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.05) 0 1px,transparent 1px 16.66%),repeating-linear-gradient(0deg,rgba(255,255,255,.05) 0 1px,transparent 1px 25%)">
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%" aria-hidden="true"><path d="{{bigEqFill}}" fill="{{accentSoft}}"></path><path d="{{bigEq}}" fill="none" stroke="{{accent}}" stroke-width="2" vector-effect="non-scaling-stroke"></path></svg>
+        <sc-for list="{{bands}}" as="b" hint-placeholder-count="4">
+          <span style="position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:#2C2C2E;box-shadow:0 0 0 1.5px {{accent}},0 1px 3px rgba(0,0,0,.4);font-size:10px;font-weight:600;color:#fff;display:flex;align-items:center;justify-content:center;left:{{b.x}}%;top:{{b.y}}%">{{b.n}}</span>
+        </sc-for>
+        <div class="mono" style="position:absolute;left:8px;right:8px;bottom:5px;display:flex;justify-content:space-between;color:rgba(255,255,255,.45);font-size:9px"><span>30</span><span>100</span><span>300</span><span>1k</span><span>3k</span><span>10k</span></div>
+      </div>
+      <div class="grp">
+        <sc-for list="{{bands}}" as="b" hint-placeholder-count="4">
+          <div>
+            <div class="row"><span style="display:flex;align-items:center;gap:8px"><span style="width:16px;height:16px;border-radius:50%;font-size:9px;font-weight:600;display:flex;align-items:center;justify-content:center;background:{{b.chip}};color:{{b.chipFg}}">{{b.n}}</span>{{b.type}}</span><span class="mono" style="font-size:12px;color:rgba(255,255,255,.6)">{{b.freq}} · {{b.gain}}</span></div>
+            <div class="sep"></div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="padding:0 4px;font-size:11px;font-weight:600;color:rgba(255,255,255,.5)">Compressor</div>
+      <div class="grp">
+        <div class="row"><span>Threshold</span><span class="mono" style="color:rgba(255,255,255,.6)">-18 dB</span></div><div class="sep"></div>
+        <div class="row"><span>Ratio</span><span class="mono" style="color:rgba(255,255,255,.6)">3:1</span></div><div class="sep"></div>
+        <div class="row"><span>Attack · Release</span><span class="mono" style="color:rgba(255,255,255,.6)">8 · 120 ms</span></div><div class="sep"></div>
+        <div class="row"><span>Gain reduction</span><span style="width:90px;height:4px;border-radius:2px;background:rgba(255,255,255,.1);position:relative"><span style="position:absolute;right:0;top:0;bottom:0;width:36%;border-radius:2px;background:#FF9F0A"></span></span></div>
+      </div>
+    </aside>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#0A84FF","options":["#0A84FF","#BF5AF2","#FF9F0A","#30D158"]},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#0A84FF';
+    const hex = (h, a) => { const n = parseInt(h.slice(1), 16); return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')'; };
+    const PAL = ['#FF8A75','#FFB061','#E8CF5A','#7DD87A','#5FD3C2','#6AAFFF','#A99BFF','#F28AD8','#A1A1A6','#8E8E93','#8E8E93'];
+    const curve = (bands) => { let d = ''; for (let i = 0; i <= 100; i += 2) { let y = 20; bands.forEach(b => { y -= b[1] * Math.exp(-Math.pow(i - b[0], 2) / (2 * b[2] * b[2])); }); d += (i === 0 ? 'M' : ' L') + i + ' ' + y.toFixed(2); } return d; };
+    const R = (seed) => { let s = seed * 9301 + 49297; return () => { s = (s * 16807) % 2147483647; return s / 2147483647; }; };
+    const C = [
+      ['Kick',72,'-2.1',0,78,['EQ','Compressor'],.6,.2],
+      ['Drum Loop',66,'-4.6',0,64,['EQ','Glue'],.4,.2],
+      ['Bass',70,'-3.0',0,70,['EQ','Compressor','Tape'],.1,0],
+      ['Keys',60,'-6.8',-.35,52,['EQ','Chorus'],.5,.3],
+      ['Pad',52,'-9.5',.25,0,['EQ','Width'],.7,.4],
+      ['Guitar',58,'-7.2',.55,46,['Amp','EQ'],.35,.5],
+      ['Lead Vocal',74,'-1.4',0,82,['Gate','EQ','Compressor','De-esser'],.55,.4],
+      ['Backing Vox',56,'-8.0',-.4,44,['EQ','Compressor'],.6,.35],
+      ['FX Riser',48,'-11.3',0,20,['Filter'],.8,.6],
+      ['Reverb',62,'-5.5',0,40,['Plate'],0,0],
+      ['Delay',55,'-8.4',0,30,['Echo'],0,0]
+    ];
+    const chans = C.map((c, i) => {
+      const sel = i === 6, muted = i === 4, ret = i >= 9; const r = R(i + 4); const p = c[3];
+      const bands = [[8 + r() * 10, (r() - .4) * 10, 8], [35 + r() * 20, (r() - .5) * 12, 10], [70 + r() * 15, (r() - .4) * 10, 9]];
+      const ins = c[5].map(n => ({ name: n, dot: muted ? '#5A5A5E' : '#30D158', op: 1 }));
+      while (ins.length < 4) ins.push({ name: '', dot: 'transparent', op: .4 });
+      return {
+        name: c[0], fp: c[1], db: c[2], meter: c[4], ins, bright: muted ? '#5A5A5E' : PAL[i], eq: curve(bands),
+        pan: p === 0 ? 'C' : (p < 0 ? 'L' : 'R') + Math.round(Math.abs(p) * 100), panPos: 50 + p * 50,
+        sends: ret ? [] : [{ label: 'Rev', pct: Math.round(c[6] * 100) }, { label: 'Dly', pct: Math.round(c[7] * 100) }],
+        bg: sel ? hex(accent, .14) : (ret ? '#202022' : 'transparent'),
+        mBg: muted ? '#FF9F0A' : 'rgba(255,255,255,.1)', mFg: muted ? '#000' : 'rgba(255,255,255,.7)'
+      };
+    });
+    const B = [[10, -3, 6, 'Low Cut', '80 Hz', 'HPF'], [38, -2.5, 10, 'Bell', '320 Hz', '-2.5 dB'], [66, 3.5, 9, 'Bell', '3.2 kHz', '+3.5 dB'], [88, 4, 12, 'High Shelf', '10 kHz', '+4.0 dB']];
+    const big = curve(B.map(b => [b[0], b[1], b[2]]));
+    const bands = B.map((b, i) => { let y = 20; B.forEach(x => { y -= x[1] * Math.exp(-Math.pow(b[0] - x[0], 2) / (2 * x[2] * x[2])); }); return { n: i + 1, x: b[0], y: (y / 40 * 100).toFixed(1), type: b[3], freq: b[4], gain: b[5], chip: i === 2 ? accent : 'rgba(255,255,255,.12)', chipFg: '#fff' }; });
+    return { accent, accentSoft: hex(accent, .16), chans, bigEq: big, bigEqFill: big + ' L100 20 L0 20 Z', bands };
+  }
+}
+</script>
+</body>
+</html>

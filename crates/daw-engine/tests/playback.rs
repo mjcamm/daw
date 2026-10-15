@@ -380,9 +380,9 @@ fn snapshot_lists_clips_and_mix_settings() {
     assert_eq!(channel.params[1].display, "R25");
     assert_eq!(snapshot.loop_range, Some(range));
     assert_eq!(snapshot.clips.len(), 1);
-    assert_eq!(snapshot.clips[0].id, ClipId(5));
-    assert_eq!(snapshot.clips[0].start, beats(4.0));
-    assert_eq!(snapshot.clips[0].note_count, 2);
+    assert_eq!(snapshot.clips[0].0, ClipId(5));
+    assert_eq!(snapshot.clips[0].1.start, beats(4.0));
+    assert_eq!(snapshot.clips[0].1.notes.len(), 2);
 }
 
 #[test]
@@ -413,4 +413,51 @@ fn constant_editing_during_playback_stays_realtime_safe() {
         }
         render(&mut engine, &mut processor, 97, &[13, 31]);
     }
+}
+
+#[test]
+fn muting_silences_the_node_and_undo_brings_it_back() {
+    let muted = render_held_note(&[Edit::SetMute { muted: true }], 2);
+    assert!(muted.is_silent());
+
+    let (mut engine, mut processor) = engine();
+    add_clip(&mut engine, 1, 0.0, 4.0, &[(0.0, 4.0, 60)]);
+    engine
+        .apply(Command::Edit(Edit::SetMute { muted: true }))
+        .unwrap();
+    engine.apply(Command::Undo).unwrap();
+    engine.apply(Command::Play).unwrap();
+    let rendered = render(&mut engine, &mut processor, 12_000, VARIED_BLOCKS);
+    assert!(peak(&rendered.samples) > 0.01);
+    assert!(!engine.snapshot().node.muted);
+}
+
+#[test]
+fn soloing_the_only_node_keeps_it_audible() {
+    let soloed = render_held_note(&[Edit::SetSolo { soloed: true }], 2);
+    let normal = render_held_note(&[], 2);
+    assert!(soloed == normal);
+}
+
+#[test]
+fn meter_reports_output_peaks_since_last_read() {
+    let (mut engine, mut processor) = engine();
+    add_clip(&mut engine, 1, 0.0, 4.0, &[(0.0, 4.0, 60)]);
+    engine.apply(Command::Edit(pan(-0.5))).unwrap();
+    engine.apply(Command::Play).unwrap();
+    let rendered = render(&mut engine, &mut processor, 12_000, VARIED_BLOCKS);
+    let meter = engine.take_meter();
+    assert_eq!(meter.left, peak(&channel(&rendered, 0)));
+    assert_eq!(meter.right, peak(&channel(&rendered, 1)));
+    assert!(meter.left > meter.right, "panned left");
+    // Reading resets the peaks.
+    assert_eq!(engine.take_meter(), daw_engine::Meter::default());
+}
+
+#[test]
+fn snapshot_describes_the_node() {
+    let (engine, _processor) = engine();
+    let node = engine.snapshot().node;
+    assert_eq!(node.name, "Synth");
+    assert!(!node.muted && !node.soloed);
 }

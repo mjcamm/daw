@@ -19,7 +19,7 @@ use daw_dsp::smoothing::Smoothed;
 use daw_dsp::synth::{MAX_VOICES, Synth};
 use daw_protocol::{DeviceId, EffectKind};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Frames rendered per internal chunk; host blocks of any size are split
 /// into chunks of at most this many frames.
@@ -46,6 +46,10 @@ pub(crate) enum AudioMsg {
 pub(crate) struct SharedStatus {
     /// Transport position in beats, as `f64` bits.
     position_beats: AtomicU64,
+    /// Output peaks since last read, as `f32` bits. Non-negative floats order
+    /// the same as their bits, so `fetch_max` on the bits keeps the louder.
+    peak_left: AtomicU32,
+    peak_right: AtomicU32,
 }
 
 impl SharedStatus {
@@ -56,6 +60,20 @@ impl SharedStatus {
     fn set_position_beats(&self, beats: f64) {
         self.position_beats
             .store(beats.to_bits(), Ordering::Relaxed);
+    }
+
+    fn record_peaks(&self, left: f32, right: f32) {
+        self.peak_left.fetch_max(left.to_bits(), Ordering::Relaxed);
+        self.peak_right
+            .fetch_max(right.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Peaks since the last call, resetting them.
+    pub fn take_peaks(&self) -> (f32, f32) {
+        (
+            f32::from_bits(self.peak_left.swap(0, Ordering::Relaxed)),
+            f32::from_bits(self.peak_right.swap(0, Ordering::Relaxed)),
+        )
     }
 }
 
@@ -112,6 +130,7 @@ impl AudioProcessor {
                 let frames = chunk.len() / self.channels;
                 let (left, right) = (&mut self.left[..frames], &mut self.right[..frames]);
                 self.node.render(left, right);
+                self.status.record_peaks(peak(left), peak(right));
                 write_output(left, right, chunk, self.channels);
             }
             self.status
@@ -308,6 +327,7 @@ impl NodePlayer {
 
         evaluate(&self.state.channel, &CHANNEL_PARAMS, beat, &mut plain);
         let (gain, pan) = channel_settings(&plain);
+        let gain = if self.state.audible { gain } else { 0.0 };
         let (left, right) = equal_power(pan);
         self.gain_left.set_target(gain * left);
         self.gain_right.set_target(gain * right);
@@ -447,6 +467,10 @@ impl NodePlayer {
         self.synth.release_all();
         self.pending_ends = [None; MAX_PENDING_ENDS];
     }
+}
+
+fn peak(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0, |p, s| p.max(s.abs()))
 }
 
 /// Evaluates each parameter's automation at `beat` into real units.

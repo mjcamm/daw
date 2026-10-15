@@ -50,6 +50,14 @@ pub enum Edit {
     RemoveClip {
         id: ClipId,
     },
+    /// Silence the node.
+    SetMute {
+        muted: bool,
+    },
+    /// While any node is soloed, only soloed nodes are heard.
+    SetSolo {
+        soloed: bool,
+    },
     /// Set a parameter's default state (normalized). This is what moving a
     /// knob does; it never records movement.
     SetParam {
@@ -140,20 +148,29 @@ pub struct Snapshot {
     /// Transport position in beats, as last reported by the audio side.
     pub position_beats: f64,
     pub loop_range: Option<LoopRange>,
+    pub node: NodeSnapshot,
     /// Clips in id order.
-    pub clips: Vec<ClipSummary>,
+    pub clips: Vec<(ClipId, MidiClip)>,
     /// The node's devices in signal order: instrument, effects, channel.
     pub devices: Vec<DeviceSnapshot>,
     pub can_undo: bool,
     pub can_redo: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClipSummary {
-    pub id: ClipId,
-    pub start: Ticks,
-    pub length: Ticks,
-    pub note_count: usize,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeSnapshot {
+    pub name: String,
+    /// Index into the nine-colour content palette.
+    pub color: u8,
+    pub muted: bool,
+    pub soloed: bool,
+}
+
+/// Peak output levels since they were last read, as linear amplitudes.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Meter {
+    pub left: f32,
+    pub right: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,0 +1,22 @@
+[package]
+name = "daw-ui"
+description = "The desktop app: GPUI front end hosting the engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "daw"
+path = "src/main.rs"
+
+[dependencies]
+daw-engine.workspace = true
+daw-host.workspace = true
+daw-rt.workspace = true
+gpui = "0.2.2"
+
+[lints]
+workspace = true

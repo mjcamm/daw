@@ -43,26 +43,27 @@ Every phase follows the foundation principles: test-driven, engine-owned state, 
 
 **Done when:** layered automation audibly drives the instrument and the effect, as proven by regression tests.
 
-## Phase 3: Motion signals
+## Phase 3: Core-loop UI
 
-**Goal:** draw a movement once, use it everywhere (engine side).
+**Goal:** feel the core loop in hand. Brought forward ahead of signals: the feel of shaping movement is the biggest unknown, and signals extend blocks rather than replace them.
+
+- GPUI app shell, theme tokens (dark and light, per `docs/design/look-and-feel.md`), and the snapshot/command wiring.
+- Transport controls and the Parameters view: parameters as rows, layer stacks, drawing and editing blocks.
+- Project save and load.
+
+**Done when:** a user can build movement with layers in the UI.
+
+## Phase 4: Motion signals
+
+**Goal:** draw a movement once, use it everywhere.
 
 - Motion signals in song time, with repetition via linked copies.
 - Sources: drawn, and from MIDI notes.
 - Blocks linked to signals, with per-use range mapping.
 - "Used by" tracking.
+- The Signals view, and linking blocks to signals in the Parameters view.
 
-**Done when:** a MIDI kick pattern publishes a ducking signal that is linked into several parameters and stays in sync everywhere.
-
-## Phase 4: Core-loop UI
-
-**Goal:** feel the core loop in hand.
-
-- GPUI app shell, theme tokens (dark and light), and the snapshot/command wiring.
-- Transport controls, the Layers view and the Signals view, with colour coding.
-- Project save and load.
-
-**Done when:** a user can build movement with layers and signals in the UI.
+**Done when:** a MIDI kick pattern publishes a ducking signal that is linked into several parameters and stays in sync everywhere, all done in the UI.
 
 > **Milestone gate:** does shaping movement feel great? Review and iterate on phases 2 to 4 before building outward.
 

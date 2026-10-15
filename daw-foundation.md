@@ -88,7 +88,7 @@ It is an original design, not a clone or clean-room copy of any existing DAW. It
 
 **Pages**
 1. **Arrangement view**: the node tree alongside the timeline, showing clips and song structure only.
-2. **Layers view**: appears when a node is selected. Shows that node's parameters as rows, each expanding into its layer stack, with the combined result on top.
+2. **Parameters view**: appears when a node is selected. Shows that node's parameters as rows, each expanding into its layer stack, with the combined result on top.
 3. **Signals view**: all signals on a shared timeline. Motion signals are drawn and edited here; audio signals are listed by the node publishing them. Selecting a signal shows its source and everything that uses it.
 4. **Mixer view**: every node's channel strip, arranged to show the tree. Children are grouped under their parent and collapse with it, and audio signals (sends and sidechains) show where sound is pulled across branches.
 

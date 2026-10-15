@@ -9,8 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-cpal.workspace = true
 daw-engine.workspace = true
+daw-host.workspace = true
 daw-rt.workspace = true
 hound.workspace = true
 rtrb.workspace = true

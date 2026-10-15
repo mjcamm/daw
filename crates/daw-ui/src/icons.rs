@@ -1,0 +1,89 @@
+//! Icons from the Lucide set (ISC licence, see `assets/icons/LICENSE`),
+//! embedded in the binary and served to GPUI as assets.
+//!
+//! To add an icon: download it from the pinned `lucide-static` version into
+//! `assets/icons/`, then add a variant below.
+
+use gpui::{AssetSource, Hsla, SharedString, Styled, Svg, px, svg};
+use std::borrow::Cow;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    Play,
+    Stop,
+    ToStart,
+    Loop,
+}
+
+/// Every embedded icon: its variant, asset path and file contents.
+const ICONS: [(Icon, &str, &[u8]); 4] = [
+    (
+        Icon::Play,
+        "icons/play.svg",
+        include_bytes!("../assets/icons/play.svg"),
+    ),
+    (
+        Icon::Stop,
+        "icons/square.svg",
+        include_bytes!("../assets/icons/square.svg"),
+    ),
+    (
+        Icon::ToStart,
+        "icons/skip-back.svg",
+        include_bytes!("../assets/icons/skip-back.svg"),
+    ),
+    (
+        Icon::Loop,
+        "icons/repeat.svg",
+        include_bytes!("../assets/icons/repeat.svg"),
+    ),
+];
+
+impl Icon {
+    fn path(self) -> &'static str {
+        ICONS
+            .iter()
+            .find(|(icon, _, _)| *icon == self)
+            .map_or("", |(_, path, _)| path)
+    }
+}
+
+/// An icon drawn in `color`, `size` pixels square.
+pub fn icon(kind: Icon, color: Hsla, size: f32) -> Svg {
+    svg().path(kind.path()).size(px(size)).text_color(color)
+}
+
+/// Serves the embedded icons to GPUI.
+#[derive(Debug, Clone, Copy)]
+pub struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        Ok(ICONS
+            .iter()
+            .find(|(_, p, _)| *p == path)
+            .map(|(_, _, bytes)| Cow::Borrowed(*bytes)))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(ICONS
+            .iter()
+            .filter(|(_, p, _)| p.starts_with(path))
+            .map(|(_, p, _)| SharedString::from(*p))
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_icon_is_embedded_and_loadable() {
+        for (icon, path, _) in ICONS {
+            assert_eq!(icon.path(), path);
+            let bytes = Assets.load(path).unwrap().unwrap();
+            assert!(bytes.starts_with(b"<!-- @license lucide"), "{path}");
+        }
+    }
+}

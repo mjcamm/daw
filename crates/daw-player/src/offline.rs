@@ -1,7 +1,8 @@
 //! Offline rendering.
 
-use crate::{Result, demo, frames_for_bars};
+use crate::{Result, frames_for_bars};
 use daw_engine::{Command, Engine, EngineConfig};
+use daw_host::demo;
 use std::path::Path;
 
 /// Block size for offline renders. Any size gives identical output.

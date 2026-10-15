@@ -1,0 +1,17 @@
+[package]
+name = "daw-host"
+description = "Runs the engine on a real audio device; shared by the app and the player."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal.workspace = true
+daw-engine.workspace = true
+daw-rt.workspace = true
+
+[lints]
+workspace = true
