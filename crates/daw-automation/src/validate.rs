@@ -1,6 +1,6 @@
-//! Checking blocks before they enter the project.
+//! Checking blocks and signals before they enter the project.
 
-use daw_protocol::{Block, InvalidBlock, Segment, Ticks};
+use daw_protocol::{Block, InvalidBlock, InvalidSignal, NotesSource, Segment, Shape, Ticks};
 
 pub fn validate_block(block: &Block) -> Result<(), InvalidBlock> {
     if block.start < Ticks::ZERO {
@@ -18,7 +18,27 @@ pub fn validate_block(block: &Block) -> Result<(), InvalidBlock> {
     if !(0.0..=1.0).contains(&block.depth) {
         return Err(InvalidBlock::Depth);
     }
-    let points = &block.shape.points;
+    if let Some(link) = block.link
+        && !((0.0..=1.0).contains(&link.low) && (0.0..=1.0).contains(&link.high))
+    {
+        return Err(InvalidBlock::LinkRange);
+    }
+    validate_shape(&block.shape)
+}
+
+/// Checks a notes signal's filter and envelope.
+pub fn validate_notes_source(source: &NotesSource) -> Result<(), InvalidSignal> {
+    if source.length <= Ticks::ZERO {
+        return Err(InvalidSignal::EnvelopeLength);
+    }
+    if source.lowest > source.highest || source.highest > 127 {
+        return Err(InvalidSignal::PitchRange);
+    }
+    validate_shape(&source.shape).map_err(InvalidSignal::Shape)
+}
+
+fn validate_shape(shape: &Shape) -> Result<(), InvalidBlock> {
+    let points = &shape.points;
     if points.is_empty() {
         return Err(InvalidBlock::NoPoints);
     }
@@ -108,6 +128,51 @@ mod tests {
         assert_eq!(
             check(|b| b.shape.points[0].segment = Segment::Curve(1.5)),
             Err(InvalidBlock::CurveTension { index: 0 })
+        );
+    }
+
+    #[test]
+    fn rejects_link_ranges_outside_the_parameter() {
+        use daw_protocol::{SignalId, SignalLink};
+        let link = |low, high| SignalLink {
+            signal: SignalId(1),
+            low,
+            high,
+        };
+        assert_eq!(check(|b| b.link = Some(link(0.8, 0.2))), Ok(()), "flipped");
+        assert_eq!(
+            check(|b| b.link = Some(link(-0.1, 0.5))),
+            Err(InvalidBlock::LinkRange)
+        );
+        assert_eq!(
+            check(|b| b.link = Some(link(0.0, f64::NAN))),
+            Err(InvalidBlock::LinkRange)
+        );
+    }
+
+    #[test]
+    fn checks_notes_sources() {
+        let valid = NotesSource {
+            lowest: 36,
+            highest: 36,
+            length: Ticks::from_beats(1),
+            shape: Shape::ramp(0.0, 1.0),
+        };
+        assert_eq!(validate_notes_source(&valid), Ok(()));
+        let with = |change: fn(&mut NotesSource)| {
+            let mut source = valid.clone();
+            change(&mut source);
+            validate_notes_source(&source)
+        };
+        assert_eq!(
+            with(|s| s.length = Ticks::ZERO),
+            Err(InvalidSignal::EnvelopeLength)
+        );
+        assert_eq!(with(|s| s.lowest = 40), Err(InvalidSignal::PitchRange));
+        assert_eq!(with(|s| s.highest = 128), Err(InvalidSignal::PitchRange));
+        assert_eq!(
+            with(|s| s.shape.points.clear()),
+            Err(InvalidSignal::Shape(InvalidBlock::NoPoints))
         );
     }
 

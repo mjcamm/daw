@@ -3,10 +3,10 @@
 use crate::devices::{
     CHANNEL_PARAMS, INSTRUMENT_PARAMS, ParamInfo, effect_params, fixed_device_params,
 };
-use daw_automation::validate_block;
+use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
     Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, InvalidClip, Layer,
-    LayerId, MidiClip, ParamId, ParamState,
+    LayerId, MidiClip, ParamId, ParamState, Signal, SignalId, SignalSource, SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -15,12 +15,16 @@ pub const MAX_TEMPO_BPM: f64 = 999.0;
 pub const DEFAULT_TEMPO_BPM: f64 = 120.0;
 /// Most effects in one node's chain.
 pub const MAX_EFFECTS: usize = 16;
+/// Number of colours in the content palette.
+pub const PALETTE_SIZE: u8 = 9;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub name: String,
     pub tempo_bpm: f64,
     pub node: Node,
+    /// Motion signals, by id.
+    pub signals: BTreeMap<SignalId, Signal>,
 }
 
 /// A channel: clips playing through an instrument, then its effect chain,
@@ -45,6 +49,7 @@ impl Default for Project {
             name: "Untitled".to_owned(),
             tempo_bpm: DEFAULT_TEMPO_BPM,
             node: Node::default(),
+            signals: BTreeMap::new(),
         }
     }
 }
@@ -169,18 +174,106 @@ impl Node {
         Ok(&mut self.param_mut(param)?.layers[position].1)
     }
 
-    /// Every layer and block id in use.
-    fn used_ids(&self) -> UsedIds {
-        let mut used = UsedIds::default();
-        for (_, params) in self.devices() {
-            for state in params {
-                for (layer_id, layer) in &state.layers {
-                    used.layers.insert(*layer_id);
-                    used.blocks.extend(layer.blocks.iter().map(|(b, _)| *b));
-                }
+    /// Every block that links to a signal: where it is and which signal.
+    pub fn links(&self) -> impl Iterator<Item = (SignalUse, SignalId)> + '_ {
+        self.devices().flat_map(|(device, params)| {
+            params.iter().enumerate().flat_map(move |(index, state)| {
+                let param = ParamId {
+                    device,
+                    index: index as u32,
+                };
+                state.layers.iter().flat_map(move |(layer, l)| {
+                    l.blocks.iter().filter_map(move |(block, b)| {
+                        let link = b.link?;
+                        Some((
+                            SignalUse {
+                                param,
+                                layer: *layer,
+                                block: *block,
+                            },
+                            link.signal,
+                        ))
+                    })
+                })
+            })
+        })
+    }
+}
+
+/// Every layer and block id in use, on the node and on signals.
+fn used_ids(node: &Node, signals: &BTreeMap<SignalId, Signal>) -> UsedIds {
+    let mut used = UsedIds::default();
+    for (_, params) in node.devices() {
+        for state in params {
+            for (layer_id, layer) in &state.layers {
+                used.layers.insert(*layer_id);
+                used.blocks.extend(layer.blocks.iter().map(|(b, _)| *b));
             }
         }
-        used
+    }
+    for signal in signals.values() {
+        if let SignalSource::Drawn(blocks) = &signal.source {
+            used.blocks.extend(blocks.iter().map(|(b, _)| *b));
+        }
+    }
+    used
+}
+
+/// Where a block on a signal's lane is: the signal and its position.
+fn find_signal_block(
+    signals: &BTreeMap<SignalId, Signal>,
+    id: BlockId,
+) -> Option<(SignalId, usize)> {
+    signals
+        .iter()
+        .find_map(|(signal_id, signal)| match &signal.source {
+            SignalSource::Drawn(blocks) => blocks
+                .iter()
+                .position(|(b, _)| *b == id)
+                .map(|position| (*signal_id, position)),
+            SignalSource::Notes(_) => None,
+        })
+}
+
+/// A drawn signal's blocks, or `WrongSignalKind`.
+fn drawn_blocks(
+    signals: &mut BTreeMap<SignalId, Signal>,
+    id: SignalId,
+) -> Result<&mut Vec<(BlockId, Block)>, CommandError> {
+    match &mut signals
+        .get_mut(&id)
+        .ok_or(CommandError::UnknownSignal { id })?
+        .source
+    {
+        SignalSource::Drawn(blocks) => Ok(blocks),
+        SignalSource::Notes(_) => Err(CommandError::WrongSignalKind { id }),
+    }
+}
+
+/// A block for a signal's lane: valid, and not linked to a signal itself.
+fn check_signal_block(id: BlockId, block: &Block) -> Result<(), CommandError> {
+    check_block(id, block)?;
+    if block.link.is_some() {
+        return Err(CommandError::LinkInsideSignal { block: id });
+    }
+    Ok(())
+}
+
+/// A layer block's link, if any, must name an existing signal.
+fn check_link(block: &Block, signals: &BTreeMap<SignalId, Signal>) -> Result<(), CommandError> {
+    match block.link {
+        Some(link) if !signals.contains_key(&link.signal) => {
+            Err(CommandError::UnknownSignal { id: link.signal })
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_color(color: u8) -> Result<(), CommandError> {
+    if color < PALETTE_SIZE {
+        Ok(())
+    } else {
+        Err(CommandError::ColorOutOfRange { color })
     }
 }
 
@@ -215,6 +308,7 @@ impl Project {
     /// before anything is modified.
     pub fn apply(&mut self, edit: Edit) -> Result<Edit, CommandError> {
         let node = &mut self.node;
+        let signals = &mut self.signals;
         match edit {
             Edit::RenameSong { name } => {
                 let name = clean_name(&name)?;
@@ -291,11 +385,11 @@ impl Project {
                         found: effect.params.len(),
                     });
                 }
-                let mut used = node.used_ids();
+                let mut used = used_ids(node, signals);
                 for state in &mut effect.params {
                     check_normalized(state.base)?;
                     for (layer_id, layer) in &mut state.layers {
-                        prepare_layer(*layer_id, layer, &mut used)?;
+                        prepare_layer(*layer_id, layer, &mut used, signals)?;
                     }
                 }
                 node.effects.insert(index, (id, effect));
@@ -318,7 +412,7 @@ impl Project {
                     .layers
                     .len();
                 check_index(index, stack_len)?;
-                prepare_layer(id, &mut layer, &mut node.used_ids())?;
+                prepare_layer(id, &mut layer, &mut used_ids(node, signals), signals)?;
                 node.param_mut(param)?.layers.insert(index, (id, layer));
                 Ok(Edit::RemoveLayer { id })
             }
@@ -370,34 +464,127 @@ impl Project {
                 if node.find_layer(layer).is_none() {
                     return Err(CommandError::UnknownLayer { id: layer });
                 }
-                node.used_ids().claim_block(id)?;
+                used_ids(node, signals).claim_block(id)?;
                 check_block(id, &block)?;
+                check_link(&block, signals)?;
                 let target = node.layer_mut(layer)?;
                 check_no_overlap(&target.blocks, id, &block)?;
                 insert_sorted(&mut target.blocks, id, block);
                 Ok(Edit::RemoveBlock { id })
             }
             Edit::RemoveBlock { id } => {
-                let (param, layer_pos, layer, block_pos) = node
-                    .find_block(id)
-                    .ok_or(CommandError::UnknownBlock { id })?;
-                let state = node.param_mut(param)?;
-                let (_, block) = state.layers[layer_pos].1.blocks.remove(block_pos);
-                Ok(Edit::AddBlock { layer, id, block })
+                if let Some((param, layer_pos, layer, block_pos)) = node.find_block(id) {
+                    let state = node.param_mut(param)?;
+                    let (_, block) = state.layers[layer_pos].1.blocks.remove(block_pos);
+                    return Ok(Edit::AddBlock { layer, id, block });
+                }
+                let (signal, position) =
+                    find_signal_block(signals, id).ok_or(CommandError::UnknownBlock { id })?;
+                let (_, block) = drawn_blocks(signals, signal)?.remove(position);
+                Ok(Edit::AddSignalBlock { signal, id, block })
             }
             Edit::SetBlock { id, block } => {
-                let (param, layer_pos, _, block_pos) = node
-                    .find_block(id)
-                    .ok_or(CommandError::UnknownBlock { id })?;
-                check_block(id, &block)?;
-                let blocks = &mut node.param_mut(param)?.layers[layer_pos].1.blocks;
+                let (blocks, position) =
+                    if let Some((param, layer_pos, _, position)) = node.find_block(id) {
+                        check_block(id, &block)?;
+                        check_link(&block, signals)?;
+                        (
+                            &mut node.param_mut(param)?.layers[layer_pos].1.blocks,
+                            position,
+                        )
+                    } else {
+                        let (signal, position) = find_signal_block(signals, id)
+                            .ok_or(CommandError::UnknownBlock { id })?;
+                        check_signal_block(id, &block)?;
+                        (drawn_blocks(signals, signal)?, position)
+                    };
                 check_no_overlap(blocks, id, &block)?;
-                let (_, previous) = blocks.remove(block_pos);
+                let (_, previous) = blocks.remove(position);
                 insert_sorted(blocks, id, block);
                 Ok(Edit::SetBlock {
                     id,
                     block: previous,
                 })
+            }
+            Edit::AddSignal { id, mut signal } => {
+                if signals.contains_key(&id) {
+                    return Err(CommandError::DuplicateSignal { id });
+                }
+                signal.name = clean_name(&signal.name)?;
+                check_color(signal.color)?;
+                match &mut signal.source {
+                    SignalSource::Drawn(blocks) => {
+                        let mut used = used_ids(node, signals);
+                        blocks.sort_by_key(|(_, b)| b.start);
+                        for (i, (block_id, block)) in blocks.iter().enumerate() {
+                            used.claim_block(*block_id)?;
+                            check_signal_block(*block_id, block)?;
+                            check_no_overlap(&blocks[..i], *block_id, block)?;
+                        }
+                    }
+                    SignalSource::Notes(source) => validate_notes_source(source)
+                        .map_err(|reason| CommandError::InvalidSignal { id, reason })?,
+                }
+                signals.insert(id, signal);
+                Ok(Edit::RemoveSignal { id })
+            }
+            Edit::RemoveSignal { id } => {
+                if !signals.contains_key(&id) {
+                    return Err(CommandError::UnknownSignal { id });
+                }
+                if let Some((used, _)) = node.links().find(|(_, signal)| *signal == id) {
+                    return Err(CommandError::SignalInUse {
+                        id,
+                        block: used.block,
+                    });
+                }
+                let signal = signals
+                    .remove(&id)
+                    .ok_or(CommandError::UnknownSignal { id })?;
+                Ok(Edit::AddSignal { id, signal })
+            }
+            Edit::RenameSignal { id, name } => {
+                let name = clean_name(&name)?;
+                let signal = signals
+                    .get_mut(&id)
+                    .ok_or(CommandError::UnknownSignal { id })?;
+                let previous = std::mem::replace(&mut signal.name, name);
+                Ok(Edit::RenameSignal { id, name: previous })
+            }
+            Edit::SetSignalColor { id, color } => {
+                check_color(color)?;
+                let signal = signals
+                    .get_mut(&id)
+                    .ok_or(CommandError::UnknownSignal { id })?;
+                let previous = std::mem::replace(&mut signal.color, color);
+                Ok(Edit::SetSignalColor {
+                    id,
+                    color: previous,
+                })
+            }
+            Edit::SetNotesSource { id, source } => {
+                let signal = signals
+                    .get_mut(&id)
+                    .ok_or(CommandError::UnknownSignal { id })?;
+                let SignalSource::Notes(current) = &mut signal.source else {
+                    return Err(CommandError::WrongSignalKind { id });
+                };
+                validate_notes_source(&source)
+                    .map_err(|reason| CommandError::InvalidSignal { id, reason })?;
+                let previous = std::mem::replace(current, source);
+                Ok(Edit::SetNotesSource {
+                    id,
+                    source: previous,
+                })
+            }
+            Edit::AddSignalBlock { signal, id, block } => {
+                drawn_blocks(signals, signal)?;
+                used_ids(node, signals).claim_block(id)?;
+                check_signal_block(id, &block)?;
+                let blocks = drawn_blocks(signals, signal)?;
+                check_no_overlap(blocks, id, &block)?;
+                insert_sorted(blocks, id, block);
+                Ok(Edit::RemoveBlock { id })
             }
         }
     }
@@ -454,12 +641,18 @@ fn insert_sorted(blocks: &mut Vec<(BlockId, Block)>, id: BlockId, block: Block) 
 }
 
 /// Validates an incoming layer, claims its ids, and sorts its blocks.
-fn prepare_layer(id: LayerId, layer: &mut Layer, used: &mut UsedIds) -> Result<(), CommandError> {
+fn prepare_layer(
+    id: LayerId,
+    layer: &mut Layer,
+    used: &mut UsedIds,
+    signals: &BTreeMap<SignalId, Signal>,
+) -> Result<(), CommandError> {
     used.claim_layer(id)?;
     layer.blocks.sort_by_key(|(_, b)| b.start);
     for (i, (block_id, block)) in layer.blocks.iter().enumerate() {
         used.claim_block(*block_id)?;
         check_block(*block_id, block)?;
+        check_link(block, signals)?;
         check_no_overlap(&layer.blocks[..i], *block_id, block)?;
     }
     Ok(())
@@ -490,7 +683,10 @@ fn validate_clip(clip: &MidiClip) -> Result<(), InvalidClip> {
 mod tests {
     use super::*;
     use crate::devices::{channel, filter, instrument};
-    use daw_protocol::{BlendMode, EffectKind, InvalidBlock, MidiNote, Shape, Ticks};
+    use daw_protocol::{
+        BlendMode, EffectKind, InvalidBlock, InvalidSignal, MidiNote, NotesSource, Shape,
+        SignalLink, Ticks,
+    };
 
     const CUTOFF: ParamId = ParamId {
         device: DeviceRef::Instrument,
@@ -576,6 +772,295 @@ mod tests {
         let err = project.apply(edit).unwrap_err();
         assert_eq!(*project, before, "rejected edit changed the project");
         err
+    }
+
+    const DUCK: SignalId = SignalId(1);
+    const SWEEP: SignalId = SignalId(2);
+
+    fn kick_envelope() -> NotesSource {
+        NotesSource {
+            lowest: 36,
+            highest: 36,
+            length: Ticks(480),
+            shape: Shape::ramp(0.0, 1.0),
+        }
+    }
+
+    fn notes_signal() -> Signal {
+        Signal {
+            name: "Kick duck".to_owned(),
+            color: 0,
+            source: SignalSource::Notes(kick_envelope()),
+        }
+    }
+
+    /// A drawn signal holding block 20 over beats 0..4.
+    fn drawn_signal() -> Signal {
+        Signal {
+            name: "Sweep".to_owned(),
+            color: 5,
+            source: SignalSource::Drawn(vec![(BlockId(20), block(0, 4))]),
+        }
+    }
+
+    /// `populated()` plus a notes signal (1), a drawn signal (2), and block
+    /// 2 on layer 1 linked to the notes signal.
+    fn with_signals() -> Project {
+        let mut project = populated();
+        for edit in [
+            Edit::AddSignal {
+                id: DUCK,
+                signal: notes_signal(),
+            },
+            Edit::AddSignal {
+                id: SWEEP,
+                signal: drawn_signal(),
+            },
+            add_block(1, 2, block(8, 4).linked(DUCK)),
+        ] {
+            project.apply(edit).unwrap();
+        }
+        project
+    }
+
+    #[test]
+    fn every_signal_edit_is_reverted_by_its_inverse() {
+        let edits = [
+            Edit::AddSignal {
+                id: SignalId(3),
+                signal: notes_signal(),
+            },
+            Edit::RemoveSignal { id: SWEEP },
+            Edit::RenameSignal {
+                id: DUCK,
+                name: "Pump".to_owned(),
+            },
+            Edit::SetSignalColor { id: DUCK, color: 8 },
+            Edit::SetNotesSource {
+                id: DUCK,
+                source: NotesSource {
+                    length: Ticks(960),
+                    ..kick_envelope()
+                },
+            },
+            Edit::AddSignalBlock {
+                signal: SWEEP,
+                id: BlockId(21),
+                block: block(8, 2),
+            },
+            Edit::SetBlock {
+                id: BlockId(20),
+                block: block(1, 2),
+            },
+            Edit::RemoveBlock { id: BlockId(20) },
+            Edit::SetBlock {
+                id: BlockId(1),
+                block: block(0, 4).linked(SWEEP),
+            },
+        ];
+        for edit in edits {
+            assert_round_trip(with_signals(), edit);
+        }
+    }
+
+    #[test]
+    fn signals_in_use_cannot_be_removed() {
+        let mut project = with_signals();
+        assert_eq!(
+            assert_rejected(&mut project, Edit::RemoveSignal { id: DUCK }),
+            CommandError::SignalInUse {
+                id: DUCK,
+                block: BlockId(2)
+            }
+        );
+        project.apply(Edit::RemoveBlock { id: BlockId(2) }).unwrap();
+        project.apply(Edit::RemoveSignal { id: DUCK }).unwrap();
+    }
+
+    #[test]
+    fn links_must_name_an_existing_signal() {
+        let mut project = with_signals();
+        let missing = SignalId(9);
+        let err = assert_rejected(&mut project, add_block(1, 3, block(20, 1).linked(missing)));
+        assert_eq!(err, CommandError::UnknownSignal { id: missing });
+        let err = assert_rejected(
+            &mut project,
+            Edit::SetBlock {
+                id: BlockId(1),
+                block: block(0, 4).linked(missing),
+            },
+        );
+        assert_eq!(err, CommandError::UnknownSignal { id: missing });
+        let mut layer = Layer::new(BlendMode::Add);
+        layer
+            .blocks
+            .push((BlockId(30), block(0, 1).linked(missing)));
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddLayer {
+                param: VOLUME,
+                id: LayerId(30),
+                index: 0,
+                layer,
+            },
+        );
+        assert_eq!(err, CommandError::UnknownSignal { id: missing });
+    }
+
+    #[test]
+    fn signal_blocks_cannot_link_to_signals() {
+        let mut project = with_signals();
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignalBlock {
+                signal: SWEEP,
+                id: BlockId(21),
+                block: block(8, 1).linked(DUCK),
+            },
+        );
+        assert_eq!(err, CommandError::LinkInsideSignal { block: BlockId(21) });
+        let err = assert_rejected(
+            &mut project,
+            Edit::SetBlock {
+                id: BlockId(20),
+                block: block(0, 4).linked(DUCK),
+            },
+        );
+        assert_eq!(err, CommandError::LinkInsideSignal { block: BlockId(20) });
+    }
+
+    #[test]
+    fn signal_edits_check_the_kind_of_signal() {
+        let mut project = with_signals();
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignalBlock {
+                signal: DUCK,
+                id: BlockId(21),
+                block: block(0, 1),
+            },
+        );
+        assert_eq!(err, CommandError::WrongSignalKind { id: DUCK });
+        let err = assert_rejected(
+            &mut project,
+            Edit::SetNotesSource {
+                id: SWEEP,
+                source: kick_envelope(),
+            },
+        );
+        assert_eq!(err, CommandError::WrongSignalKind { id: SWEEP });
+    }
+
+    #[test]
+    fn signal_blocks_share_the_block_id_space_and_never_overlap() {
+        let mut project = with_signals();
+        let err = assert_rejected(&mut project, add_block(1, 20, block(30, 1)));
+        assert_eq!(err, CommandError::DuplicateBlock { id: BlockId(20) });
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignalBlock {
+                signal: SWEEP,
+                id: BlockId(1),
+                block: block(10, 1),
+            },
+        );
+        assert_eq!(err, CommandError::DuplicateBlock { id: BlockId(1) });
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignalBlock {
+                signal: SWEEP,
+                id: BlockId(21),
+                block: block(2, 4),
+            },
+        );
+        assert_eq!(
+            err,
+            CommandError::OverlappingBlocks {
+                id: BlockId(21),
+                other: BlockId(20)
+            }
+        );
+    }
+
+    #[test]
+    fn bad_signals_are_rejected() {
+        let mut project = with_signals();
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignal {
+                id: DUCK,
+                signal: notes_signal(),
+            },
+        );
+        assert_eq!(err, CommandError::DuplicateSignal { id: DUCK });
+        let mut bad = notes_signal();
+        bad.color = 9;
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignal {
+                id: SignalId(3),
+                signal: bad,
+            },
+        );
+        assert_eq!(err, CommandError::ColorOutOfRange { color: 9 });
+        let mut bad = notes_signal();
+        bad.name = "  ".to_owned();
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignal {
+                id: SignalId(3),
+                signal: bad,
+            },
+        );
+        assert_eq!(err, CommandError::EmptyName);
+        let err = assert_rejected(
+            &mut project,
+            Edit::SetNotesSource {
+                id: DUCK,
+                source: NotesSource {
+                    length: Ticks::ZERO,
+                    ..kick_envelope()
+                },
+            },
+        );
+        assert_eq!(
+            err,
+            CommandError::InvalidSignal {
+                id: DUCK,
+                reason: InvalidSignal::EnvelopeLength
+            }
+        );
+        let mut out_of_range = block(20, 1);
+        out_of_range.link = Some(SignalLink {
+            signal: DUCK,
+            low: 2.0,
+            high: 1.0,
+        });
+        let err = assert_rejected(&mut project, add_block(1, 3, out_of_range));
+        assert!(matches!(
+            err,
+            CommandError::InvalidBlock {
+                reason: InvalidBlock::LinkRange,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn links_list_every_linked_block() {
+        let project = with_signals();
+        let links: Vec<_> = project.node.links().collect();
+        assert_eq!(
+            links,
+            [(
+                SignalUse {
+                    param: CUTOFF,
+                    layer: LayerId(1),
+                    block: BlockId(2)
+                },
+                DUCK
+            )]
+        );
     }
 
     #[test]

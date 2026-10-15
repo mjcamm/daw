@@ -4,7 +4,7 @@
 
 ## Where we are
 
-Phases 0–2 of `build-plan.md` are done (foundations, headless engine, parameters and layers in the engine). **Phase 3 (core-loop UI) is in progress.** The UI was moved ahead of signals; signals are Phase 4.
+Phases 0–2 of `build-plan.md` are done (foundations, headless engine, parameters and layers in the engine). **Phase 3 (core-loop UI) is in progress** (block editing built, waiting for the user to try it). **Phase 4 (motion signals): engine side done**, UI not started (see `docs/design/motion-signals.md`).
 
 Working in the app (`cargo run -p daw-ui`):
 
@@ -25,10 +25,19 @@ Working in the app (`cargo run -p daw-ui`):
 3. **Try block editing, the resting-value slider and zoom.** Open points: points slide freely (no snap); snap and zoom settings are not saved with the project. Zoom so far is on the Parameters page only; Arrange and Signals get the same sliders (`zoom.rs`) when those pages are worked on.
 4. **Milestone gate placement:** `build-plan.md` puts "does shaping movement feel great?" after Phase 4; this file had it at the end of Phase 3. Ask which, then make the two agree.
 
+## Motion signals in the engine (built 2026-10-15, user away)
+
+- Signals are drawn (a lane of blocks) or from MIDI notes (an envelope restarted by each note in a pitch range). Blocks link with `Block.link = Some(SignalLink { signal, low, high })` and read the signal in song time.
+- Edits: `AddSignal`, `RemoveSignal` (refused while used), `RenameSignal`, `SetSignalColor`, `SetNotesSource`, `AddSignalBlock`; `SetBlock`/`RemoveBlock` also work on signal blocks.
+- `Snapshot.signals` carries each signal with its "Used by" list. File format is version 2 (version 1 still loads).
+- Decisions to confirm with the user are marked **(confirm)** in the design doc: a signal gap means no effect; a notes envelope is silent after it ends; removing a used signal is refused.
+
 ## Next up
 
-1. The user tries block editing; iterate on feel.
-2. Then the remaining Phase 3 items: the milestone gate ("does shaping movement feel great?") with the user, then Phase 4 signals.
+1. The user tries block editing, the resting-value slider and zoom; iterate on feel.
+2. Confirm the **(confirm)** decisions in `docs/design/motion-signals.md`.
+3. Phase 4 UI, after asking the user about layout: the Signals page (signal lanes on a shared timeline, drawing, notes-source settings, "Used by"), and linking a block to a signal from the Parameters page (with its range).
+4. The milestone gate ("does shaping movement feel great?").
 
 ## How the user likes to work
 

@@ -26,6 +26,12 @@ pub struct LayerId(pub u64);
 )]
 pub struct BlockId(pub u64);
 
+/// Identifies a signal. Chosen by its creator.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct SignalId(pub u64);
+
 /// A device on a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeviceRef {
@@ -140,6 +146,63 @@ pub struct Block {
     pub fade_in: Ticks,
     /// The block's weight ramps down to zero over this long before its end.
     pub fade_out: Ticks,
+    /// When set, the block plays this signal instead of its own shape. The
+    /// shape and cycle are kept, so unlinking brings the drawing back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<SignalLink>,
+}
+
+/// A block's link to a signal: which one, and where the bottom and top of
+/// the signal land (`x = low + (high - low) · signal`). Both `0..=1`;
+/// `low > high` flips it.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SignalLink {
+    pub signal: SignalId,
+    pub low: f64,
+    pub high: f64,
+}
+
+impl SignalLink {
+    /// The full signal, bottom to top.
+    pub fn new(signal: SignalId) -> Self {
+        Self {
+            signal,
+            low: 0.0,
+            high: 1.0,
+        }
+    }
+}
+
+/// Movement drawn once, used anywhere: a shape over song time with no units
+/// or target of its own. Blocks link to it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Signal {
+    pub name: String,
+    /// Index into the nine-colour content palette.
+    pub color: u8,
+    pub source: SignalSource,
+}
+
+/// Where a signal's shape comes from.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum SignalSource {
+    /// Drawn blocks on the signal's own lane: non-overlapping, sorted by
+    /// start, never linked. Gaps are silence.
+    Drawn(Vec<(BlockId, Block)>),
+    /// An envelope restarted by every matching note.
+    Notes(NotesSource),
+}
+
+/// A signal made from MIDI notes: each note with a pitch in
+/// `lowest..=highest` restarts `shape`, played over `length` from the note's
+/// start. After the envelope ends, or before the first note, the signal is
+/// silent. The notes come from the project's node.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NotesSource {
+    pub lowest: u8,
+    pub highest: u8,
+    pub length: Ticks,
+    pub shape: Shape,
 }
 
 impl Block {
@@ -155,6 +218,15 @@ impl Block {
             nudge: Ticks::ZERO,
             fade_in: Ticks::ZERO,
             fade_out: Ticks::ZERO,
+            link: None,
+        }
+    }
+
+    /// The same block linked to `signal`, full range.
+    pub fn linked(self, signal: SignalId) -> Self {
+        Self {
+            link: Some(SignalLink::new(signal)),
+            ..self
         }
     }
 

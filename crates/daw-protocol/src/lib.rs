@@ -8,8 +8,9 @@ mod automation;
 mod time;
 
 pub use automation::{
-    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Layer, LayerId, ParamId,
-    ParamState, Scale, Segment, Shape, ShapePoint,
+    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Layer, LayerId,
+    NotesSource, ParamId, ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
+    SignalLink, SignalSource,
 };
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -113,8 +114,36 @@ pub enum Edit {
     RemoveBlock {
         id: BlockId,
     },
-    /// Replace a block: move, stretch, reshape or change its controls.
+    /// Replace a block on a layer or a signal: move, resize, reshape, link
+    /// or change its controls.
     SetBlock {
+        id: BlockId,
+        block: Block,
+    },
+    AddSignal {
+        id: SignalId,
+        signal: Signal,
+    },
+    /// Rejected while any block links to the signal.
+    RemoveSignal {
+        id: SignalId,
+    },
+    RenameSignal {
+        id: SignalId,
+        name: String,
+    },
+    SetSignalColor {
+        id: SignalId,
+        color: u8,
+    },
+    /// Change a notes signal's filter and envelope.
+    SetNotesSource {
+        id: SignalId,
+        source: NotesSource,
+    },
+    /// Add a block to a drawn signal's lane. Removed with `RemoveBlock`.
+    AddSignalBlock {
+        signal: SignalId,
         id: BlockId,
         block: Block,
     },
@@ -171,6 +200,8 @@ pub struct Snapshot {
     pub clips: Vec<(ClipId, MidiClip)>,
     /// The node's devices in signal order: instrument, effects, channel.
     pub devices: Vec<DeviceSnapshot>,
+    /// Every motion signal, in id order.
+    pub signals: Vec<SignalSnapshot>,
     pub can_undo: bool,
     pub can_redo: bool,
 }
@@ -215,6 +246,25 @@ pub struct ParamSnapshot {
     pub display: String,
     /// Layers from bottom to top.
     pub layers: Vec<(LayerId, Layer)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignalSnapshot {
+    pub id: SignalId,
+    pub name: String,
+    /// Index into the nine-colour content palette.
+    pub color: u8,
+    pub source: SignalSource,
+    /// Every block linked to this signal.
+    pub used_by: Vec<SignalUse>,
+}
+
+/// A block that links to a signal, and where it lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalUse {
+    pub param: ParamId,
+    pub layer: LayerId,
+    pub block: BlockId,
 }
 
 /// Why the engine rejected a command. A rejected command changes nothing.
@@ -288,6 +338,33 @@ pub enum CommandError {
         id: BlockId,
         other: BlockId,
     },
+    DuplicateSignal {
+        id: SignalId,
+    },
+    UnknownSignal {
+        id: SignalId,
+    },
+    /// The signal cannot be removed while a block links to it.
+    SignalInUse {
+        id: SignalId,
+        block: BlockId,
+    },
+    InvalidSignal {
+        id: SignalId,
+        reason: InvalidSignal,
+    },
+    /// The edit needs a different kind of signal (drawn or notes).
+    WrongSignalKind {
+        id: SignalId,
+    },
+    /// Blocks on a signal's lane cannot themselves link to a signal.
+    LinkInsideSignal {
+        block: BlockId,
+    },
+    /// Colours index the nine-colour content palette.
+    ColorOutOfRange {
+        color: u8,
+    },
     /// Names must contain something other than whitespace.
     EmptyName,
     NothingToUndo,
@@ -336,6 +413,19 @@ pub enum InvalidBlock {
     CurveTension {
         index: usize,
     },
+    /// A signal link's `low` and `high` must be within `0..=1`.
+    LinkRange,
+}
+
+/// Why a signal was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSignal {
+    /// A notes envelope needs a length.
+    EnvelopeLength,
+    /// A notes filter needs `lowest <= highest <= 127`.
+    PitchRange,
+    /// The envelope's shape is invalid, for the same reasons a block's can be.
+    Shape(InvalidBlock),
 }
 
 impl fmt::Display for CommandError {
@@ -376,6 +466,21 @@ impl fmt::Display for CommandError {
             Self::OverlappingBlocks { id, other } => {
                 write!(f, "block {} would overlap block {}", id.0, other.0)
             }
+            Self::DuplicateSignal { id } => write!(f, "signal {} already exists", id.0),
+            Self::UnknownSignal { id } => write!(f, "signal {} does not exist", id.0),
+            Self::SignalInUse { id, block } => {
+                write!(f, "signal {} is used by block {}", id.0, block.0)
+            }
+            Self::InvalidSignal { id, reason } => {
+                write!(f, "invalid signal {}: {reason}", id.0)
+            }
+            Self::WrongSignalKind { id } => {
+                write!(f, "signal {} is the wrong kind for this edit", id.0)
+            }
+            Self::LinkInsideSignal { block } => {
+                write!(f, "block {} is on a signal and cannot link to one", block.0)
+            }
+            Self::ColorOutOfRange { color } => write!(f, "colour {color} is not in the palette"),
             Self::EmptyName => f.write_str("names cannot be empty"),
             Self::NothingToUndo => f.write_str("nothing to undo"),
             Self::NothingToRedo => f.write_str("nothing to redo"),
@@ -413,6 +518,17 @@ impl fmt::Display for InvalidBlock {
             Self::CurveTension { index } => {
                 write!(f, "point {index} curve tension is outside -1..=1")
             }
+            Self::LinkRange => f.write_str("signal link range is outside 0..=1"),
+        }
+    }
+}
+
+impl fmt::Display for InvalidSignal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EnvelopeLength => f.write_str("envelope has no length"),
+            Self::PitchRange => f.write_str("pitch range is empty or above 127"),
+            Self::Shape(reason) => write!(f, "envelope {reason}"),
         }
     }
 }

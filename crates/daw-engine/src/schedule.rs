@@ -1,7 +1,7 @@
 //! Compiling the project into the flat, time-sorted form the audio side plays.
 
 use crate::project::Project;
-use daw_automation::Automation;
+use daw_automation::{Automation, CompiledSignal, Signals};
 use daw_protocol::{DeviceId, EffectKind, ParamState};
 
 /// Everything the audio thread needs to render, compiled from the project by
@@ -38,49 +38,70 @@ pub struct ScheduledNote {
     pub velocity: u8,
 }
 
-fn compile_params(params: &[ParamState]) -> Vec<Automation> {
-    params.iter().map(Automation::compile).collect()
+fn compile_params(params: &[ParamState], signals: &Signals) -> Vec<Automation> {
+    params
+        .iter()
+        .map(|state| Automation::compile_with(state, signals))
+        .collect()
+}
+
+/// Every signal compiled, with notes signals reading the node's notes.
+pub fn compile_signals(project: &Project, notes: &[ScheduledNote]) -> Signals {
+    let mut signals = Signals::default();
+    for (id, signal) in &project.signals {
+        let notes = notes.iter().map(|n| (n.start_beats, n.pitch));
+        signals.insert(*id, CompiledSignal::compile(signal, notes));
+    }
+    signals
+}
+
+/// Every note on the node's timeline, sorted by start.
+pub fn schedule_notes(project: &Project) -> Vec<ScheduledNote> {
+    let node = &project.node;
+    let mut notes: Vec<ScheduledNote> = node
+        .clips
+        .values()
+        .flat_map(|clip| {
+            clip.notes.iter().filter_map(move |note| {
+                // Only the part of a note inside the clip plays.
+                let start = note.start.max(daw_protocol::Ticks::ZERO);
+                let end = (note.start + note.length).min(clip.length);
+                (start < end).then(|| ScheduledNote {
+                    start_beats: (clip.start + start).as_beats(),
+                    end_beats: (clip.start + end).as_beats(),
+                    pitch: note.pitch,
+                    velocity: note.velocity,
+                })
+            })
+        })
+        .collect();
+    // Stable sort keeps clip order for simultaneous notes: deterministic.
+    notes.sort_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
+    notes
 }
 
 impl RenderState {
     pub fn compile(project: &Project) -> Self {
         let node = &project.node;
-        let mut notes: Vec<ScheduledNote> = node
-            .clips
-            .values()
-            .flat_map(|clip| {
-                clip.notes.iter().filter_map(move |note| {
-                    // Only the part of a note inside the clip plays.
-                    let start = note.start.max(daw_protocol::Ticks::ZERO);
-                    let end = (note.start + note.length).min(clip.length);
-                    (start < end).then(|| ScheduledNote {
-                        start_beats: (clip.start + start).as_beats(),
-                        end_beats: (clip.start + end).as_beats(),
-                        pitch: note.pitch,
-                        velocity: note.velocity,
-                    })
-                })
-            })
-            .collect();
-        // Stable sort keeps clip order for simultaneous notes: deterministic.
-        notes.sort_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
+        let notes = schedule_notes(project);
+        let signals = compile_signals(project, &notes);
         // With a single node, "another node is soloed" never applies yet.
         let any_soloed = node.soloed;
         Self {
             tempo_bpm: project.tempo_bpm,
             audible: !node.muted && (node.soloed || !any_soloed),
             notes,
-            instrument: compile_params(&node.instrument),
+            instrument: compile_params(&node.instrument, &signals),
             effects: node
                 .effects
                 .iter()
                 .map(|(id, effect)| EffectState {
                     id: *id,
                     kind: effect.kind,
-                    params: compile_params(&effect.params),
+                    params: compile_params(&effect.params, &signals),
                 })
                 .collect(),
-            channel: compile_params(&node.channel),
+            channel: compile_params(&node.channel, &signals),
         }
     }
 }

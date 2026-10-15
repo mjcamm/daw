@@ -1,6 +1,7 @@
 //! Compiled layer stacks and their evaluation.
 
 use crate::shape::shape_value;
+use crate::signal::{CompiledSignal, Signals};
 use daw_protocol::{BlendMode, Block, Layer, LayerId, ParamState, ShapePoint};
 
 /// Combines the value from the layers below (`v`) with a block's shape value
@@ -29,10 +30,28 @@ pub struct CompiledBlock {
     pub fade_in: f64,
     pub fade_out: f64,
     pub points: Vec<ShapePoint>,
+    /// The signal the block plays instead of its points, if linked.
+    pub link: Option<Box<CompiledLink>>,
+}
+
+/// A linked block's signal and where its bottom and top land.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledLink {
+    pub signal: CompiledSignal,
+    pub low: f64,
+    pub high: f64,
 }
 
 impl CompiledBlock {
+    /// Compiles a block with no signals available: a linked block has no
+    /// effect.
     pub fn compile(block: &Block) -> Self {
+        Self::compile_with(block, &Signals::default())
+    }
+
+    /// Compiles a block, taking the signal it links to (if any) from
+    /// `signals`. A link to a missing signal has no effect.
+    pub fn compile_with(block: &Block, signals: &Signals) -> Self {
         Self {
             start: block.start.as_beats(),
             end: block.end().as_beats(),
@@ -43,6 +62,16 @@ impl CompiledBlock {
             fade_in: block.fade_in.as_beats(),
             fade_out: block.fade_out.as_beats(),
             points: block.shape.points.clone(),
+            link: block.link.map(|link| {
+                Box::new(CompiledLink {
+                    signal: signals
+                        .get(link.signal)
+                        .cloned()
+                        .unwrap_or(CompiledSignal::Silent),
+                    low: link.low,
+                    high: link.high,
+                })
+            }),
         }
     }
 
@@ -52,8 +81,17 @@ impl CompiledBlock {
 
     /// Shape value and weight at `beat`, which must be inside the block.
     pub fn sample(&self, beat: f64) -> (f64, f64) {
-        let phase = ((beat - self.start + self.nudge) / self.cycle).rem_euclid(1.0);
-        let x = shape_value(&self.points, phase);
+        let (x, presence) = match &self.link {
+            // Signals run in song time: read at the song position.
+            Some(link) => {
+                let (s, presence) = link.signal.sample(beat + self.nudge);
+                (link.low + (link.high - link.low) * s, presence)
+            }
+            None => {
+                let phase = ((beat - self.start + self.nudge) / self.cycle).rem_euclid(1.0);
+                (shape_value(&self.points, phase), 1.0)
+            }
+        };
         let x = if self.invert { 1.0 - x } else { x };
         let mut fade: f64 = 1.0;
         if self.fade_in > 0.0 {
@@ -62,7 +100,7 @@ impl CompiledBlock {
         if self.fade_out > 0.0 {
             fade = fade.min((self.end - beat) / self.fade_out);
         }
-        (x, self.depth * fade.clamp(0.0, 1.0))
+        (x, self.depth * fade.clamp(0.0, 1.0) * presence)
     }
 }
 
@@ -75,10 +113,14 @@ pub struct CompiledLayer {
 
 impl CompiledLayer {
     pub fn compile(layer: &Layer) -> Self {
+        Self::compile_with(layer, &Signals::default())
+    }
+
+    pub fn compile_with(layer: &Layer, signals: &Signals) -> Self {
         let mut blocks: Vec<CompiledBlock> = layer
             .blocks
             .iter()
-            .map(|(_, block)| CompiledBlock::compile(block))
+            .map(|(_, block)| CompiledBlock::compile_with(block, signals))
             .collect();
         blocks.sort_by(|a, b| a.start.total_cmp(&b.start));
         Self {
@@ -115,16 +157,25 @@ impl Automation {
     }
 
     pub fn compile(state: &ParamState) -> Self {
-        Self::compile_layers(state.base, &state.layers)
+        Self::compile_with(state, &Signals::default())
+    }
+
+    /// Compiles a parameter, with the signals its linked blocks read.
+    pub fn compile_with(state: &ParamState, signals: &Signals) -> Self {
+        Self::compile_layers_with(state.base, &state.layers, signals)
     }
 
     pub fn compile_layers(base: f64, layers: &[(LayerId, Layer)]) -> Self {
+        Self::compile_layers_with(base, layers, &Signals::default())
+    }
+
+    pub fn compile_layers_with(base: f64, layers: &[(LayerId, Layer)], signals: &Signals) -> Self {
         Self {
             base,
             layers: layers
                 .iter()
                 .filter(|(_, l)| l.enabled && !l.blocks.is_empty())
-                .map(|(_, l)| CompiledLayer::compile(l))
+                .map(|(_, l)| CompiledLayer::compile_with(l, signals))
                 .collect(),
         }
     }

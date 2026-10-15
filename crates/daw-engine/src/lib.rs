@@ -22,16 +22,17 @@ mod transport;
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
-    Edit, Effect, EffectKind, InvalidBlock, InvalidClip, Layer, LayerId, LoopRange, Meter,
-    MidiClip, MidiNote, NodeSnapshot, ParamId, ParamSnapshot, ParamState, Scale, Segment, Shape,
-    ShapePoint, Snapshot, TICKS_PER_BEAT, Ticks,
+    Edit, Effect, EffectKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange,
+    Meter, MidiClip, MidiNote, NodeSnapshot, NotesSource, ParamId, ParamSnapshot, ParamState,
+    Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalLink, SignalSnapshot, SignalSource,
+    SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{DEFAULT_TEMPO_BPM, MAX_EFFECTS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Node, Project};
 pub use schedule::{EffectState, RenderState, ScheduledNote};
 
 use audio::{AudioMsg, SharedStatus};
-use daw_automation::Automation;
+use daw_automation::{Automation, Signals};
 use devices::{ParamInfo, effect_name};
 use history::History;
 use std::collections::VecDeque;
@@ -169,6 +170,8 @@ impl Engine {
     pub fn snapshot(&self) -> Snapshot {
         let node = &self.project.node;
         let position_beats = self.status.position_beats();
+        let signals =
+            schedule::compile_signals(&self.project, &schedule::schedule_notes(&self.project));
         Snapshot {
             revision: self.revision,
             song_name: self.project.name.clone(),
@@ -192,10 +195,26 @@ impl Engine {
                                     device,
                                     index: index as u32,
                                 };
-                                param_snapshot(id, state, info, position_beats)
+                                param_snapshot(id, state, info, &signals, position_beats)
                             })
                             .collect(),
                     }
+                })
+                .collect(),
+            signals: self
+                .project
+                .signals
+                .iter()
+                .map(|(&id, signal)| SignalSnapshot {
+                    id,
+                    name: signal.name.clone(),
+                    color: signal.color,
+                    source: signal.source.clone(),
+                    used_by: node
+                        .links()
+                        .filter(|(_, linked)| *linked == id)
+                        .map(|(used, _)| used)
+                        .collect(),
                 })
                 .collect(),
             node: NodeSnapshot {
@@ -314,9 +333,10 @@ fn param_snapshot(
     id: ParamId,
     state: &ParamState,
     info: &ParamInfo,
+    signals: &Signals,
     position_beats: f64,
 ) -> ParamSnapshot {
-    let value = Automation::compile(state).value_at(position_beats);
+    let value = Automation::compile_with(state, signals).value_at(position_beats);
     ParamSnapshot {
         id,
         name: info.name.to_owned(),

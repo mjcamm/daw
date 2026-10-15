@@ -6,10 +6,10 @@
 //! project. Undo history and transport position are not saved.
 
 use crate::devices::{CHANNEL_PARAMS, INSTRUMENT_PARAMS};
-use crate::project::Project;
+use crate::project::{PALETTE_SIZE, Project};
 use daw_protocol::{
     ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, LoopRange, MidiClip, ParamId,
-    ParamState,
+    ParamState, Signal, SignalId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -17,9 +17,8 @@ use std::fmt;
 /// Identifies the file type, so other JSON files are rejected clearly.
 pub const FORMAT: &str = "daw-project";
 /// Bumped whenever the layout changes; older versions are converted on load.
-pub const VERSION: u32 = 1;
-/// Number of colours in the content palette.
-const PALETTE_SIZE: u8 = 9;
+/// Version 2 added motion signals.
+pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -28,8 +27,18 @@ pub struct ProjectFile {
     pub name: String,
     pub tempo_bpm: f64,
     pub loop_range: Option<LoopRange>,
-    /// The project's nodes. Version 1 holds exactly one.
+    /// The project's nodes. Exactly one for now.
     pub nodes: Vec<NodeFile>,
+    /// Motion signals. Missing in version 1 files.
+    #[serde(default)]
+    pub signals: Vec<SignalFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignalFile {
+    pub id: SignalId,
+    #[serde(flatten)]
+    pub signal: Signal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +170,14 @@ impl ProjectFile {
                     })
                     .collect(),
             }],
+            signals: project
+                .signals
+                .iter()
+                .map(|(id, signal)| SignalFile {
+                    id: *id,
+                    signal: signal.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -208,7 +225,16 @@ impl ProjectFile {
         }
 
         let mut project = Project::default();
-        let mut edits = vec![
+        // Signals first, so the blocks that link to them resolve.
+        let mut edits: Vec<Edit> = self
+            .signals
+            .into_iter()
+            .map(|s| Edit::AddSignal {
+                id: s.id,
+                signal: s.signal,
+            })
+            .collect();
+        edits.extend([
             Edit::RenameSong { name: self.name },
             Edit::SetTempo {
                 bpm: self.tempo_bpm,
@@ -218,7 +244,7 @@ impl ProjectFile {
             Edit::SetSolo {
                 soloed: node.soloed,
             },
-        ];
+        ]);
         edits.extend(param_edits(DeviceRef::Instrument, node.instrument.params));
         edits.extend(param_edits(DeviceRef::Channel, node.channel));
         edits.extend(
@@ -285,8 +311,8 @@ mod tests {
     use super::*;
     use crate::devices::{filter, instrument};
     use daw_protocol::{
-        BlendMode, Block, BlockId, EffectKind, Layer, LayerId, MidiNote, Segment, Shape,
-        ShapePoint, Ticks,
+        BlendMode, Block, BlockId, EffectKind, Layer, LayerId, MidiNote, NotesSource, Segment,
+        Shape, ShapePoint, SignalLink, SignalSource, Ticks,
     };
 
     /// A project using every kind of content.
@@ -310,7 +336,42 @@ mod tests {
         block.nudge = Ticks(-30);
         block.fade_in = Ticks(120);
         layer.blocks.push((BlockId(7), block));
+        let mut linked = Block::new(
+            Ticks::from_beats(8),
+            Ticks::from_beats(4),
+            Shape::constant(0.5),
+        );
+        linked.link = Some(SignalLink {
+            signal: SignalId(2),
+            low: 0.1,
+            high: 0.7,
+        });
+        layer.blocks.push((BlockId(8), linked));
         let edits = [
+            Edit::AddSignal {
+                id: SignalId(2),
+                signal: Signal {
+                    name: "Kick duck".to_owned(),
+                    color: 4,
+                    source: SignalSource::Notes(NotesSource {
+                        lowest: 36,
+                        highest: 37,
+                        length: Ticks(480),
+                        shape: Shape::ramp(0.0, 1.0),
+                    }),
+                },
+            },
+            Edit::AddSignal {
+                id: SignalId(5),
+                signal: Signal {
+                    name: "Sweep".to_owned(),
+                    color: 1,
+                    source: SignalSource::Drawn(vec![(
+                        BlockId(11),
+                        Block::new(Ticks::ZERO, Ticks::from_bars(1), Shape::ramp(0.2, 0.9)),
+                    )]),
+                },
+            },
             Edit::RenameSong {
                 name: "Night Drive".to_owned(),
             },
@@ -454,6 +515,29 @@ mod tests {
                     ["points"][0]["value"] = 3.into();
             })),
             Err(LoadError::Invalid(CommandError::InvalidBlock { .. }))
+        ));
+    }
+
+    #[test]
+    fn version_1_files_without_signals_still_load() {
+        let json = file_json(|v| {
+            v["version"] = 1.into();
+            v.as_object_mut().unwrap().remove("signals");
+            // Version 1 had no links either.
+            let blocks = &mut v["nodes"][0]["instrument"]["params"][0]["layers"][0][1]["blocks"];
+            blocks.as_array_mut().unwrap().pop();
+        });
+        let (project, _) = load(&json).unwrap();
+        assert!(project.signals.is_empty());
+    }
+
+    #[test]
+    fn links_to_missing_signals_are_rejected() {
+        assert!(matches!(
+            load(&file_json(|v| {
+                v["signals"].as_array_mut().unwrap().remove(0);
+            })),
+            Err(LoadError::Invalid(CommandError::UnknownSignal { .. }))
         ));
     }
 
