@@ -2,7 +2,7 @@
 
 use crate::block_edit::Snap;
 use crate::menu::OpenMenu;
-use crate::parameters::{BaseDrag, BlockDrag, DEFAULT_ZOOM};
+use crate::parameters::{BaseDrag, BlockDrag, DEFAULT_ZOOM, MixDrag};
 use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
@@ -88,6 +88,8 @@ pub struct ProjectView {
     /// A parameter's resting value being dragged with its slider; sent as
     /// one edit on release.
     pub(crate) base_drag: Option<BaseDrag>,
+    /// A layer's mix being dragged with its slider; one edit on release.
+    pub(crate) mix_drag: Option<MixDrag>,
     /// The Parameters page's zoom (each page keeps its own).
     pub(crate) parameters_zoom: Zoom,
     /// A zoom slider being dragged.
@@ -118,6 +120,7 @@ impl ProjectView {
             selected_block: None,
             block_drag: None,
             base_drag: None,
+            mix_drag: None,
             parameters_zoom: DEFAULT_ZOOM,
             zoom_drag: None,
             rename: None,

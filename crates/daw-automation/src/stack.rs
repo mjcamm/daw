@@ -107,6 +107,8 @@ impl CompiledBlock {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledLayer {
     pub mode: BlendMode,
+    /// Scales every block's weight.
+    pub mix: f64,
     /// Sorted by start, non-overlapping.
     pub blocks: Vec<CompiledBlock>,
 }
@@ -125,6 +127,7 @@ impl CompiledLayer {
         blocks.sort_by(|a, b| a.start.total_cmp(&b.start));
         Self {
             mode: layer.mode,
+            mix: layer.mix,
             blocks,
         }
     }
@@ -186,7 +189,7 @@ impl Automation {
         for layer in &self.layers {
             if let Some(block) = layer.block_at(beat) {
                 let (x, w) = block.sample(beat);
-                v = blend(layer.mode, v, x, w);
+                v = blend(layer.mode, v, x, w * layer.mix);
             }
         }
         v.clamp(0.0, 1.0)
@@ -403,6 +406,21 @@ mod tests {
         assert!(close(a.value_at(1.5), 1.0));
         assert!(close(a.value_at(3.0), 0.5));
         assert!(close(a.value_at(4.0 - 1e-9), 0.0));
+    }
+
+    #[test]
+    fn mix_scales_how_much_of_the_layer_reaches_the_result() {
+        let mut half = layer(
+            BlendMode::Replace,
+            vec![block(0.0, 1.0, Shape::constant(1.0))],
+        );
+        half.1.mix = 0.5;
+        assert!(close(
+            automation(0.2, vec![half.clone()]).value_at(0.5),
+            0.6
+        ));
+        half.1.mix = 0.0;
+        assert_eq!(automation(0.2, vec![half]).value_at(0.5), 0.2);
     }
 
     #[test]

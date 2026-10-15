@@ -107,6 +107,11 @@ pub struct Layer {
     pub name: String,
     pub mode: BlendMode,
     pub enabled: bool,
+    /// How much of the layer reaches the result, `0..=1`, like a layer's
+    /// opacity: it scales every block's weight. Files from before mix
+    /// existed load at full.
+    #[serde(default = "full_mix")]
+    pub mix: f64,
     /// Non-overlapping blocks, sorted by start.
     pub blocks: Vec<(BlockId, Block)>,
 }
@@ -121,9 +126,14 @@ impl Layer {
             name: name.to_owned(),
             mode,
             enabled: true,
+            mix: 1.0,
             blocks: Vec::new(),
         }
     }
+}
+
+fn full_mix() -> f64 {
+    1.0
 }
 
 /// A span of movement on a layer.

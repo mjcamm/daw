@@ -319,6 +319,7 @@ mod tests {
     fn rich_project() -> Project {
         let mut project = Project::default();
         let mut layer = Layer::new(BlendMode::Modulate);
+        layer.mix = 0.65;
         let mut block = Block::new(
             Ticks::from_beats(2),
             Ticks::from_beats(4),

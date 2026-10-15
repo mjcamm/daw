@@ -106,6 +106,11 @@ pub enum Edit {
         mode: BlendMode,
         enabled: bool,
     },
+    /// Set how much of a layer reaches the result, `0..=1`.
+    SetLayerMix {
+        id: LayerId,
+        mix: f64,
+    },
     AddBlock {
         layer: LayerId,
         id: BlockId,

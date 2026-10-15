@@ -36,7 +36,7 @@ use gpui::{
 };
 use std::borrow::Cow;
 
-const LEFT_WIDTH: f32 = 260.;
+const LEFT_WIDTH: f32 = 320.;
 const RULER_HEIGHT: f32 = 28.;
 const SECTION_HEIGHT: f32 = 30.;
 const DEVICE_HEIGHT: f32 = 30.;
@@ -254,6 +254,59 @@ pub(crate) struct BaseDrag {
     origin_y: Pixels,
     original: f64,
     preview: f64,
+}
+
+/// A layer's mix being dragged with its slider.
+#[derive(Debug, Clone)]
+pub(crate) struct MixDrag {
+    layer: LayerId,
+    origin_x: Pixels,
+    original: f64,
+    preview: f64,
+}
+
+const MIX_SLIDER_WIDTH: f32 = 52.;
+/// Pixels of drag across the full mix range, and with Shift held.
+const MIX_DRAG_RANGE: f32 = 150.;
+const MIX_DRAG_RANGE_FINE: f32 = 750.;
+
+/// A mix after dragging `dx` pixels from `original` (right raises it).
+fn dragged_mix(original: f64, dx: f32, fine: bool) -> f64 {
+    let range = if fine {
+        MIX_DRAG_RANGE_FINE
+    } else {
+        MIX_DRAG_RANGE
+    };
+    (original + f64::from(dx / range)).clamp(0., 1.)
+}
+
+/// `layers` with the mix being dragged shown at its preview.
+fn previewed_mix<'a>(
+    drag: Option<&MixDrag>,
+    layers: Cow<'a, [(LayerId, Layer)]>,
+) -> Cow<'a, [(LayerId, Layer)]> {
+    match drag {
+        Some(drag) if layers.iter().any(|(id, _)| *id == drag.layer) => Cow::Owned(
+            layers
+                .iter()
+                .map(|(id, layer)| {
+                    let mix = if *id == drag.layer {
+                        drag.preview
+                    } else {
+                        layer.mix
+                    };
+                    (
+                        *id,
+                        Layer {
+                            mix,
+                            ..layer.clone()
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        _ => layers,
+    }
 }
 
 /// Height of the resting-value slider.
@@ -495,8 +548,10 @@ impl ProjectView {
     /// follows the mouse anywhere in the window until it is released.
     fn lanes_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let bounds_cell = self.lanes_bounds.clone();
-        let dragging =
-            self.block_drag.is_some() || self.base_drag.is_some() || self.zoom_drag.is_some();
+        let dragging = self.block_drag.is_some()
+            || self.base_drag.is_some()
+            || self.mix_drag.is_some()
+            || self.zoom_drag.is_some();
         let view = cx.entity().downgrade();
         canvas(
             move |bounds, _, _| bounds_cell.set(bounds),
@@ -693,6 +748,11 @@ impl ProjectView {
             drag.preview = dragged_base(drag.original, dy, modifiers.shift);
             return;
         }
+        if let Some(drag) = &mut self.mix_drag {
+            let dx = (position.x - drag.origin_x) / px(1.);
+            drag.preview = dragged_mix(drag.original, dx, modifiers.shift);
+            return;
+        }
         let snap = self.snap_for(modifiers);
         let ppb = self.parameters_zoom.pixels_per_beat;
         let Some(drag) = &mut self.block_drag else {
@@ -719,6 +779,14 @@ impl ProjectView {
     /// Ends a drag, sending the change as one edit.
     fn finish_drag(&mut self) {
         self.zoom_drag = None;
+        if let Some(drag) = self.mix_drag.take()
+            && drag.preview != drag.original
+        {
+            self.session.apply(Command::Edit(Edit::SetLayerMix {
+                id: drag.layer,
+                mix: drag.preview,
+            }));
+        }
         if let Some(drag) = self.base_drag.take()
             && drag.preview != drag.original
         {
@@ -815,6 +883,99 @@ impl ProjectView {
                     });
                 }),
             )
+    }
+
+    /// A layer's mix as shown: the slider's preview while it is dragged.
+    fn mix_of(&self, layer: LayerId, mix: f64) -> f64 {
+        match &self.mix_drag {
+            Some(drag) if drag.layer == layer => drag.preview,
+            _ => mix,
+        }
+    }
+
+    /// A slim horizontal slider for how much of a layer reaches the result,
+    /// with its percentage. Drag sideways (Shift for fine); double-click for
+    /// full.
+    fn mix_slider(
+        &self,
+        layer: LayerId,
+        mix: f64,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let original = mix;
+        let mix = self.mix_of(layer, mix);
+        let filled = mix as f32 * MIX_SLIDER_WIDTH;
+        let dragging = self.mix_drag.as_ref().is_some_and(|d| d.layer == layer);
+        let thumb = if dragging {
+            theme.accent
+        } else {
+            theme.text_secondary
+        };
+        let slider = div()
+            .id(("layer-mix", layer.0))
+            .w(px(MIX_SLIDER_WIDTH))
+            .h(px(12.))
+            .flex_none()
+            .relative()
+            .cursor_ew_resize()
+            .child(
+                // The track, filled up to the mix.
+                div()
+                    .absolute()
+                    .top(px(5.))
+                    .h(px(2.))
+                    .left_0()
+                    .right_0()
+                    .rounded(px(1.))
+                    .bg(theme.control)
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .h_full()
+                            .w(px(filled))
+                            .rounded(px(1.))
+                            .bg(thumb),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(1.))
+                    .h(px(10.))
+                    .w(px(3.))
+                    .left(px(filled - 1.5))
+                    .rounded(px(1.5))
+                    .bg(thumb),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                    if event.click_count >= 2 {
+                        this.mix_drag = None;
+                        this.session.apply(Command::Edit(Edit::SetLayerMix {
+                            id: layer,
+                            mix: 1.0,
+                        }));
+                        return;
+                    }
+                    this.mix_drag = Some(MixDrag {
+                        layer,
+                        origin_x: event.position.x,
+                        original,
+                        preview: original,
+                    });
+                }),
+            );
+        div().flex().items_center().gap(px(4.)).child(slider).child(
+            div()
+                .w(px(28.))
+                .font_family(MONO_FONT)
+                .text_size(px(10.))
+                .text_color(theme.text_tertiary)
+                .child(format!("{:.0}%", mix * 100.)),
+        )
     }
 
     /// Deletes the selected block (Delete or Backspace).
@@ -965,7 +1126,9 @@ impl ProjectView {
                 .into_any_element(),
             Row::Set(param) => {
                 let base = self.base_of(param);
-                let value = Automation::compile_layers(base, &param.layers).value_at(position);
+                let layers =
+                    previewed_mix(self.mix_drag.as_ref(), Cow::Borrowed(&param.layers[..]));
+                let value = Automation::compile_layers(base, &layers).value_at(position);
                 cell.pl(px(16.))
                     .pr(px(12.))
                     .gap(px(8.))
@@ -1160,6 +1323,7 @@ impl ProjectView {
             }))
             .child(grip)
             .child(name)
+            .child(self.mix_slider(id, layer.mix, theme, cx))
             .child(mode_chip)
             .child(toggle)
             .child(delete)
@@ -1296,7 +1460,10 @@ impl ProjectView {
         let drag = self.block_drag.as_ref();
         match row {
             Row::Set(param) => {
-                let layers = previewed_layers(drag, &param.layers);
+                let layers = previewed_mix(
+                    self.mix_drag.as_ref(),
+                    previewed_layers(drag, &param.layers),
+                );
                 let automation = Automation::compile_layers(self.base_of(param), &layers);
                 let (line, fill) = (color.detail, color.fill);
                 cell.bg(theme.window)
@@ -1688,6 +1855,36 @@ mod tests {
         assert!((dragged_base(0.5, 100., true) - 0.4).abs() < 1e-6);
         assert_eq!(dragged_base(0.9, -500., false), 1.);
         assert_eq!(dragged_base(0.1, 500., false), 0.);
+    }
+
+    #[test]
+    fn dragging_right_raises_the_mix() {
+        assert!((dragged_mix(0.5, 75., false) - 1.0).abs() < 1e-6);
+        assert!((dragged_mix(0.5, -15., false) - 0.4).abs() < 1e-6);
+        assert!((dragged_mix(0.5, 75., true) - 0.6).abs() < 1e-6);
+        assert_eq!(dragged_mix(0.1, -500., false), 0.);
+    }
+
+    #[test]
+    fn a_mix_drag_previews_only_its_own_layer() {
+        let snapshot = snapshot_with(layer_with_block());
+        let layers = &snapshot.devices.last().unwrap().params[0].layers;
+        let drag = MixDrag {
+            layer: LayerId(1),
+            origin_x: px(0.),
+            original: 1.0,
+            preview: 0.3,
+        };
+        let shown = previewed_mix(Some(&drag), Cow::Borrowed(&layers[..]));
+        assert_eq!(shown[0].1.mix, 0.3);
+        let other = MixDrag {
+            layer: LayerId(7),
+            ..drag
+        };
+        assert!(matches!(
+            previewed_mix(Some(&other), Cow::Borrowed(&layers[..])),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]

@@ -14,6 +14,7 @@ Working in the app (`cargo run -p daw-ui`):
 - **Arrange page:** node row (colour, name with double-click rename, stereo meter, M/S), timeline with clips, notes, loop band, playhead; click ruler to locate. Clicking the node row selects it; clicking empty space below deselects.
 - **Parameters page** (tab greyed out until a node is selected): sections Global (Channel), Instrument (Synth), Effects (listed only, no adding here). "+ Add Parameter" picks a parameter to create a layer set; each set shows its live value and result curve; layers list top-of-stack first (Photoshop order), with grip to drag-reorder, name (double-click rename), blend mode menu, eye toggle, × delete. "+ Add Layer" adds at the bottom of the stack.
 - **Resting-value slider** (built, **not yet tried**): a small vertical slider right of each parameter's name on its result row sets the parameter's default state (`SetParam`, same as moving a knob). Drag up/down, 200 px for the full range, Shift for fine (1000 px). Previews the result curve and value live; one undo step on release.
+- **Layer mix** (built, **not yet tried**): a slim horizontal slider on each layer row (between name and blend mode, with %) sets how much of the layer reaches the result, like opacity. Double-click resets to 100 %. Left column is now 320 px wide.
 - **Zoom** (built, **not yet tried**): two short slim sliders in the bottom-right corner of the Parameters page, vertical (row height, 28–400 px, all rows equal) against the right edge and horizontal (2–400 px per beat) along the bottom. Log scale; horizontal keeps the middle of the view still. Per page; reusable component in `zoom.rs`.
 - **Block editing** on layer lanes (built, **not yet tried by the user**; see `docs/design/block-editing.md`): double-click for a new block, drag to move, drag edges to widen/narrow the window (contents stay put in song time), corner handle to repeat, points on the selected block (drag, double-click to add, right-click to remove), settings bar (depth, fades, repeat, nudge, invert), Delete to remove. Each drag is one undo step.
 - **Shortcuts:** space play/stop, Ctrl/Cmd+S save, Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo, Delete/Backspace deletes the selected block, Alt while dragging flips snap/slide. Autosave backup every 30 s (`project.autosave.json`), removed on save. No crash-recovery prompt yet.
@@ -34,7 +35,7 @@ Working in the app (`cargo run -p daw-ui`):
 
 ## Next up
 
-1. The user tries block editing, the resting-value slider and zoom; iterate on feel.
+1. The user tries block editing, the resting-value slider, layer mix and zoom; iterate on feel.
 2. Confirm the **(confirm)** decisions in `docs/design/motion-signals.md`.
 3. Phase 4 UI, after asking the user about layout: the Signals page (signal lanes on a shared timeline, drawing, notes-source settings, "Used by"), and linking a block to a signal from the Parameters page (with its range).
 4. The milestone gate ("does shaping movement feel great?").

@@ -18,6 +18,7 @@
 
 - A parameter has a **stack of layers**, evaluated bottom to top, starting from the default state.
 - Each layer has a **blend mode** and can be switched off.
+- Each layer has a **mix** (`0..=1`, default full), like a layer's opacity: it scales the weight of every block on the layer, so it sets how much of the layer reaches the result. Added in Phase 3 at the user's request (`Edit::SetLayerMix`).
 - A layer holds **blocks** on the timeline. Blocks in one layer never overlap. Where a layer has no block (a **gap**), it has no effect.
 
 ### Blend modes

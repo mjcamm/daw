@@ -449,6 +449,12 @@ impl Project {
                 let previous = std::mem::replace(&mut layer.name, name);
                 Ok(Edit::RenameLayer { id, name: previous })
             }
+            Edit::SetLayerMix { id, mix } => {
+                check_normalized(mix)?;
+                let layer = node.layer_mut(id)?;
+                let previous = std::mem::replace(&mut layer.mix, mix);
+                Ok(Edit::SetLayerMix { id, mix: previous })
+            }
             Edit::SetLayerOptions { id, mode, enabled } => {
                 let layer = node.layer_mut(id)?;
                 let previous = Edit::SetLayerOptions {
@@ -648,6 +654,7 @@ fn prepare_layer(
     signals: &BTreeMap<SignalId, Signal>,
 ) -> Result<(), CommandError> {
     used.claim_layer(id)?;
+    check_normalized(layer.mix)?;
     layer.blocks.sort_by_key(|(_, b)| b.start);
     for (i, (block_id, block)) in layer.blocks.iter().enumerate() {
         used.claim_block(*block_id)?;
@@ -821,6 +828,31 @@ mod tests {
             project.apply(edit).unwrap();
         }
         project
+    }
+
+    #[test]
+    fn layer_mix_stays_within_range() {
+        let mut project = populated();
+        let err = assert_rejected(
+            &mut project,
+            Edit::SetLayerMix {
+                id: LayerId(1),
+                mix: 1.5,
+            },
+        );
+        assert_eq!(err, CommandError::ValueOutOfRange { value: 1.5 });
+        let mut layer = Layer::new(BlendMode::Add);
+        layer.mix = -0.1;
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddLayer {
+                param: VOLUME,
+                id: LayerId(9),
+                index: 0,
+                layer,
+            },
+        );
+        assert_eq!(err, CommandError::ValueOutOfRange { value: -0.1 });
     }
 
     #[test]
@@ -1102,6 +1134,10 @@ mod tests {
                 id: LayerId(1),
                 mode: BlendMode::Multiply,
                 enabled: false,
+            },
+            Edit::SetLayerMix {
+                id: LayerId(1),
+                mix: 0.25,
             },
             Edit::RenameLayer {
                 id: LayerId(1),

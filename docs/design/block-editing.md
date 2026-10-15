@@ -39,6 +39,10 @@ Shown at the bottom of the page while a block is selected: Depth, Fade In, Fade 
 
 Each parameter's result row has a small vertical slider just right of its name. It edits the parameter's default state, the value it rests at with no layers acting (`Edit::SetParam`). Moving it never records movement, in line with "moving a knob edits the default state" in `parameters-and-layers.md`. Drag up to raise; 200 px covers the full range, Shift makes it five times finer. Like block drags, it previews (value readout and result curve) and sends one edit on release.
 
+## Layer mix
+
+Each layer row on the Parameters page has a slim horizontal slider between its name and blend mode, with a percentage readout: how much of the layer reaches the result (see `parameters-and-layers.md`). Drag sideways, 150 px for the full range, Shift for five times finer; double-click resets to 100 %. Previews the result curve and value live; one undo step on release. The left column widened from 260 to 320 px to fit it.
+
 ## Zoom
 
 Every timeline page gets two short slim sliders in its bottom-right corner (`crates/daw-ui/src/zoom.rs`, built to be reused on Arrange and Signals): one standing against the right edge for **vertical zoom** (row height) and one along the bottom for **horizontal zoom** (pixels per beat). Each page keeps its own zoom.
