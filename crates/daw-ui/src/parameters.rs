@@ -14,9 +14,9 @@
 //! becomes one edit when the mouse is released.
 
 use crate::block_edit::{
-    EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, drag_block, hit_test, move_point,
-    new_block, next_block_id, phase_at, point_at, point_positions, remove_point, room_around,
-    scrub, value_to_y, y_to_value,
+    EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, drag_block, has_loop_handle,
+    hit_test, move_point, new_block, next_block_id, phase_at, point_at, point_positions,
+    remove_point, room_around, scrub, value_to_y, y_to_value,
 };
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
@@ -52,6 +52,9 @@ const BLOCK_MARGIN: f32 = 3.;
 const BLOCK_INSET: f32 = BLOCK_MARGIN + 1.;
 /// Radius of a drawn shape point.
 const POINT_DOT: f32 = 3.;
+/// Size of the hover zone around a point, and of the four-way arrow shown
+/// in it.
+const POINT_HANDLE: f32 = 14.;
 
 const BLEND_MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
 
@@ -1425,6 +1428,7 @@ impl ProjectView {
                             self.selected_block == Some(*id),
                             mix,
                             zoom,
+                            height - 2. * BLOCK_INSET,
                             theme,
                         )
                     }))
@@ -1450,6 +1454,10 @@ impl ProjectView {
 /// A block on a layer lane: its span and the shape it draws, with stretch
 /// zones at its edges and a loop handle in its top-right corner. Selected
 /// blocks show their points.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "plain drawing data, passed through"
+)]
 fn block_view(
     id: BlockId,
     block: &Block,
@@ -1457,6 +1465,7 @@ fn block_view(
     selected: bool,
     mix: f64,
     zoom: Zoom,
+    box_height: f32,
     theme: &Theme,
 ) -> impl IntoElement {
     let ppb = zoom.pixels_per_beat;
@@ -1464,12 +1473,19 @@ fn block_view(
     let width = zoom.beat_to_x(block.length.as_beats());
     let compiled = CompiledBlock::compile(block);
     let start = compiled.start;
-    // Where each repeat of the shape begins, after the first.
-    let cycle = compiled.cycle;
-    let repeats: Vec<f32> = (1..)
-        .map(|k| zoom.beat_to_x(f64::from(k) * cycle))
-        .take_while(|x| *x < width - 0.5)
-        .collect();
+    // Where each cycle of a looped block ends and the next repeat begins.
+    let cycle_ends: Vec<f32> = if block.cycle.is_some_and(|c| c < block.length) {
+        let (cycle, nudge, length) = (compiled.cycle, compiled.nudge, compiled.end - start);
+        let first = (nudge / cycle).floor() as i64 + 1;
+        (first..)
+            .map(|k| k as f64 * cycle - nudge)
+            .take_while(|beat| *beat < length - 1e-9)
+            .filter(|beat| *beat > 1e-9)
+            .map(|beat| zoom.beat_to_x(beat))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let points: Vec<(f32, f64)> = if selected {
         point_positions(block, ppb)
             .into_iter()
@@ -1480,7 +1496,25 @@ fn block_view(
     };
     let group = SharedString::from(format!("block-{}", id.0));
     let edge = EDGE_ZONE.min(width / 4.);
-    let has_loop_handle = width >= 2. * LOOP_HANDLE;
+    let mut repeat_wash = theme.window;
+    repeat_wash.a = 0.45;
+    let mut cycle_end = colors.detail;
+    cycle_end.a *= 0.7;
+    // Hovering a point hides the cursor and shows a four-way arrow there.
+    let point_handles = points.clone().into_iter().map(move |(x, value)| {
+        div()
+            .absolute()
+            .left(px(x - POINT_HANDLE / 2.))
+            .top(px(value_to_y(value, box_height) - POINT_HANDLE / 2.))
+            .size(px(POINT_HANDLE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_none(gpui::CursorStyle::Arrow)
+            .opacity(0.)
+            .hover(|s| s.opacity(1.))
+            .child(icon(Icon::Move, colors.detail, POINT_HANDLE))
+    });
 
     div()
         .id(("block", id.0))
@@ -1503,13 +1537,6 @@ fn block_view(
             canvas(
                 |_, _, _| {},
                 move |bounds, (), window, _| {
-                    for x in &repeats {
-                        let line = Bounds::new(
-                            point(bounds.origin.x + px(*x), bounds.origin.y),
-                            size(px(1.), bounds.size.height),
-                        );
-                        window.paint_quad(fill(line, colors.outline));
-                    }
                     let height = bounds.size.height / px(1.);
                     let centre = Bounds::new(
                         point(
@@ -1543,7 +1570,22 @@ fn block_view(
                             f64::NAN
                         }
                     });
-                    let height = bounds.size.height / px(1.);
+                    // Repeats of a looped block are softer, and every cycle
+                    // shows its end: block, block, block.
+                    if let Some(first) = cycle_ends.first() {
+                        let soft = Bounds::new(
+                            point(bounds.origin.x + px(*first), bounds.origin.y),
+                            size(bounds.size.width - px(*first), bounds.size.height),
+                        );
+                        window.paint_quad(fill(soft, repeat_wash));
+                    }
+                    for x in &cycle_ends {
+                        let line = Bounds::new(
+                            point(bounds.origin.x + px(*x - 0.5), bounds.origin.y),
+                            size(px(1.5), bounds.size.height),
+                        );
+                        window.paint_quad(fill(line, cycle_end));
+                    }
                     for (x, value) in &points {
                         let centre = point(
                             bounds.origin.x + px(*x),
@@ -1577,12 +1619,14 @@ fn block_view(
                 .w(px(edge))
                 .cursor_ew_resize(),
         )
-        .when(has_loop_handle, |d| {
+        .when(has_loop_handle(width), |d| {
+            // Just inside the right edge, so the edge stretches over its
+            // full height.
             d.child(
                 div()
                     .absolute()
                     .top_0()
-                    .right_0()
+                    .right(px(edge))
                     .size(px(LOOP_HANDLE))
                     .flex()
                     .items_center()
@@ -1593,6 +1637,7 @@ fn block_view(
                     .child(icon(Icon::Loop, colors.detail, 10.)),
             )
         })
+        .children(point_handles)
 }
 
 /// Draws `value(beat)` (0..=1, NaN for "nothing here") across `bounds`, with

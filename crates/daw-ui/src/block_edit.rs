@@ -208,18 +208,23 @@ pub fn hit_test(
     if selected && let Some(index) = point_at(block, x, y, pixels_per_beat, height) {
         return Hit::Point(index);
     }
-    if x >= width - LOOP_HANDLE && y <= LOOP_HANDLE && width >= 2. * LOOP_HANDLE {
-        return Hit::Loop;
-    }
     // Small blocks keep a middle to grab.
     let edge = EDGE_ZONE.min(width / 4.);
     if x < edge {
         Hit::Start
     } else if x >= width - edge {
         Hit::End
+    } else if has_loop_handle(width) && x >= width - edge - LOOP_HANDLE && y <= LOOP_HANDLE {
+        Hit::Loop
     } else {
         Hit::Body
     }
+}
+
+/// Whether a block `width` pixels wide has room for its loop handle, which
+/// sits in the top-right corner just inside the right edge zone.
+pub fn has_loop_handle(width: f32) -> bool {
+    width >= 2. * LOOP_HANDLE + 2. * EDGE_ZONE
 }
 
 fn beats_to_px(t: Ticks, pixels_per_beat: f32) -> f32 {
@@ -286,9 +291,10 @@ pub fn drag_block(
 }
 
 /// `original` as a window onto the song from `start` for `length`, with its
-/// contents left where they are in song time. Widening shows more: the
-/// held edge value of a single shape, or more repeats of a looped one.
-/// Narrowing cuts the shape at the new edge.
+/// contents left where they are in song time. Widening shows more: a single
+/// shape continues at its edge value (its edge point moving out with the
+/// edge), a looped one shows more repeats. Narrowing cuts the shape at the
+/// new edge.
 fn reframed(original: &Block, start: Ticks, length: Ticks) -> Block {
     let offset = start - original.start;
     let fade = |t: Ticks| t.min(length);
@@ -341,6 +347,26 @@ fn reframe_shape(shape: &Shape, old_length: Ticks, offset: Ticks, new_length: Ti
     }
     if shape.points.iter().any(|p| to_new(p.at) > 1.0) {
         points.push(ShapePoint::new(1.0, value_at(1.0)));
+    }
+    // Widening: a point that sat on an edge moves out with it, holding its
+    // value, so the drawn shape is untouched and its end follows the edge.
+    // If it already ends in a flat run, the edge point just moves.
+    let flat = |a: &ShapePoint, b: &ShapePoint| (a.value - b.value).abs() < 1e-12;
+    if to_new(1.0) < 1.0 && shape.points.last().is_some_and(|p| p.at == 1.0) {
+        let n = points.len();
+        match points.as_mut_slice() {
+            [.., before, last] if flat(before, last) => last.at = 1.0,
+            _ => points.push(ShapePoint::new(1.0, points[n - 1].value)),
+        }
+    }
+    if to_new(0.0) > 0.0 && shape.points.first().is_some_and(|p| p.at == 0.0) {
+        match points.as_mut_slice() {
+            [first, after, ..] if flat(first, after) => first.at = 0.0,
+            _ => {
+                let value = points[0].value;
+                points.insert(0, ShapePoint::new(0.0, value));
+            }
+        }
     }
     Shape { points }
 }
@@ -638,7 +664,10 @@ mod tests {
         let h = 40.;
         assert_eq!(hit_test(&b, 2., 30., PPB, h, false), Hit::Start);
         assert_eq!(hit_test(&b, 94., 30., PPB, h, false), Hit::End);
-        assert_eq!(hit_test(&b, 90., 4., PPB, h, false), Hit::Loop);
+        // The loop handle sits just inside the right edge, so the edge
+        // stretches over its full height.
+        assert_eq!(hit_test(&b, 83., 4., PPB, h, false), Hit::Loop);
+        assert_eq!(hit_test(&b, 94., 4., PPB, h, false), Hit::End);
         assert_eq!(hit_test(&b, 48., 20., PPB, h, false), Hit::Body);
     }
 
@@ -705,6 +734,32 @@ mod tests {
         assert_eq!((earlier.start, earlier.end()), (beats(2), beats(8)));
         assert_same_contents(&b, &earlier, &[4., 5., 6., 7.5]);
         assert_eq!(value_at(&earlier, 3.), 0., "holds the first value");
+    }
+
+    #[test]
+    fn widening_moves_the_end_point_out_with_the_edge() {
+        let b = block(4, 4); // ramp 0 to 1, points at both edges
+        let later = drag_block(&b, Hit::End, PPB * 4., PPB, BEATS, ANYWHERE);
+        let last = *later.shape.points.last().unwrap();
+        assert_eq!(
+            (last.at, last.value),
+            (1.0, 1.0),
+            "an end point at the new edge"
+        );
+        assert_eq!(later.shape.points.len(), 3);
+        // Widening again moves that end point rather than adding another.
+        let again = drag_block(&later, Hit::End, PPB * 4., PPB, BEATS, ANYWHERE);
+        assert_eq!(again.shape.points.len(), 3);
+        assert_same_contents(&b, &again, &[4., 6., 7.9]);
+        assert_eq!(value_at(&again, 15.9), 1.0);
+
+        let earlier = drag_block(&b, Hit::Start, -PPB * 2., PPB, BEATS, ANYWHERE);
+        let first = earlier.shape.points[0];
+        assert_eq!(
+            (first.at, first.value),
+            (0.0, 0.0),
+            "a start point at the new edge"
+        );
     }
 
     #[test]

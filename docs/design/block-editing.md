@@ -10,8 +10,8 @@
 | Click a block | Selects it: accent outline, points shown, settings bar appears |
 | Drag the body | Moves the block, snapped, never overlapping its neighbours |
 | Drag an edge | Moves that edge **without moving the contents**: the block is a window onto song time (see below) |
-| Drag the corner handle (top right, shown on hover) | Repeats the shape: the cycle is fixed at the current length and the block extends |
-| Drag a point (selected block) | Moves it, kept between its neighbours; points do not snap |
+| Drag the corner handle (top right just inside the edge, shown on hover) | Repeats the shape: the cycle is fixed at the current length and the block extends. Repeats draw softer than the first cycle, with a clear line at each cycle's end (block, block, block) |
+| Drag a point (selected block) | Moves it, kept between its neighbours; points do not snap. Hovering a point hides the cursor and shows a four-way arrow (GPUI 0.2.2 has no native move cursor on Windows) |
 | Double-click inside the selected block | Adds a point |
 | Right-click a point | Removes it (a shape keeps at least one point) |
 | Delete / Backspace | Removes the selected block (Parameters page only) |
@@ -20,9 +20,11 @@
 
 The user asked for edges to leave the contents fixed and give more room to work, not to stretch the shape like a clip.
 
-- **Single shape** (no repeat, no nudge): the points are redrawn across the new span so each keeps its song position. Widening shows the held first/last value. Narrowing cuts the shape, leaving a point at the edge with the value there. Within one drag this is lossless (the preview is always computed from the block as it was when the drag began); across separate edits, cut points are gone.
+- **Single shape** (no repeat, no nudge): the points are redrawn across the new span so each keeps its song position. Widening continues the shape at its edge value, and a point that sat on that edge moves out with it (if the shape already ends in a flat run, that end point just moves), so the end follows the edge and the drawn shape is untouched. Narrowing cuts the shape, leaving a point at the edge with the value there. Within one drag this is lossless (the preview is always computed from the block as it was when the drag began); across separate edits, cut points are gone.
 - **Repeating shape** (cycle set, or a nudge): the cycle keeps its length and the nudge shifts by the edge's movement, so the repeats stay where they are in song time.
 - Fades keep their length in ticks, capped at the block length.
+
+The loop handle sits just inside the right edge zone, so the right edge resizes over its full height. (It used to cover the top 14 px of the edge, so grabbing the upper half of the edge looped instead of resizing.)
 
 ## Snap
 

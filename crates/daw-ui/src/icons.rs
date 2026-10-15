@@ -20,10 +20,11 @@ pub enum Icon {
     Plus,
     GripVertical,
     Magnet,
+    Move,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 11] = [
+const ICONS: [(Icon, &str, &[u8]); 12] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -78,6 +79,11 @@ const ICONS: [(Icon, &str, &[u8]); 11] = [
         Icon::Magnet,
         "icons/magnet.svg",
         include_bytes!("../assets/icons/magnet.svg"),
+    ),
+    (
+        Icon::Move,
+        "icons/move.svg",
+        include_bytes!("../assets/icons/move.svg"),
     ),
 ];
 
