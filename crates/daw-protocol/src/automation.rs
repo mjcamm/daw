@@ -1,7 +1,7 @@
 //! Parameters, layers, blocks and shapes: the data of the one rule.
 //!
-//! > Every parameter has a stack of layers. Each layer holds blocks. Each
-//! > block is either drawn there or linked to a signal.
+//! > Every parameter has a stack of layers. Each layer holds blocks. A layer
+//! > either draws its blocks or listens to a signal through them.
 //!
 //! All values here are normalized (`0..=1`); a parameter's [`Scale`] maps
 //! them to real units.
@@ -109,6 +109,12 @@ pub struct Layer {
     /// existed load at full.
     #[serde(default = "full_mix")]
     pub mix: f64,
+    /// The signal the layer listens to. Its blocks are then windows: the
+    /// signal plays wherever a block sits, read at song position, and each
+    /// block keeps its own shape for when the layer goes back to drawing.
+    /// `None` is a drawn layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<SignalId>,
     /// Non-overlapping blocks, sorted by start.
     pub blocks: Vec<(BlockId, Block)>,
 }
@@ -124,7 +130,16 @@ impl Layer {
             mode,
             enabled: true,
             mix: 1.0,
+            signal: None,
             blocks: Vec::new(),
+        }
+    }
+
+    /// The same layer listening to `signal`.
+    pub fn listening(self, signal: SignalId) -> Self {
+        Self {
+            signal: Some(signal),
+            ..self
         }
     }
 }
@@ -153,35 +168,10 @@ pub struct Block {
     pub fade_in: Ticks,
     /// The block's weight ramps down to zero over this long before its end.
     pub fade_out: Ticks,
-    /// When set, the block plays this signal instead of its own shape. The
-    /// shape and cycle are kept, so unlinking brings the drawing back.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link: Option<SignalLink>,
 }
 
-/// A block's link to a signal: which one, and where the bottom and top of
-/// the signal land (`x = low + (high - low) · signal`). Both `0..=1`;
-/// `low > high` flips it.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SignalLink {
-    pub signal: SignalId,
-    pub low: f64,
-    pub high: f64,
-}
-
-impl SignalLink {
-    /// The full signal, bottom to top.
-    pub fn new(signal: SignalId) -> Self {
-        Self {
-            signal,
-            low: 0.0,
-            high: 1.0,
-        }
-    }
-}
-
-/// Movement drawn once, used anywhere: a shape over song time with no units
-/// or target of its own. Blocks link to it.
+/// Movement drawn once, used anywhere: a centred shape over song time with
+/// no units or target of its own, like a layer lane. Layers listen to it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Signal {
     pub name: String,
@@ -194,22 +184,53 @@ pub struct Signal {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SignalSource {
     /// Drawn blocks on the signal's own lane: non-overlapping, sorted by
-    /// start, never linked. Gaps are silence.
+    /// start. Gaps say nothing (no effect).
     Drawn(Vec<(BlockId, Block)>),
-    /// An envelope restarted by every matching note.
+    /// A hit from every matching note.
     Notes(NotesSource),
 }
 
-/// A signal made from MIDI notes: each note with a pitch in
-/// `lowest..=highest` restarts `shape`, played over `length` from the note's
-/// start. After the envelope ends, or before the first note, the signal is
-/// silent. The notes come from the project's node.
+/// A signal made from MIDI notes. Each note with a pitch in
+/// `lowest..=highest` is a hit from the centre line (0) up towards the top
+/// (+1), shaped by an ADSR envelope: up to the peak over `attack`, down to
+/// `sustain · peak` over `decay`, held while the note is held, then back to
+/// 0 over `release`. Between hits the signal rests at 0, which has no
+/// effect; a new note starts from wherever the line is, so it never jumps.
+/// The notes come from the project's node.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NotesSource {
     pub lowest: u8,
     pub highest: u8,
-    pub length: Ticks,
-    pub shape: Shape,
+    pub attack: Ticks,
+    pub decay: Ticks,
+    /// Level held while the note is held, as a fraction of the peak, `0..=1`.
+    pub sustain: f64,
+    pub release: Ticks,
+    /// How much velocity scales the peak, `0..=1`. At 0 every hit reaches
+    /// the top; at 1 the peak is `velocity / 127`.
+    pub velocity: f64,
+}
+
+impl NotesSource {
+    /// Every note, as a short, snappy hit: straight up, then back down over
+    /// half a beat.
+    pub fn new() -> Self {
+        Self {
+            lowest: 0,
+            highest: 127,
+            attack: Ticks::ZERO,
+            decay: Ticks(480),
+            sustain: 0.0,
+            release: Ticks(240),
+            velocity: 0.0,
+        }
+    }
+}
+
+impl Default for NotesSource {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Block {
@@ -225,15 +246,6 @@ impl Block {
             nudge: Ticks::ZERO,
             fade_in: Ticks::ZERO,
             fade_out: Ticks::ZERO,
-            link: None,
-        }
-    }
-
-    /// The same block linked to `signal`, full range.
-    pub fn linked(self, signal: SignalId) -> Self {
-        Self {
-            link: Some(SignalLink::new(signal)),
-            ..self
         }
     }
 

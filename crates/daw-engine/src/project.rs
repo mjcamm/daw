@@ -174,26 +174,23 @@ impl Node {
         Ok(&mut self.param_mut(param)?.layers[position].1)
     }
 
-    /// Every block that links to a signal: where it is and which signal.
-    pub fn links(&self) -> impl Iterator<Item = (SignalUse, SignalId)> + '_ {
+    /// Every layer that listens to a signal: where it is and which signal,
+    /// in device order.
+    pub fn listeners(&self) -> impl Iterator<Item = (SignalUse, SignalId)> + '_ {
         self.devices().flat_map(|(device, params)| {
             params.iter().enumerate().flat_map(move |(index, state)| {
                 let param = ParamId {
                     device,
                     index: index as u32,
                 };
-                state.layers.iter().flat_map(move |(layer, l)| {
-                    l.blocks.iter().filter_map(move |(block, b)| {
-                        let link = b.link?;
-                        Some((
-                            SignalUse {
-                                param,
-                                layer: *layer,
-                                block: *block,
-                            },
-                            link.signal,
-                        ))
-                    })
+                state.layers.iter().filter_map(move |(layer, l)| {
+                    Some((
+                        SignalUse {
+                            param,
+                            layer: *layer,
+                        },
+                        l.signal?,
+                    ))
                 })
             })
         })
@@ -250,21 +247,13 @@ fn drawn_blocks(
     }
 }
 
-/// A block for a signal's lane: valid, and not linked to a signal itself.
-fn check_signal_block(id: BlockId, block: &Block) -> Result<(), CommandError> {
-    check_block(id, block)?;
-    if block.link.is_some() {
-        return Err(CommandError::LinkInsideSignal { block: id });
-    }
-    Ok(())
-}
-
-/// A layer block's link, if any, must name an existing signal.
-fn check_link(block: &Block, signals: &BTreeMap<SignalId, Signal>) -> Result<(), CommandError> {
-    match block.link {
-        Some(link) if !signals.contains_key(&link.signal) => {
-            Err(CommandError::UnknownSignal { id: link.signal })
-        }
+/// The signal a layer listens to, if any, must exist.
+fn check_signal(
+    signal: Option<SignalId>,
+    signals: &BTreeMap<SignalId, Signal>,
+) -> Result<(), CommandError> {
+    match signal {
+        Some(id) if !signals.contains_key(&id) => Err(CommandError::UnknownSignal { id }),
         _ => Ok(()),
     }
 }
@@ -455,6 +444,15 @@ impl Project {
                 let previous = std::mem::replace(&mut layer.mix, mix);
                 Ok(Edit::SetLayerMix { id, mix: previous })
             }
+            Edit::SetLayerSignal { id, signal } => {
+                check_signal(signal, signals)?;
+                let layer = node.layer_mut(id)?;
+                let previous = std::mem::replace(&mut layer.signal, signal);
+                Ok(Edit::SetLayerSignal {
+                    id,
+                    signal: previous,
+                })
+            }
             Edit::SetLayerOptions { id, mode, enabled } => {
                 let layer = node.layer_mut(id)?;
                 let previous = Edit::SetLayerOptions {
@@ -472,7 +470,6 @@ impl Project {
                 }
                 used_ids(node, signals).claim_block(id)?;
                 check_block(id, &block)?;
-                check_link(&block, signals)?;
                 let target = node.layer_mut(layer)?;
                 check_no_overlap(&target.blocks, id, &block)?;
                 insert_sorted(&mut target.blocks, id, block);
@@ -490,10 +487,9 @@ impl Project {
                 Ok(Edit::AddSignalBlock { signal, id, block })
             }
             Edit::SetBlock { id, block } => {
+                check_block(id, &block)?;
                 let (blocks, position) =
                     if let Some((param, layer_pos, _, position)) = node.find_block(id) {
-                        check_block(id, &block)?;
-                        check_link(&block, signals)?;
                         (
                             &mut node.param_mut(param)?.layers[layer_pos].1.blocks,
                             position,
@@ -501,7 +497,6 @@ impl Project {
                     } else {
                         let (signal, position) = find_signal_block(signals, id)
                             .ok_or(CommandError::UnknownBlock { id })?;
-                        check_signal_block(id, &block)?;
                         (drawn_blocks(signals, signal)?, position)
                     };
                 check_no_overlap(blocks, id, &block)?;
@@ -512,7 +507,11 @@ impl Project {
                     block: previous,
                 })
             }
-            Edit::AddSignal { id, mut signal } => {
+            Edit::AddSignal {
+                id,
+                mut signal,
+                listeners,
+            } => {
                 if signals.contains_key(&id) {
                     return Err(CommandError::DuplicateSignal { id });
                 }
@@ -524,30 +523,48 @@ impl Project {
                         blocks.sort_by_key(|(_, b)| b.start);
                         for (i, (block_id, block)) in blocks.iter().enumerate() {
                             used.claim_block(*block_id)?;
-                            check_signal_block(*block_id, block)?;
+                            check_block(*block_id, block)?;
                             check_no_overlap(&blocks[..i], *block_id, block)?;
                         }
                     }
                     SignalSource::Notes(source) => validate_notes_source(source)
                         .map_err(|reason| CommandError::InvalidSignal { id, reason })?,
                 }
+                for &layer in &listeners {
+                    let (param, position) = node
+                        .find_layer(layer)
+                        .ok_or(CommandError::UnknownLayer { id: layer })?;
+                    let state = node
+                        .param(param)
+                        .ok_or(CommandError::UnknownParam { param })?;
+                    if state.layers[position].1.signal.is_some() {
+                        return Err(CommandError::AlreadyListening { layer });
+                    }
+                }
+                for layer in listeners {
+                    node.layer_mut(layer)?.signal = Some(id);
+                }
                 signals.insert(id, signal);
                 Ok(Edit::RemoveSignal { id })
             }
             Edit::RemoveSignal { id } => {
-                if !signals.contains_key(&id) {
-                    return Err(CommandError::UnknownSignal { id });
-                }
-                if let Some((used, _)) = node.links().find(|(_, signal)| *signal == id) {
-                    return Err(CommandError::SignalInUse {
-                        id,
-                        block: used.block,
-                    });
-                }
                 let signal = signals
                     .remove(&id)
                     .ok_or(CommandError::UnknownSignal { id })?;
-                Ok(Edit::AddSignal { id, signal })
+                // Listening layers go back to drawing their blocks.
+                let listeners: Vec<LayerId> = node
+                    .listeners()
+                    .filter(|(_, signal)| *signal == id)
+                    .map(|(used, _)| used.layer)
+                    .collect();
+                for &layer in &listeners {
+                    node.layer_mut(layer)?.signal = None;
+                }
+                Ok(Edit::AddSignal {
+                    id,
+                    signal,
+                    listeners,
+                })
             }
             Edit::RenameSignal { id, name } => {
                 let name = clean_name(&name)?;
@@ -586,7 +603,7 @@ impl Project {
             Edit::AddSignalBlock { signal, id, block } => {
                 drawn_blocks(signals, signal)?;
                 used_ids(node, signals).claim_block(id)?;
-                check_signal_block(id, &block)?;
+                check_block(id, &block)?;
                 let blocks = drawn_blocks(signals, signal)?;
                 check_no_overlap(blocks, id, &block)?;
                 insert_sorted(blocks, id, block);
@@ -655,11 +672,11 @@ fn prepare_layer(
 ) -> Result<(), CommandError> {
     used.claim_layer(id)?;
     check_normalized(layer.mix)?;
+    check_signal(layer.signal, signals)?;
     layer.blocks.sort_by_key(|(_, b)| b.start);
     for (i, (block_id, block)) in layer.blocks.iter().enumerate() {
         used.claim_block(*block_id)?;
         check_block(*block_id, block)?;
-        check_link(block, signals)?;
         check_no_overlap(&layer.blocks[..i], *block_id, block)?;
     }
     Ok(())
@@ -691,8 +708,7 @@ mod tests {
     use super::*;
     use crate::devices::{channel, filter, instrument};
     use daw_protocol::{
-        BlendMode, EffectKind, InvalidBlock, InvalidSignal, MidiNote, NotesSource, Shape,
-        SignalLink, Ticks,
+        BlendMode, EffectKind, InvalidBlock, InvalidSignal, MidiNote, NotesSource, Shape, Ticks,
     };
 
     const CUTOFF: ParamId = ParamId {
@@ -788,9 +804,21 @@ mod tests {
         NotesSource {
             lowest: 36,
             highest: 36,
-            length: Ticks(480),
-            shape: Shape::ramp(0.0, 1.0),
+            ..NotesSource::new()
         }
+    }
+
+    fn add_signal(id: SignalId, signal: Signal) -> Edit {
+        Edit::AddSignal {
+            id,
+            signal,
+            listeners: Vec::new(),
+        }
+    }
+
+    fn listens_to(project: &Project, layer: u64) -> Option<SignalId> {
+        let (param, position) = project.node.find_layer(LayerId(layer)).unwrap();
+        project.node.param(param).unwrap().layers[position].1.signal
     }
 
     fn notes_signal() -> Signal {
@@ -810,20 +838,20 @@ mod tests {
         }
     }
 
-    /// `populated()` plus a notes signal (1), a drawn signal (2), and block
-    /// 2 on layer 1 linked to the notes signal.
+    /// `populated()` plus a notes signal (1), a drawn signal (2), and layer
+    /// 2 on the volume listening to the notes signal.
     fn with_signals() -> Project {
         let mut project = populated();
         for edit in [
-            Edit::AddSignal {
-                id: DUCK,
-                signal: notes_signal(),
+            add_signal(DUCK, notes_signal()),
+            add_signal(SWEEP, drawn_signal()),
+            Edit::AddLayer {
+                param: VOLUME,
+                id: LayerId(2),
+                index: 0,
+                layer: Layer::new(BlendMode::Multiply).listening(DUCK),
             },
-            Edit::AddSignal {
-                id: SWEEP,
-                signal: drawn_signal(),
-            },
-            add_block(1, 2, block(8, 4).linked(DUCK)),
+            add_block(2, 2, block(8, 4)),
         ] {
             project.apply(edit).unwrap();
         }
@@ -858,11 +886,14 @@ mod tests {
     #[test]
     fn every_signal_edit_is_reverted_by_its_inverse() {
         let edits = [
+            add_signal(SignalId(3), notes_signal()),
             Edit::AddSignal {
                 id: SignalId(3),
-                signal: notes_signal(),
+                signal: drawn_signal_without_blocks(),
+                listeners: vec![LayerId(1)],
             },
             Edit::RemoveSignal { id: SWEEP },
+            Edit::RemoveSignal { id: DUCK },
             Edit::RenameSignal {
                 id: DUCK,
                 name: "Pump".to_owned(),
@@ -871,7 +902,7 @@ mod tests {
             Edit::SetNotesSource {
                 id: DUCK,
                 source: NotesSource {
-                    length: Ticks(960),
+                    decay: Ticks(960),
                     ..kick_envelope()
                 },
             },
@@ -885,9 +916,13 @@ mod tests {
                 block: block(1, 2),
             },
             Edit::RemoveBlock { id: BlockId(20) },
-            Edit::SetBlock {
-                id: BlockId(1),
-                block: block(0, 4).linked(SWEEP),
+            Edit::SetLayerSignal {
+                id: LayerId(1),
+                signal: Some(SWEEP),
+            },
+            Edit::SetLayerSignal {
+                id: LayerId(2),
+                signal: None,
             },
         ];
         for edit in edits {
@@ -895,70 +930,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn signals_in_use_cannot_be_removed() {
-        let mut project = with_signals();
-        assert_eq!(
-            assert_rejected(&mut project, Edit::RemoveSignal { id: DUCK }),
-            CommandError::SignalInUse {
-                id: DUCK,
-                block: BlockId(2)
-            }
-        );
-        project.apply(Edit::RemoveBlock { id: BlockId(2) }).unwrap();
-        project.apply(Edit::RemoveSignal { id: DUCK }).unwrap();
+    fn drawn_signal_without_blocks() -> Signal {
+        Signal {
+            source: SignalSource::Drawn(Vec::new()),
+            ..drawn_signal()
+        }
     }
 
     #[test]
-    fn links_must_name_an_existing_signal() {
+    fn removing_a_signal_sends_its_listeners_back_to_drawing() {
+        let mut project = with_signals();
+        let inverse = project.apply(Edit::RemoveSignal { id: DUCK }).unwrap();
+        assert_eq!(listens_to(&project, 2), None);
+        let (param, position) = project.node.find_layer(LayerId(2)).unwrap();
+        let layer = &project.node.param(param).unwrap().layers[position].1;
+        assert_eq!(layer.blocks.len(), 1, "blocks kept");
+        project.apply(inverse).unwrap();
+        assert_eq!(listens_to(&project, 2), Some(DUCK), "undo restores it");
+    }
+
+    #[test]
+    fn layers_listen_only_to_existing_signals() {
         let mut project = with_signals();
         let missing = SignalId(9);
-        let err = assert_rejected(&mut project, add_block(1, 3, block(20, 1).linked(missing)));
-        assert_eq!(err, CommandError::UnknownSignal { id: missing });
         let err = assert_rejected(
             &mut project,
-            Edit::SetBlock {
-                id: BlockId(1),
-                block: block(0, 4).linked(missing),
+            Edit::SetLayerSignal {
+                id: LayerId(1),
+                signal: Some(missing),
             },
         );
         assert_eq!(err, CommandError::UnknownSignal { id: missing });
-        let mut layer = Layer::new(BlendMode::Add);
-        layer
-            .blocks
-            .push((BlockId(30), block(0, 1).linked(missing)));
         let err = assert_rejected(
             &mut project,
             Edit::AddLayer {
                 param: VOLUME,
                 id: LayerId(30),
                 index: 0,
-                layer,
+                layer: Layer::new(BlendMode::Add).listening(missing),
             },
         );
         assert_eq!(err, CommandError::UnknownSignal { id: missing });
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignal {
+                id: SignalId(3),
+                signal: notes_signal(),
+                listeners: vec![LayerId(1), LayerId(99)],
+            },
+        );
+        assert_eq!(err, CommandError::UnknownLayer { id: LayerId(99) });
+        // Taking a layer from another signal would lose that on undo.
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignal {
+                id: SignalId(3),
+                signal: notes_signal(),
+                listeners: vec![LayerId(2)],
+            },
+        );
+        assert_eq!(err, CommandError::AlreadyListening { layer: LayerId(2) });
     }
 
     #[test]
-    fn signal_blocks_cannot_link_to_signals() {
+    fn switching_a_layer_keeps_its_blocks() {
         let mut project = with_signals();
-        let err = assert_rejected(
-            &mut project,
-            Edit::AddSignalBlock {
-                signal: SWEEP,
-                id: BlockId(21),
-                block: block(8, 1).linked(DUCK),
-            },
-        );
-        assert_eq!(err, CommandError::LinkInsideSignal { block: BlockId(21) });
-        let err = assert_rejected(
-            &mut project,
-            Edit::SetBlock {
-                id: BlockId(20),
-                block: block(0, 4).linked(DUCK),
-            },
-        );
-        assert_eq!(err, CommandError::LinkInsideSignal { block: BlockId(20) });
+        project
+            .apply(Edit::SetLayerSignal {
+                id: LayerId(1),
+                signal: Some(SWEEP),
+            })
+            .unwrap();
+        assert_eq!(listens_to(&project, 1), Some(SWEEP));
+        let layer = &project.node.instrument[instrument::CUTOFF as usize].layers[0].1;
+        assert_eq!(layer.blocks[0].1, block(0, 4));
     }
 
     #[test]
@@ -1017,40 +1062,22 @@ mod tests {
     #[test]
     fn bad_signals_are_rejected() {
         let mut project = with_signals();
-        let err = assert_rejected(
-            &mut project,
-            Edit::AddSignal {
-                id: DUCK,
-                signal: notes_signal(),
-            },
-        );
+        let err = assert_rejected(&mut project, add_signal(DUCK, notes_signal()));
         assert_eq!(err, CommandError::DuplicateSignal { id: DUCK });
         let mut bad = notes_signal();
         bad.color = 9;
-        let err = assert_rejected(
-            &mut project,
-            Edit::AddSignal {
-                id: SignalId(3),
-                signal: bad,
-            },
-        );
+        let err = assert_rejected(&mut project, add_signal(SignalId(3), bad));
         assert_eq!(err, CommandError::ColorOutOfRange { color: 9 });
         let mut bad = notes_signal();
         bad.name = "  ".to_owned();
-        let err = assert_rejected(
-            &mut project,
-            Edit::AddSignal {
-                id: SignalId(3),
-                signal: bad,
-            },
-        );
+        let err = assert_rejected(&mut project, add_signal(SignalId(3), bad));
         assert_eq!(err, CommandError::EmptyName);
         let err = assert_rejected(
             &mut project,
             Edit::SetNotesSource {
                 id: DUCK,
                 source: NotesSource {
-                    length: Ticks::ZERO,
+                    sustain: 2.0,
                     ..kick_envelope()
                 },
             },
@@ -1059,39 +1086,56 @@ mod tests {
             err,
             CommandError::InvalidSignal {
                 id: DUCK,
-                reason: InvalidSignal::EnvelopeLength
+                reason: InvalidSignal::EnvelopeLevel
             }
         );
-        let mut out_of_range = block(20, 1);
-        out_of_range.link = Some(SignalLink {
-            signal: DUCK,
-            low: 2.0,
-            high: 1.0,
-        });
-        let err = assert_rejected(&mut project, add_block(1, 3, out_of_range));
+        let mut bad = block(20, 1);
+        bad.depth = -1.0;
+        let err = assert_rejected(
+            &mut project,
+            Edit::AddSignalBlock {
+                signal: SWEEP,
+                id: BlockId(21),
+                block: bad,
+            },
+        );
         assert!(matches!(
             err,
             CommandError::InvalidBlock {
-                reason: InvalidBlock::LinkRange,
+                reason: InvalidBlock::Depth,
                 ..
             }
         ));
     }
 
     #[test]
-    fn links_list_every_linked_block() {
-        let project = with_signals();
-        let links: Vec<_> = project.node.links().collect();
+    fn listeners_list_every_listening_layer() {
+        let mut project = with_signals();
+        project
+            .apply(Edit::SetLayerSignal {
+                id: LayerId(1),
+                signal: Some(DUCK),
+            })
+            .unwrap();
+        let listeners: Vec<_> = project.node.listeners().collect();
         assert_eq!(
-            links,
-            [(
-                SignalUse {
-                    param: CUTOFF,
-                    layer: LayerId(1),
-                    block: BlockId(2)
-                },
-                DUCK
-            )]
+            listeners,
+            [
+                (
+                    SignalUse {
+                        param: CUTOFF,
+                        layer: LayerId(1),
+                    },
+                    DUCK
+                ),
+                (
+                    SignalUse {
+                        param: VOLUME,
+                        layer: LayerId(2),
+                    },
+                    DUCK
+                )
+            ]
         );
     }
 

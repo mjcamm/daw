@@ -792,7 +792,9 @@ mod tests {
 
     /// The shape value a block plays at a song beat.
     fn value_at(block: &Block, beat: f64) -> f64 {
-        daw_automation::CompiledBlock::compile(block).sample(beat).0
+        daw_automation::CompiledBlock::compile(block)
+            .sample(beat, None)
+            .0
     }
 
     fn assert_same_contents(a: &Block, b: &Block, beats: &[f64]) {

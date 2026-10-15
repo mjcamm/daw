@@ -10,7 +10,7 @@ mod time;
 pub use automation::{
     BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Layer, LayerId,
     NotesSource, ParamId, ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
-    SignalLink, SignalSource,
+    SignalSource,
 };
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -111,6 +111,12 @@ pub enum Edit {
         id: LayerId,
         mix: f64,
     },
+    /// Make a layer listen to a signal, or draw its own blocks (`None`).
+    /// The blocks are kept either way.
+    SetLayerSignal {
+        id: LayerId,
+        signal: Option<SignalId>,
+    },
     AddBlock {
         layer: LayerId,
         id: BlockId,
@@ -119,17 +125,21 @@ pub enum Edit {
     RemoveBlock {
         id: BlockId,
     },
-    /// Replace a block on a layer or a signal: move, resize, reshape, link
-    /// or change its controls.
+    /// Replace a block on a layer or a signal: move, resize, reshape or
+    /// change its controls.
     SetBlock {
         id: BlockId,
         block: Block,
     },
+    /// Add a signal. `listeners` are layers to make listen to it, so undoing
+    /// a removal restores them; a front end sends none.
     AddSignal {
         id: SignalId,
         signal: Signal,
+        listeners: Vec<LayerId>,
     },
-    /// Rejected while any block links to the signal.
+    /// Remove a signal. Layers listening to it go back to drawing their
+    /// blocks.
     RemoveSignal {
         id: SignalId,
     },
@@ -260,16 +270,15 @@ pub struct SignalSnapshot {
     /// Index into the nine-colour content palette.
     pub color: u8,
     pub source: SignalSource,
-    /// Every block linked to this signal.
+    /// Every layer listening to this signal.
     pub used_by: Vec<SignalUse>,
 }
 
-/// A block that links to a signal, and where it lives.
+/// A layer that listens to a signal, and its parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalUse {
     pub param: ParamId,
     pub layer: LayerId,
-    pub block: BlockId,
 }
 
 /// Why the engine rejected a command. A rejected command changes nothing.
@@ -349,22 +358,17 @@ pub enum CommandError {
     UnknownSignal {
         id: SignalId,
     },
-    /// The signal cannot be removed while a block links to it.
-    SignalInUse {
-        id: SignalId,
-        block: BlockId,
-    },
     InvalidSignal {
         id: SignalId,
         reason: InvalidSignal,
     },
+    /// A new signal's listener already listens to another signal.
+    AlreadyListening {
+        layer: LayerId,
+    },
     /// The edit needs a different kind of signal (drawn or notes).
     WrongSignalKind {
         id: SignalId,
-    },
-    /// Blocks on a signal's lane cannot themselves link to a signal.
-    LinkInsideSignal {
-        block: BlockId,
     },
     /// Colours index the nine-colour content palette.
     ColorOutOfRange {
@@ -418,19 +422,17 @@ pub enum InvalidBlock {
     CurveTension {
         index: usize,
     },
-    /// A signal link's `low` and `high` must be within `0..=1`.
-    LinkRange,
 }
 
 /// Why a signal was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidSignal {
-    /// A notes envelope needs a length.
-    EnvelopeLength,
+    /// Attack, decay and release cannot be negative.
+    EnvelopeTime,
+    /// Sustain and velocity amount must be within `0..=1`.
+    EnvelopeLevel,
     /// A notes filter needs `lowest <= highest <= 127`.
     PitchRange,
-    /// The envelope's shape is invalid, for the same reasons a block's can be.
-    Shape(InvalidBlock),
 }
 
 impl fmt::Display for CommandError {
@@ -473,17 +475,14 @@ impl fmt::Display for CommandError {
             }
             Self::DuplicateSignal { id } => write!(f, "signal {} already exists", id.0),
             Self::UnknownSignal { id } => write!(f, "signal {} does not exist", id.0),
-            Self::SignalInUse { id, block } => {
-                write!(f, "signal {} is used by block {}", id.0, block.0)
-            }
             Self::InvalidSignal { id, reason } => {
                 write!(f, "invalid signal {}: {reason}", id.0)
             }
+            Self::AlreadyListening { layer } => {
+                write!(f, "layer {} already listens to a signal", layer.0)
+            }
             Self::WrongSignalKind { id } => {
                 write!(f, "signal {} is the wrong kind for this edit", id.0)
-            }
-            Self::LinkInsideSignal { block } => {
-                write!(f, "block {} is on a signal and cannot link to one", block.0)
             }
             Self::ColorOutOfRange { color } => write!(f, "colour {color} is not in the palette"),
             Self::EmptyName => f.write_str("names cannot be empty"),
@@ -523,7 +522,6 @@ impl fmt::Display for InvalidBlock {
             Self::CurveTension { index } => {
                 write!(f, "point {index} curve tension is outside -1..=1")
             }
-            Self::LinkRange => f.write_str("signal link range is outside 0..=1"),
         }
     }
 }
@@ -531,9 +529,9 @@ impl fmt::Display for InvalidBlock {
 impl fmt::Display for InvalidSignal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EnvelopeLength => f.write_str("envelope has no length"),
+            Self::EnvelopeTime => f.write_str("envelope time is negative"),
+            Self::EnvelopeLevel => f.write_str("sustain or velocity amount is outside 0..=1"),
             Self::PitchRange => f.write_str("pitch range is empty or above 127"),
-            Self::Shape(reason) => write!(f, "envelope {reason}"),
         }
     }
 }

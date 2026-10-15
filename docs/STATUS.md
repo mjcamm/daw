@@ -6,7 +6,7 @@
 
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
-- **Phase 4 (motion signals): design revised with the user** (2026-10-15): layers (not blocks) listen to signals, signals are centred, notes become ADSR hits, Signals page layout agreed. The first-draft engine (`crates/daw-engine/tests/signals.rs`) is being changed to match; see "Engine changes" in `docs/design/motion-signals.md`. UI not started.
+- **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. UI not started; layout agreed.
 
 ## In the app (`cargo run -p daw-ui`)
 
@@ -22,7 +22,7 @@
 
 - **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; `crates/daw-engine/src/upgrade.rs` converts older files exactly (Replace only when nothing below it acts).
 - **Layer mix** scales every block's weight on a layer.
-- **Signals** (file version 2, first draft): drawn or from MIDI notes; a block links with `Block.link` and a low..high range. Being replaced by layer-level listening (version 4).
+- **Signals** (file version 4): drawn, or ADSR hits from MIDI notes. A layer listens with `Layer.signal`; its blocks are windows onto the signal. No range: block depth and invert do it.
 
 ## Waiting on the user
 
@@ -32,9 +32,8 @@
 
 ## Next up
 
-1. Engine changes listed in `motion-signals.md` (test-first).
-2. Signals page, then the layer source pick list on Parameters, then "Publish as signal" on Arrange. Ask about details of each before building.
-3. The milestone gate ("does shaping movement feel great?").
+1. Signals page, then the layer source pick list on Parameters, then "Publish as signal" on Arrange. Ask about details of each before building. (UI block drawing still passes `None` for the signal to `CompiledBlock::sample`; listening layers should draw the signal's shape.)
+2. The milestone gate ("does shaping movement feel great?").
 
 ## Design rules the user has set
 

@@ -18,23 +18,24 @@ pub fn validate_block(block: &Block) -> Result<(), InvalidBlock> {
     if !(0.0..=1.0).contains(&block.depth) {
         return Err(InvalidBlock::Depth);
     }
-    if let Some(link) = block.link
-        && !((0.0..=1.0).contains(&link.low) && (0.0..=1.0).contains(&link.high))
-    {
-        return Err(InvalidBlock::LinkRange);
-    }
     validate_shape(&block.shape)
 }
 
 /// Checks a notes signal's filter and envelope.
 pub fn validate_notes_source(source: &NotesSource) -> Result<(), InvalidSignal> {
-    if source.length <= Ticks::ZERO {
-        return Err(InvalidSignal::EnvelopeLength);
+    if [source.attack, source.decay, source.release]
+        .iter()
+        .any(|t| *t < Ticks::ZERO)
+    {
+        return Err(InvalidSignal::EnvelopeTime);
+    }
+    if !(0.0..=1.0).contains(&source.sustain) || !(0.0..=1.0).contains(&source.velocity) {
+        return Err(InvalidSignal::EnvelopeLevel);
     }
     if source.lowest > source.highest || source.highest > 127 {
         return Err(InvalidSignal::PitchRange);
     }
-    validate_shape(&source.shape).map_err(InvalidSignal::Shape)
+    Ok(())
 }
 
 fn validate_shape(shape: &Shape) -> Result<(), InvalidBlock> {
@@ -132,31 +133,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_link_ranges_outside_the_parameter() {
-        use daw_protocol::{SignalId, SignalLink};
-        let link = |low, high| SignalLink {
-            signal: SignalId(1),
-            low,
-            high,
-        };
-        assert_eq!(check(|b| b.link = Some(link(0.8, 0.2))), Ok(()), "flipped");
-        assert_eq!(
-            check(|b| b.link = Some(link(-0.1, 0.5))),
-            Err(InvalidBlock::LinkRange)
-        );
-        assert_eq!(
-            check(|b| b.link = Some(link(0.0, f64::NAN))),
-            Err(InvalidBlock::LinkRange)
-        );
-    }
-
-    #[test]
     fn checks_notes_sources() {
         let valid = NotesSource {
             lowest: 36,
             highest: 36,
-            length: Ticks::from_beats(1),
-            shape: Shape::ramp(0.0, 1.0),
+            ..NotesSource::new()
         };
         assert_eq!(validate_notes_source(&valid), Ok(()));
         let with = |change: fn(&mut NotesSource)| {
@@ -164,16 +145,23 @@ mod tests {
             change(&mut source);
             validate_notes_source(&source)
         };
-        assert_eq!(
-            with(|s| s.length = Ticks::ZERO),
-            Err(InvalidSignal::EnvelopeLength)
-        );
+        assert_eq!(with(|s| s.attack = Ticks::ZERO), Ok(()), "instant attack");
+        for change in [
+            (|s: &mut NotesSource| s.attack = Ticks(-1)) as fn(&mut NotesSource),
+            |s| s.decay = Ticks(-1),
+            |s| s.release = Ticks(-1),
+        ] {
+            assert_eq!(with(change), Err(InvalidSignal::EnvelopeTime));
+        }
+        for change in [
+            (|s: &mut NotesSource| s.sustain = 1.5) as fn(&mut NotesSource),
+            |s| s.sustain = f64::NAN,
+            |s| s.velocity = -0.1,
+        ] {
+            assert_eq!(with(change), Err(InvalidSignal::EnvelopeLevel));
+        }
         assert_eq!(with(|s| s.lowest = 40), Err(InvalidSignal::PitchRange));
         assert_eq!(with(|s| s.highest = 128), Err(InvalidSignal::PitchRange));
-        assert_eq!(
-            with(|s| s.shape.points.clear()),
-            Err(InvalidSignal::Shape(InvalidBlock::NoPoints))
-        );
     }
 
     #[test]

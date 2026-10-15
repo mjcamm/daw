@@ -30,28 +30,10 @@ pub struct CompiledBlock {
     pub fade_in: f64,
     pub fade_out: f64,
     pub points: Vec<ShapePoint>,
-    /// The signal the block plays instead of its points, if linked.
-    pub link: Option<Box<CompiledLink>>,
-}
-
-/// A linked block's signal and where its bottom and top land.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompiledLink {
-    pub signal: CompiledSignal,
-    pub low: f64,
-    pub high: f64,
 }
 
 impl CompiledBlock {
-    /// Compiles a block with no signals available: a linked block has no
-    /// effect.
     pub fn compile(block: &Block) -> Self {
-        Self::compile_with(block, &Signals::default())
-    }
-
-    /// Compiles a block, taking the signal it links to (if any) from
-    /// `signals`. A link to a missing signal has no effect.
-    pub fn compile_with(block: &Block, signals: &Signals) -> Self {
         Self {
             start: block.start.as_beats(),
             end: block.end().as_beats(),
@@ -62,16 +44,6 @@ impl CompiledBlock {
             fade_in: block.fade_in.as_beats(),
             fade_out: block.fade_out.as_beats(),
             points: block.shape.points.clone(),
-            link: block.link.map(|link| {
-                Box::new(CompiledLink {
-                    signal: signals
-                        .get(link.signal)
-                        .cloned()
-                        .unwrap_or(CompiledSignal::Silent),
-                    low: link.low,
-                    high: link.high,
-                })
-            }),
         }
     }
 
@@ -79,14 +51,12 @@ impl CompiledBlock {
         self.start <= beat && beat < self.end
     }
 
-    /// Shape value and weight at `beat`, which must be inside the block.
-    pub fn sample(&self, beat: f64) -> (f64, f64) {
-        let (x, presence) = match &self.link {
+    /// Shape value and weight at `beat`, which must be inside the block. On
+    /// a layer listening to `signal`, the block is a window onto it.
+    pub fn sample(&self, beat: f64, signal: Option<&CompiledSignal>) -> (f64, f64) {
+        let (x, presence) = match signal {
             // Signals run in song time: read at the song position.
-            Some(link) => {
-                let (s, presence) = link.signal.sample(beat + self.nudge);
-                (link.low + (link.high - link.low) * s, presence)
-            }
+            Some(signal) => signal.sample(beat + self.nudge),
             None => {
                 let phase = ((beat - self.start + self.nudge) / self.cycle).rem_euclid(1.0);
                 (shape_value(&self.points, phase), 1.0)
@@ -109,27 +79,42 @@ pub struct CompiledLayer {
     pub mode: BlendMode,
     /// Scales every block's weight.
     pub mix: f64,
+    /// The signal the layer listens to, its own copy. `None` draws.
+    pub signal: Option<CompiledSignal>,
     /// Sorted by start, non-overlapping.
     pub blocks: Vec<CompiledBlock>,
 }
 
 impl CompiledLayer {
+    /// Compiles a layer with no signals available: a listening layer has no
+    /// effect.
     pub fn compile(layer: &Layer) -> Self {
         Self::compile_with(layer, &Signals::default())
     }
 
+    /// Compiles a layer, taking the signal it listens to (if any) from
+    /// `signals`. A missing signal has no effect.
     pub fn compile_with(layer: &Layer, signals: &Signals) -> Self {
         let mut blocks: Vec<CompiledBlock> = layer
             .blocks
             .iter()
-            .map(|(_, block)| CompiledBlock::compile_with(block, signals))
+            .map(|(_, block)| CompiledBlock::compile(block))
             .collect();
         blocks.sort_by(|a, b| a.start.total_cmp(&b.start));
         Self {
             mode: layer.mode,
             mix: layer.mix,
+            signal: layer
+                .signal
+                .map(|id| signals.get(id).cloned().unwrap_or(CompiledSignal::Silent)),
             blocks,
         }
+    }
+
+    /// The layer's shape value and weight at `beat`; `None` in a gap.
+    pub fn sample(&self, beat: f64) -> Option<(f64, f64)> {
+        let (x, w) = self.block_at(beat)?.sample(beat, self.signal.as_ref());
+        Some((x, w * self.mix))
     }
 
     /// The block covering `beat`, if any; `None` is a gap.
@@ -163,7 +148,7 @@ impl Automation {
         Self::compile_with(state, &Signals::default())
     }
 
-    /// Compiles a parameter, with the signals its linked blocks read.
+    /// Compiles a parameter, with the signals its layers listen to.
     pub fn compile_with(state: &ParamState, signals: &Signals) -> Self {
         Self::compile_layers_with(state.base, &state.layers, signals)
     }
@@ -187,9 +172,8 @@ impl Automation {
     pub fn value_at(&self, beat: f64) -> f64 {
         let mut v = self.base;
         for layer in &self.layers {
-            if let Some(block) = layer.block_at(beat) {
-                let (x, w) = block.sample(beat);
-                v = blend(layer.mode, v, x, w * layer.mix);
+            if let Some((x, w)) = layer.sample(beat) {
+                v = blend(layer.mode, v, x, w);
             }
         }
         v.clamp(0.0, 1.0)
@@ -229,7 +213,7 @@ mod tests {
 
     /// A block's shape value and weight at `beat`.
     fn sample(block: &Block, beat: f64) -> (f64, f64) {
-        CompiledBlock::compile(block).sample(beat)
+        CompiledBlock::compile(block).sample(beat, None)
     }
 
     const MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];

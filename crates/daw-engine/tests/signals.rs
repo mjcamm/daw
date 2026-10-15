@@ -1,5 +1,5 @@
 //! Motion signals: a kick pattern publishes a ducking signal that several
-//! parameters link to, and every use stays in sync.
+//! parameters listen to, and every use stays in sync.
 
 #![allow(clippy::unwrap_used, reason = "test helpers fail the test on error")]
 
@@ -7,7 +7,7 @@ use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
     AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
     EffectKind, Engine, EngineConfig, Layer, LayerId, LoopRange, MidiClip, MidiNote, NotesSource,
-    ParamId, Shape, Signal, SignalId, SignalLink, SignalSource, SignalUse, Ticks,
+    ParamId, Shape, Signal, SignalId, SignalSource, SignalUse, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, render};
 
@@ -38,19 +38,23 @@ fn apply(engine: &mut Engine, edit: Edit) {
     engine.apply(Command::Edit(edit)).unwrap();
 }
 
-fn kick_envelope(length: f64) -> NotesSource {
+/// Kicks hit straight up and fall back over `decay` beats.
+fn kick_envelope(decay: f64) -> NotesSource {
     NotesSource {
         lowest: KICK,
         highest: KICK,
-        length: beats(length),
-        // Fully ducked at the kick, back to full over the envelope.
-        shape: Shape::ramp(0.0, 1.0),
+        attack: Ticks::ZERO,
+        decay: beats(decay),
+        sustain: 0.0,
+        release: Ticks::ZERO,
+        velocity: 0.0,
     }
 }
 
 /// A chord note and a kick on every beat for eight beats, a filter
-/// effect, a ducking signal from the kicks, and a Multiply layer linked to
-/// it on the volume, the synth cutoff and the filter cutoff.
+/// effect, a signal from the kicks, and a Multiply layer listening to it
+/// through an inverted window on the volume, the synth cutoff and the
+/// filter cutoff: each kick ducks them.
 fn kick_ducking() -> (Engine, AudioProcessor) {
     let (mut engine, processor) = Engine::new(EngineConfig::default());
     // A chord note on every beat (not one held note: a loop jump does not
@@ -67,7 +71,7 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
                 },
                 MidiNote {
                     start,
-                    length: beats(0.1),
+                    length: beats(0.9),
                     pitch: KICK,
                     velocity: 100,
                 },
@@ -102,19 +106,16 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
                 color: 0,
                 source: SignalSource::Notes(kick_envelope(0.5)),
             },
+            listeners: Vec::new(),
         },
     );
     for (id, param) in [(1, VOLUME), (2, SYNTH_CUTOFF), (3, FILTER_CUTOFF)] {
-        let mut layer = Layer::new(BlendMode::Multiply);
-        // The envelope lands on the bottom half of the lane: from a full
-        // duck up to the centre line (no change).
-        let mut block = Block::new(Ticks::ZERO, beats(8.0), Shape::constant(1.0));
-        block.link = Some(SignalLink {
-            signal: DUCK,
-            low: 0.0,
-            high: 0.5,
-        });
-        layer.blocks.push((BlockId(id), block));
+        let mut layer = Layer::new(BlendMode::Multiply).listening(DUCK);
+        // Inverted, each hit pulls down: a full duck at the kick, back to
+        // the centre line (no change) as it decays.
+        let mut window = Block::new(Ticks::ZERO, beats(8.0), Shape::constant(0.5));
+        window.invert = true;
+        layer.blocks.push((BlockId(id), window));
         apply(
             &mut engine,
             Edit::AddLayer {
@@ -128,7 +129,7 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
     (engine, processor)
 }
 
-/// Each linked parameter's value and resting value at song position `beat`.
+/// Each listening parameter's value and resting value at song position `beat`.
 fn values_at(
     engine: &mut Engine,
     processor: &mut AudioProcessor,
@@ -156,7 +157,7 @@ fn values_at(
 }
 
 #[test]
-fn every_linked_parameter_ducks_at_every_kick() {
+fn every_listening_parameter_ducks_at_every_kick() {
     let (mut engine, mut processor) = kick_ducking();
     for kick in 0..8 {
         let kick = f64::from(kick);
@@ -243,7 +244,7 @@ fn render_kick_ducking(blocks: &[usize]) -> Rendered {
 }
 
 #[test]
-fn linked_output_is_identical_for_any_block_size() {
+fn listening_output_is_identical_for_any_block_size() {
     let reference = render_kick_ducking(&[480]);
     assert!(!reference.is_silent());
     for blocks in [&[1][..], VARIED_BLOCKS, &[4096], &[31, 33]] {
@@ -269,17 +270,14 @@ fn the_snapshot_lists_every_use_of_a_signal() {
             SignalUse {
                 param: SYNTH_CUTOFF,
                 layer: LayerId(2),
-                block: BlockId(2)
             },
             SignalUse {
                 param: FILTER_CUTOFF,
                 layer: LayerId(3),
-                block: BlockId(3)
             },
             SignalUse {
                 param: VOLUME,
                 layer: LayerId(1),
-                block: BlockId(1)
             },
         ],
         "in signal order: instrument, effects, channel"
@@ -300,4 +298,18 @@ fn undo_takes_a_signal_change_back_everywhere() {
     assert_ne!(values_at(&mut engine, &mut processor, 2.6), before);
     engine.apply(Command::Undo).unwrap();
     assert_eq!(values_at(&mut engine, &mut processor, 2.6), before);
+}
+
+#[test]
+fn removing_the_signal_stops_the_ducking_and_undo_brings_it_back() {
+    let (mut engine, mut processor) = kick_ducking();
+    apply(&mut engine, Edit::RemoveSignal { id: DUCK });
+    // The layers draw their own windows again: flat on the centre line.
+    for (id, value, base) in values_at(&mut engine, &mut processor, 2.0) {
+        assert!((value - base).abs() < 1e-9, "{id:?} no longer ducks");
+    }
+    engine.apply(Command::Undo).unwrap();
+    for (id, value, _) in values_at(&mut engine, &mut processor, 2.0) {
+        assert_eq!(value, 0.0, "{id:?} ducks again");
+    }
 }

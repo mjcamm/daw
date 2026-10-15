@@ -1595,7 +1595,7 @@ fn block_view(
                     paint_curve(window, bounds, ppb, faint, None, |beat| {
                         let beat = start + beat;
                         if compiled.contains(beat) {
-                            let (x, w) = compiled.sample(beat);
+                            let (x, w) = compiled.sample(beat, None);
                             0.5 + (x - 0.5) * w * mix
                         } else {
                             f64::NAN
@@ -1605,7 +1605,7 @@ fn block_view(
                     paint_curve(window, bounds, ppb, colors.detail, None, |beat| {
                         let beat = start + beat;
                         if compiled.contains(beat) {
-                            compiled.sample(beat).0
+                            compiled.sample(beat, None).0
                         } else {
                             f64::NAN
                         }
@@ -1909,7 +1909,7 @@ mod tests {
             daw_engine::Block::new(Ticks::ZERO, Ticks::from_beats(4), Shape::ramp(0., 1.)),
         ));
         let block = CompiledBlock::compile(&layer.blocks[0].1);
-        assert!((block.sample(2.0).0 - 0.5).abs() < 1e-9);
+        assert!((block.sample(2.0, None).0 - 0.5).abs() < 1e-9);
     }
 }
 

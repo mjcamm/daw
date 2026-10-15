@@ -17,8 +17,10 @@ use std::fmt;
 /// Identifies the file type, so other JSON files are rejected clearly.
 pub const FORMAT: &str = "daw-project";
 /// Bumped whenever the layout changes; older versions are converted on load.
-/// Version 2 added motion signals; version 3 centred the blend modes.
-pub const VERSION: u32 = 3;
+/// Version 2 added motion signals; version 3 centred the blend modes;
+/// version 4 moved listening to signals onto layers and made notes signals
+/// ADSR hits.
+pub const VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -201,10 +203,13 @@ impl ProjectFile {
         if header.version > VERSION {
             return Err(LoadError::UnsupportedVersion(header.version));
         }
-        if header.version < 3 {
+        if header.version < VERSION {
             let mut value: serde_json::Value =
                 serde_json::from_str(json).map_err(LoadError::Json)?;
-            crate::upgrade::centre_blend_modes(&mut value);
+            if header.version < 3 {
+                crate::upgrade::centre_blend_modes(&mut value);
+            }
+            crate::upgrade::listen_to_signals(&mut value);
             return serde_json::from_value(value).map_err(LoadError::Json);
         }
         serde_json::from_str(json).map_err(LoadError::Json)
@@ -231,13 +236,14 @@ impl ProjectFile {
         }
 
         let mut project = Project::default();
-        // Signals first, so the blocks that link to them resolve.
+        // Signals first, so the layers that listen to them resolve.
         let mut edits: Vec<Edit> = self
             .signals
             .into_iter()
             .map(|s| Edit::AddSignal {
                 id: s.id,
                 signal: s.signal,
+                listeners: Vec::new(),
             })
             .collect();
         edits.extend([
@@ -318,8 +324,9 @@ mod tests {
     use crate::devices::{filter, instrument};
     use daw_protocol::{
         BlendMode, Block, BlockId, EffectKind, Layer, LayerId, MidiNote, NotesSource, Segment,
-        Shape, ShapePoint, SignalLink, SignalSource, Ticks,
+        Shape, ShapePoint, SignalSource, Ticks,
     };
+    use serde_json::json;
 
     /// A project using every kind of content.
     fn rich_project() -> Project {
@@ -343,17 +350,14 @@ mod tests {
         block.nudge = Ticks(-30);
         block.fade_in = Ticks(120);
         layer.blocks.push((BlockId(7), block));
-        let mut linked = Block::new(
+        let mut ducking = Layer::new(BlendMode::Multiply).listening(SignalId(2));
+        let mut window = Block::new(
             Ticks::from_beats(8),
             Ticks::from_beats(4),
             Shape::constant(0.5),
         );
-        linked.link = Some(SignalLink {
-            signal: SignalId(2),
-            low: 0.1,
-            high: 0.7,
-        });
-        layer.blocks.push((BlockId(8), linked));
+        window.invert = true;
+        ducking.blocks.push((BlockId(8), window));
         let edits = [
             Edit::AddSignal {
                 id: SignalId(2),
@@ -363,10 +367,14 @@ mod tests {
                     source: SignalSource::Notes(NotesSource {
                         lowest: 36,
                         highest: 37,
-                        length: Ticks(480),
-                        shape: Shape::ramp(0.0, 1.0),
+                        attack: Ticks(10),
+                        decay: Ticks(480),
+                        sustain: 0.25,
+                        release: Ticks(120),
+                        velocity: 0.5,
                     }),
                 },
+                listeners: Vec::new(),
             },
             Edit::AddSignal {
                 id: SignalId(5),
@@ -378,6 +386,7 @@ mod tests {
                         Block::new(Ticks::ZERO, Ticks::from_bars(1), Shape::ramp(0.2, 0.9)),
                     )]),
                 },
+                listeners: Vec::new(),
             },
             Edit::RenameSong {
                 name: "Night Drive".to_owned(),
@@ -407,6 +416,15 @@ mod tests {
                 id: LayerId(5),
                 index: 0,
                 layer,
+            },
+            Edit::AddLayer {
+                param: ParamId {
+                    device: DeviceRef::Channel,
+                    index: crate::devices::channel::VOLUME,
+                },
+                id: LayerId(6),
+                index: 0,
+                layer: ducking,
             },
             Edit::AddClip {
                 id: ClipId(9),
@@ -530,12 +548,34 @@ mod tests {
         let json = file_json(|v| {
             v["version"] = 1.into();
             v.as_object_mut().unwrap().remove("signals");
-            // Version 1 had no links either.
-            let blocks = &mut v["nodes"][0]["instrument"]["params"][0]["layers"][0][1]["blocks"];
-            blocks.as_array_mut().unwrap().pop();
+            // Version 1 had no listening layers either.
+            let volume = crate::devices::channel::VOLUME as usize;
+            v["nodes"][0]["channel"][volume]["layers"] = json!([]);
         });
         let (project, _) = load(&json).unwrap();
         assert!(project.signals.is_empty());
+    }
+
+    #[test]
+    fn version_3_links_load_as_listening_layers() {
+        let json = file_json(|v| {
+            v["version"] = 3.into();
+            let volume = crate::devices::channel::VOLUME as usize;
+            let layer = &mut v["nodes"][0]["channel"][volume]["layers"][0][1];
+            layer.as_object_mut().unwrap().remove("signal");
+            layer["blocks"][0][1]["link"] = json!({ "signal": 2, "low": 0.0, "high": 0.5 });
+            v["signals"][0]["source"]["Notes"] = json!({
+                "lowest": 36, "highest": 37, "length": 480,
+                "shape": { "points": [{ "at": 0.0, "value": 0.0, "segment": "Linear" }] }
+            });
+        });
+        let (project, _) = load(&json).unwrap();
+        let volume = &project.node.channel[crate::devices::channel::VOLUME as usize];
+        assert_eq!(volume.layers[0].1.signal, Some(SignalId(2)));
+        let SignalSource::Notes(source) = &project.signals[&SignalId(2)].source else {
+            panic!("expected a notes signal");
+        };
+        assert_eq!(source.decay, Ticks(480));
     }
 
     #[test]

@@ -10,19 +10,25 @@
 //! The one approximation is Replace, which depended on the layers below it:
 //! it converts exactly when nothing below it is acting, which is how layers
 //! were used in practice.
+//!
+//! Version 4 moved listening to signals from blocks to layers and made notes
+//! signals ADSR hits. The first-draft signals never reached the UI, so they
+//! convert as closely as the new model allows: a layer whose blocks all link
+//! to the same signal listens to it (link ranges are dropped); other links
+//! are dropped; an old notes envelope becomes a hit that decays over its
+//! length.
 
 use serde_json::Value;
 
-/// Rewrites every layer in a version 1 or 2 file for version 3.
-pub fn centre_blend_modes(file: &mut Value) {
+/// Every parameter on every node: instrument, channel and effects.
+fn params_mut(file: &mut Value) -> Vec<&mut Value> {
+    let mut params: Vec<&mut Value> = Vec::new();
     let Some(nodes) = file.get_mut("nodes").and_then(Value::as_array_mut) else {
-        return;
+        return params;
     };
     for node in nodes {
-        let mut params: Vec<&mut Value> = Vec::new();
-        let node = match node.as_object_mut() {
-            Some(node) => node,
-            None => continue,
+        let Some(node) = node.as_object_mut() else {
+            continue;
         };
         for (key, value) in node.iter_mut() {
             match key.as_str() {
@@ -46,16 +52,78 @@ pub fn centre_blend_modes(file: &mut Value) {
                 _ => {}
             }
         }
-        for param in params {
-            let base = param.get("base").and_then(Value::as_f64).unwrap_or(0.0);
-            let layers = param.get_mut("layers").and_then(Value::as_array_mut);
-            for pair in layers.into_iter().flatten() {
-                if let Some(layer) = pair.get_mut(1) {
-                    centre_layer(layer, base);
-                }
-            }
+    }
+    params
+}
+
+/// Every layer of a parameter.
+fn layers_mut(param: &mut Value) -> impl Iterator<Item = &mut Value> {
+    let layers = param.get_mut("layers").and_then(Value::as_array_mut);
+    layers
+        .into_iter()
+        .flatten()
+        .filter_map(|pair| pair.get_mut(1))
+}
+
+/// Rewrites every layer in a version 1 or 2 file for version 3.
+pub fn centre_blend_modes(file: &mut Value) {
+    for param in params_mut(file) {
+        let base = param.get("base").and_then(Value::as_f64).unwrap_or(0.0);
+        for layer in layers_mut(param) {
+            centre_layer(layer, base);
         }
     }
+}
+
+/// Rewrites block links and notes envelopes in a file before version 4.
+pub fn listen_to_signals(file: &mut Value) {
+    for param in params_mut(file) {
+        for layer in layers_mut(param) {
+            listen_through_layer(layer);
+        }
+    }
+    let signals = file.get_mut("signals").and_then(Value::as_array_mut);
+    for signal in signals.into_iter().flatten() {
+        if let Some(notes) = signal.get_mut("source").and_then(|s| s.get_mut("Notes")) {
+            hit_from_envelope(notes);
+        }
+    }
+}
+
+/// A layer whose blocks all link to one signal listens to it; every link is
+/// removed.
+fn listen_through_layer(layer: &mut Value) {
+    let blocks = layer.get_mut("blocks").and_then(Value::as_array_mut);
+    let mut linked: Vec<Option<Value>> = Vec::new();
+    for pair in blocks.into_iter().flatten() {
+        let Some(block) = pair.get_mut(1).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let link = block.remove("link").filter(Value::is_object);
+        linked.push(link.and_then(|l| l.get("signal").cloned()));
+    }
+    if let Some(Some(first)) = linked.first()
+        && linked.iter().all(|s| s.as_ref() == Some(first))
+    {
+        layer["signal"] = first.clone();
+    }
+}
+
+/// An old notes envelope (a shape over a fixed length) becomes a hit that
+/// decays over that length.
+fn hit_from_envelope(notes: &mut Value) {
+    let Some(notes) = notes.as_object_mut() else {
+        return;
+    };
+    let Some(length) = notes.remove("length") else {
+        return;
+    };
+    notes.remove("shape");
+    notes.insert("attack".to_owned(), 0.into());
+    notes.insert("decay".to_owned(), length);
+    notes.insert("sustain".to_owned(), 0.0.into());
+    notes.insert("release".to_owned(), 0.into());
+    notes.insert("velocity".to_owned(), 0.0.into());
 }
 
 /// Converts one layer (on a parameter resting at `base`) to a centred mode.
@@ -165,7 +233,7 @@ mod tests {
                 // The old shape read directly: same block, compiled as-is.
                 let block = daw_automation::CompiledBlock::compile(&old.blocks[0].1);
                 for beat in [0.0, 0.7, 1.9, 3.2] {
-                    let (x, w) = block.sample(beat);
+                    let (x, w) = block.sample(beat, None);
                     let expected = old_blend(mode, base, x, w).clamp(0.0, 1.0);
                     let actual = automation.value_at(beat);
                     assert!(
@@ -186,6 +254,61 @@ mod tests {
         // Inverted, then halved: 1 - 0.2 = 0.8 -> 0.4, and 1 - 1 = 0 -> 0.
         assert!((link["low"].as_f64().unwrap() - 0.4).abs() < 1e-12);
         assert!((link["high"].as_f64().unwrap() - 0.0).abs() < 1e-12);
+    }
+
+    fn linked_layer(links: &[Option<u64>]) -> Value {
+        let mut layer = old_layer("Add", false);
+        let block = layer["blocks"][0].clone();
+        layer["blocks"] = json!([]);
+        for (i, link) in links.iter().enumerate() {
+            let mut pair = block.clone();
+            pair[0] = i.into();
+            if let Some(signal) = link {
+                pair[1]["link"] = json!({ "signal": signal, "low": 0.0, "high": 0.5 });
+            }
+            layer["blocks"].as_array_mut().unwrap().push(pair);
+        }
+        layer
+    }
+
+    #[test]
+    fn a_layer_linked_to_one_signal_listens_to_it() {
+        let mut layer = linked_layer(&[Some(4), Some(4)]);
+        listen_through_layer(&mut layer);
+        assert_eq!(layer["signal"], 4);
+        let layer: Layer = serde_json::from_value(layer).unwrap();
+        assert_eq!(layer.blocks.len(), 2);
+    }
+
+    #[test]
+    fn mixed_links_are_dropped() {
+        for links in [&[Some(4), None][..], &[Some(4), Some(5)], &[None]] {
+            let mut layer = linked_layer(links);
+            listen_through_layer(&mut layer);
+            assert!(layer.get("signal").is_none(), "{links:?}");
+            assert!(layer["blocks"][0][1].get("link").is_none());
+            serde_json::from_value::<Layer>(layer).unwrap();
+        }
+    }
+
+    #[test]
+    fn old_notes_envelopes_become_decaying_hits() {
+        let mut file = json!({
+            "nodes": [],
+            "signals": [{
+                "id": 1, "name": "Kick", "color": 0,
+                "source": { "Notes": {
+                    "lowest": 36, "highest": 36, "length": 480,
+                    "shape": { "points": [{ "at": 0.0, "value": 0.0, "segment": "Linear" }] }
+                }}
+            }]
+        });
+        listen_to_signals(&mut file);
+        let source: daw_protocol::NotesSource =
+            serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
+        assert_eq!(source.decay, daw_protocol::Ticks(480));
+        assert_eq!((source.lowest, source.highest), (36, 36));
+        assert_eq!(source.attack, daw_protocol::Ticks::ZERO);
     }
 
     #[test]

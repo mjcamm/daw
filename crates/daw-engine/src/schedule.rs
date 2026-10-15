@@ -1,7 +1,7 @@
 //! Compiling the project into the flat, time-sorted form the audio side plays.
 
 use crate::project::Project;
-use daw_automation::{Automation, CompiledSignal, Signals};
+use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
 use daw_protocol::{DeviceId, EffectKind, ParamState};
 
 /// Everything the audio thread needs to render, compiled from the project by
@@ -49,7 +49,12 @@ fn compile_params(params: &[ParamState], signals: &Signals) -> Vec<Automation> {
 pub fn compile_signals(project: &Project, notes: &[ScheduledNote]) -> Signals {
     let mut signals = Signals::default();
     for (id, signal) in &project.signals {
-        let notes = notes.iter().map(|n| (n.start_beats, n.pitch));
+        let notes = notes.iter().map(|n| SignalNote {
+            start: n.start_beats,
+            end: n.end_beats,
+            pitch: n.pitch,
+            velocity: n.velocity,
+        });
         signals.insert(*id, CompiledSignal::compile(signal, notes));
     }
     signals

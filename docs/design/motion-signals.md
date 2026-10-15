@@ -1,6 +1,6 @@
 # Motion Signals (Phase 4 design)
 
-*Status: revised 2026-10-15 with the user (layer-level listening, centred signals, ADSR note hits, Signals page layout). The engine built earlier (`crates/daw-engine/tests/signals.rs`) implements the first draft and is being changed to match; see "Engine changes" at the end. UI not started.*
+*Status: revised 2026-10-15 with the user (layer-level listening, centred signals, ADSR note hits, Signals page layout). Engine built and tested to this design (`crates/daw-automation/src/signal.rs`, `crates/daw-engine/tests/signals.rs`). UI not started.*
 
 ## Kinds and sources
 
@@ -79,32 +79,32 @@ Same timeline frame as Arrange and Parameters (`core-loop-ui.md`).
 
 | Edit | Inverse |
 |---|---|
-| `AddSignal { id, signal }` | `RemoveSignal` |
-| `RemoveSignal { id }`: listening layers switch to Manual drawn | `AddSignal` plus restoring those layers |
+| `AddSignal { id, signal, listeners }`: a front end sends no listeners | `RemoveSignal` |
+| `RemoveSignal { id }`: listening layers go back to Manual drawn | `AddSignal` with those layers as `listeners` |
 | `RenameSignal { id, name }` | itself with the old name |
 | `SetSignalColor { id, color }` | itself with the old colour |
 | `SetNotesSource { id, source }`: notes signals only | itself with the old source |
 | `AddSignalBlock { signal, id, block }`: drawn signals only | `RemoveBlock` |
-| `SetLayerSource { param, layer, source }`: Manual drawn or a signal | itself with the old source |
+| `SetLayerSignal { id, signal }`: `None` is Manual drawn | itself with the old signal |
 
-Signal blocks share the project-wide block id space, so `SetBlock` and `RemoveBlock` work on them unchanged. Ids are chosen by the sender.
+- `AddSignal` rejects a listener that already listens to another signal (`AlreadyListening`), so undo never loses a link.
+- A layer can only listen to a signal that exists (`UnknownSignal`).
+- Signal blocks share the project-wide block id space, so `SetBlock` and `RemoveBlock` work on them unchanged. Ids are chosen by the sender.
 
 ## Snapshot: "Used by"
 
-`Snapshot.signals` lists every signal in id order with its name, colour, source and **used by**: every listening layer as (parameter, layer).
+`Snapshot.signals` lists every signal in id order with its name, colour, source and **used by**: every listening layer as (parameter, layer), in device order.
 
 ## Evaluation
 
-- `daw-automation` has `CompiledSignal` with `sample(beat) -> (value, presence)`.
-- The control side compiles signals first; each listening layer carries its own copy of its compiled signal. The audio side stays pure functions of song time, allocation-free, so live and offline match and block size does not matter.
+- Internally a signal's value uses the same space as block shapes: `0.5` is the centre line, `1` the top, `0` the bottom. A notes hit at level `h` is `0.5 + 0.5·h`.
+- `daw-automation` has `CompiledSignal` with `sample(beat) -> (value, presence)`. Notes signals pre-compute each hit's starting level at compile time (where the previous hit had got to), so sampling stays a binary search plus arithmetic.
+- Notes starting together are one hit: the strongest velocity, held for the longest.
+- The control side compiles signals first; each listening layer carries its own copy of its compiled signal (`CompiledLayer.signal`). The audio side stays pure functions of song time, allocation-free, so live and offline match and block size does not matter.
 
-## Engine changes from the first draft
+## File
 
-1. Signal values centred (`-1..=+1`) instead of `0..=1`.
-2. Listening moves from `Block.link` (with `low`/`high`) to the layer (`Layer.source`); range removed.
-3. Notes envelope: points over a fixed length become ADSR using note length, velocity amount, rest at 0 and always present, retrigger from the current value.
-4. `RemoveSignal` allowed while in use (listening layers fall back to Manual drawn).
-5. File version 4; version 2 and 3 files with links convert on load.
+Version 4. Older files convert on load (`crates/daw-engine/src/upgrade.rs`). The first-draft signals (version 2 and 3) never reached the UI, so they convert as closely as the new model allows: a layer whose blocks all link to one signal listens to it (link ranges dropped); other links are dropped; an old notes envelope becomes a hit decaying over its length.
 
 ## Done when (from `build-plan.md`)
 

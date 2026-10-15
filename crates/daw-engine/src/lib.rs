@@ -25,8 +25,8 @@ pub use daw_protocol::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
     Edit, Effect, EffectKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange,
     Meter, MidiClip, MidiNote, NodeSnapshot, NotesSource, ParamId, ParamSnapshot, ParamState,
-    Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalLink, SignalSnapshot, SignalSource,
-    SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse,
+    Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{DEFAULT_TEMPO_BPM, MAX_EFFECTS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Node, Project};
@@ -212,8 +212,8 @@ impl Engine {
                     color: signal.color,
                     source: signal.source.clone(),
                     used_by: node
-                        .links()
-                        .filter(|(_, linked)| *linked == id)
+                        .listeners()
+                        .filter(|(_, listened)| *listened == id)
                         .map(|(used, _)| used)
                         .collect(),
                 })
