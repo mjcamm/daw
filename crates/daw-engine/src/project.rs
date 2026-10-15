@@ -18,6 +18,7 @@ pub const MAX_EFFECTS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub name: String,
     pub tempo_bpm: f64,
     pub node: Node,
 }
@@ -41,6 +42,7 @@ pub struct Node {
 impl Default for Project {
     fn default() -> Self {
         Self {
+            name: "Untitled".to_owned(),
             tempo_bpm: DEFAULT_TEMPO_BPM,
             node: Node::default(),
         }
@@ -214,6 +216,16 @@ impl Project {
     pub fn apply(&mut self, edit: Edit) -> Result<Edit, CommandError> {
         let node = &mut self.node;
         match edit {
+            Edit::RenameSong { name } => {
+                let name = clean_name(&name)?;
+                let previous = std::mem::replace(&mut self.name, name);
+                Ok(Edit::RenameSong { name: previous })
+            }
+            Edit::RenameNode { name } => {
+                let name = clean_name(&name)?;
+                let previous = std::mem::replace(&mut node.name, name);
+                Ok(Edit::RenameNode { name: previous })
+            }
             Edit::SetTempo { bpm } => {
                 if !(MIN_TEMPO_BPM..=MAX_TEMPO_BPM).contains(&bpm) {
                     return Err(CommandError::TempoOutOfRange {
@@ -367,6 +379,16 @@ impl Project {
                 })
             }
         }
+    }
+}
+
+/// A name with surrounding whitespace removed; empty names are rejected.
+fn clean_name(name: &str) -> Result<String, CommandError> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err(CommandError::EmptyName)
+    } else {
+        Ok(name.to_owned())
     }
 }
 
@@ -539,6 +561,12 @@ mod tests {
     fn every_edit_is_reverted_by_its_inverse() {
         let edits = [
             Edit::SetTempo { bpm: 140.0 },
+            Edit::RenameSong {
+                name: "Night Drive".to_owned(),
+            },
+            Edit::RenameNode {
+                name: "Lead".to_owned(),
+            },
             Edit::SetMute { muted: true },
             Edit::SetSolo { soloed: true },
             Edit::AddClip {
@@ -909,5 +937,35 @@ mod tests {
             );
             assert_eq!(err, CommandError::InvalidClip { reason });
         }
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn names_are_trimmed() {
+        let mut project = Project::default();
+        project
+            .apply(Edit::RenameSong {
+                name: "  Night Drive ".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(project.name, "Night Drive");
+    }
+
+    #[test]
+    fn empty_names_are_rejected() {
+        let mut project = Project::default();
+        for name in ["", "   "] {
+            assert_eq!(
+                project.apply(Edit::RenameNode {
+                    name: name.to_owned()
+                }),
+                Err(CommandError::EmptyName)
+            );
+        }
+        assert_eq!(project.node.name, "Synth");
     }
 }

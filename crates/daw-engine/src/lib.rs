@@ -13,6 +13,7 @@
 
 mod audio;
 pub mod devices;
+mod file;
 mod history;
 mod project;
 mod schedule;
@@ -25,6 +26,7 @@ pub use daw_protocol::{
     MidiClip, MidiNote, NodeSnapshot, ParamId, ParamSnapshot, ParamState, Scale, Segment, Shape,
     ShapePoint, Snapshot, TICKS_PER_BEAT, Ticks,
 };
+pub use file::{LoadError, ProjectFile};
 pub use project::{DEFAULT_TEMPO_BPM, MAX_EFFECTS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Node, Project};
 pub use schedule::{EffectState, RenderState, ScheduledNote};
 
@@ -133,17 +135,10 @@ impl Engine {
                 self.outbox.push_back(AudioMsg::Locate(position.as_beats()));
             }
             Command::SetLoop(range) => {
-                if let Some(range) = range
-                    && (range.start < Ticks::ZERO || range.end - range.start < MIN_LOOP_LENGTH)
-                {
-                    return Err(CommandError::InvalidLoop {
-                        range,
-                        min_length: MIN_LOOP_LENGTH,
-                    });
+                if let Some(range) = range {
+                    check_loop(range)?;
                 }
-                self.loop_range = range;
-                let beats = range.map(|r| (r.start.as_beats(), r.end.as_beats()));
-                self.outbox.push_back(AudioMsg::SetLoop(beats));
+                self.set_loop(range);
             }
             Command::Edit(edit) => {
                 self.history.edit(&mut self.project, edit)?;
@@ -168,6 +163,7 @@ impl Engine {
         let position_beats = self.status.position_beats();
         Snapshot {
             revision: self.revision,
+            song_name: self.project.name.clone(),
             tempo_bpm: self.project.tempo_bpm,
             playing: self.playing,
             position_beats,
@@ -242,6 +238,34 @@ impl Engine {
         }
     }
 
+    /// The project as a file, ready to save.
+    pub fn to_file(&self) -> ProjectFile {
+        ProjectFile::new(&self.project, self.loop_range)
+    }
+
+    /// Replaces the project with one loaded from a file. The transport stops
+    /// at the start and undo history is cleared. A file that fails to load
+    /// changes nothing.
+    pub fn load(&mut self, file: ProjectFile) -> Result<(), LoadError> {
+        let (project, loop_range) = file.into_project()?;
+        self.project = project;
+        self.history = History::default();
+        self.playing = false;
+        self.outbox.push_back(AudioMsg::SetPlaying(false));
+        self.outbox.push_back(AudioMsg::Locate(0.0));
+        self.set_loop(loop_range);
+        self.publish_state();
+        self.revision += 1;
+        self.maintain();
+        Ok(())
+    }
+
+    fn set_loop(&mut self, range: Option<LoopRange>) {
+        self.loop_range = range;
+        let beats = range.map(|r| (r.start.as_beats(), r.end.as_beats()));
+        self.outbox.push_back(AudioMsg::SetLoop(beats));
+    }
+
     fn publish_state(&mut self) {
         // Only the newest state matters; drop any that were never delivered.
         self.outbox
@@ -286,3 +310,15 @@ fn param_snapshot(
 #[cfg(test)]
 #[global_allocator]
 static ALLOCATOR: daw_rt::GuardedAllocator = daw_rt::GuardedAllocator;
+
+/// Checks a loop region: it must start at or after the song start and be at
+/// least [`MIN_LOOP_LENGTH`] long.
+pub(crate) fn check_loop(range: LoopRange) -> Result<(), CommandError> {
+    if range.start < Ticks::ZERO || range.end - range.start < MIN_LOOP_LENGTH {
+        return Err(CommandError::InvalidLoop {
+            range,
+            min_length: MIN_LOOP_LENGTH,
+        });
+    }
+    Ok(())
+}

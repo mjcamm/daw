@@ -6,7 +6,19 @@ use std::ops::{Add, Sub};
 pub const TICKS_PER_BEAT: i64 = 960;
 
 /// A musical position or duration, in ticks. Song positions start at zero.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Ticks(pub i64);
 
 impl Ticks {

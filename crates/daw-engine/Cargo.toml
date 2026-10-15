@@ -14,6 +14,8 @@ daw-dsp.workspace = true
 daw-protocol.workspace = true
 daw-rt.workspace = true
 rtrb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 daw-testkit.workspace = true

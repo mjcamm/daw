@@ -33,6 +33,9 @@ const PROGRESSION: [(u8, [u8; 4]); BARS as usize] = [
 const ARP_ORDER: [usize; 8] = [0, 1, 2, 3, 2, 1, 0, 1];
 
 pub fn load(engine: &mut Engine) -> Result<(), CommandError> {
+    engine.apply(Command::Edit(Edit::RenameSong {
+        name: "Demo".to_owned(),
+    }))?;
     engine.apply(Command::Edit(Edit::SetTempo { bpm: TEMPO_BPM }))?;
     add(engine, 1, bass())?;
     add(engine, 2, arpeggio())?;

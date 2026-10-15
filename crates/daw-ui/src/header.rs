@@ -20,7 +20,7 @@ impl AppView {
                 div()
                     .text_size(px(13.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(self.session.song_name.clone()),
+                    .child(snapshot.song_name.clone()),
             )
             .child(
                 div()

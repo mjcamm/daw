@@ -39,6 +39,12 @@ pub enum Command {
 /// Ids are chosen by the sender and must be unused anywhere in the project.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edit {
+    RenameSong {
+        name: String,
+    },
+    RenameNode {
+        name: String,
+    },
     /// Set the song tempo in beats per minute.
     SetTempo {
         bpm: f64,
@@ -106,11 +112,13 @@ pub enum Edit {
 }
 
 /// Identifies a clip. Chosen by whoever creates the clip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ClipId(pub u64);
 
 /// A region of MIDI notes on the timeline.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MidiClip {
     /// Song position of the clip start.
     pub start: Ticks,
@@ -120,7 +128,7 @@ pub struct MidiClip {
     pub notes: Vec<MidiNote>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MidiNote {
     /// Position relative to the clip start.
     pub start: Ticks,
@@ -132,7 +140,7 @@ pub struct MidiNote {
 }
 
 /// A loop region from `start` (inclusive) to `end` (exclusive).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoopRange {
     pub start: Ticks,
     pub end: Ticks,
@@ -143,6 +151,7 @@ pub struct LoopRange {
 pub struct Snapshot {
     /// Increases every time a command changes engine state.
     pub revision: u64,
+    pub song_name: String,
     pub tempo_bpm: f64,
     pub playing: bool,
     /// Transport position in beats, as last reported by the audio side.
@@ -270,6 +279,8 @@ pub enum CommandError {
         id: BlockId,
         other: BlockId,
     },
+    /// Names must contain something other than whitespace.
+    EmptyName,
     NothingToUndo,
     NothingToRedo,
 }
@@ -356,6 +367,7 @@ impl fmt::Display for CommandError {
             Self::OverlappingBlocks { id, other } => {
                 write!(f, "block {} would overlap block {}", id.0, other.0)
             }
+            Self::EmptyName => f.write_str("names cannot be empty"),
             Self::NothingToUndo => f.write_str("nothing to undo"),
             Self::NothingToRedo => f.write_str("nothing to redo"),
         }

@@ -9,15 +9,21 @@
 use crate::Ticks;
 
 /// Identifies a device in a node's effect chain. Chosen by its creator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DeviceId(pub u64);
 
 /// Identifies a layer anywhere in the project. Chosen by its creator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct LayerId(pub u64);
 
 /// Identifies a block anywhere in the project. Chosen by its creator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct BlockId(pub u64);
 
 /// A device on a node.
@@ -39,14 +45,14 @@ pub struct ParamId {
 }
 
 /// Built-in effects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EffectKind {
     /// Multi-mode resonant filter.
     Filter,
 }
 
 /// An effect and the state of its parameters.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Effect {
     pub kind: EffectKind,
     /// One entry per parameter, in index order. Empty means all defaults.
@@ -64,7 +70,7 @@ impl Effect {
 }
 
 /// A parameter's default state and its layer stack.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParamState {
     /// Normalized value the parameter rests at when no layer acts on it.
     pub base: f64,
@@ -73,7 +79,7 @@ pub struct ParamState {
 }
 
 /// How a layer combines with the layers below it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BlendMode {
     /// Move towards the block's value: `v + (x - v)·w`.
     Replace,
@@ -87,7 +93,7 @@ pub enum BlendMode {
     Modulate,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layer {
     pub mode: BlendMode,
     pub enabled: bool,
@@ -106,7 +112,7 @@ impl Layer {
 }
 
 /// A span of movement on a layer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Block {
     /// Song position of the block start.
     pub start: Ticks,
@@ -149,7 +155,7 @@ impl Block {
 }
 
 /// A shape over one cycle, as points joined by segments.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Shape {
     /// Sorted by `at`. The shape holds the first point's value before it and
     /// the last point's value after it.
@@ -172,7 +178,7 @@ impl Shape {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShapePoint {
     /// Position within the cycle, `0..=1`.
     pub at: f64,
@@ -196,7 +202,7 @@ impl ShapePoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Segment {
     Linear,
     /// Stay at this point's value until the next point (a step).

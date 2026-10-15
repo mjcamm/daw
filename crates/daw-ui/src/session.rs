@@ -14,7 +14,6 @@ pub struct Session {
     snapshot: Snapshot,
     /// Meter levels as displayed: peaks that fall back smoothly.
     meter: Meter,
-    pub song_name: String,
     /// Why audio is unavailable, if it is.
     pub audio_error: Option<String>,
 }
@@ -40,7 +39,6 @@ impl Session {
             _output: output,
             snapshot,
             meter: Meter::default(),
-            song_name: "Demo".to_owned(),
             audio_error,
         }
     }

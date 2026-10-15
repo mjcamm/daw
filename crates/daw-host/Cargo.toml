@@ -12,6 +12,9 @@ publish.workspace = true
 cpal.workspace = true
 daw-engine.workspace = true
 daw-rt.workspace = true
+dirs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
