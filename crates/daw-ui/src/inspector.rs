@@ -526,6 +526,8 @@ impl ProjectView {
             .flex_col()
             .pb(px(16.))
             .child(header)
+            .child(section_label("Envelope", theme))
+            .child(envelope)
             .child(self.switched_label(id, NotesSwitch::PitchRange, ranged, theme, cx))
             .when(ranged, |d| d.child(pitches))
             .child(hint(
@@ -536,8 +538,6 @@ impl ProjectView {
                 },
                 theme,
             ))
-            .child(section_label("Envelope", theme))
-            .child(envelope)
             .child(self.switched_label(id, NotesSwitch::VelocityClamp, clamped, theme, cx))
             .when(clamped, |d| d.child(velocity))
             .child(hint(
