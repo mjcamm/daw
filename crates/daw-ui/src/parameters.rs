@@ -1466,8 +1466,11 @@ impl ProjectView {
                     self.mix_drag.as_ref(),
                     previewed_layers(drag, &param.layers),
                 );
-                let automation = Automation::compile_layers(self.base_of(param), &layers);
-                let (line, fill) = (color.detail, color.fill);
+                let base = self.base_of(param);
+                let automation = Automation::compile_layers(base, &layers);
+                let (line, area) = (color.detail, color.fill);
+                let mut rest_line = color.detail;
+                rest_line.a *= 0.35;
                 cell.bg(theme.window)
                     .border_b_2()
                     .border_color(theme.edge)
@@ -1475,12 +1478,23 @@ impl ProjectView {
                         canvas(
                             |_, _, _| {},
                             move |bounds, (), window, _| {
+                                // The resting value: where every layer's
+                                // centre line lands.
+                                let height = bounds.size.height / px(1.);
+                                let rest = Bounds::new(
+                                    point(
+                                        bounds.origin.x,
+                                        bounds.origin.y + px(value_to_y(base, height) - 0.5),
+                                    ),
+                                    size(bounds.size.width, px(1.)),
+                                );
+                                window.paint_quad(fill(rest, rest_line));
                                 paint_curve(
                                     window,
                                     bounds,
                                     zoom.pixels_per_beat,
                                     line,
-                                    Some(fill),
+                                    Some(area),
                                     |beat| automation.value_at(beat),
                                 );
                             },

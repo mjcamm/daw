@@ -46,6 +46,10 @@ Each parameter's result row has a small vertical slider just right of its name. 
 
 Every layer lane has a centre line (no effect): shapes above it push up, below it pull down (see `parameters-and-layers.md`). The centre line is deliberately faint; the split between rows (result and layers) is a darker 2 px line across both the name column and the lanes, so splits and centre lines are easy to tell apart. Inside each block, the bright line is the shape as drawn; a faint second line shows what the layer actually does, with depth, fades and mix applied: `0.5 + (x - 0.5) · weight · mix`, around the centre line.
 
+## Result row
+
+The result row shows the final value: the resting value with every layer applied, clamped to `0..=1` once at the end. A faint line marks the resting value, which is where every layer's centre line lands. Because layers move the value by up to ±1, the result often hits the floor or ceiling and runs flat there, so it can look unlike any single layer's shape; that is the clamp, not a misalignment.
+
 ## Sliders
 
 One slider design everywhere (`crates/daw-ui/src/slider.rs`): a hairline track filled up to the value, with a round thumb. Drags are relative: 200 px for the full range, Shift for five times finer.
