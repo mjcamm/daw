@@ -13,7 +13,7 @@ Every phase follows the foundation principles: test-driven, engine-owned state, 
 **Goal:** a workspace where correct, real-time-safe, well-tested code is the easy path.
 
 - Rust workspace and crate boundaries (engine, DSP modules, UI, test harness).
-- CI, formatting, linting and test runs on every change.
+- A local check script (formatting, linting, debug and release tests) run before every commit.
 - Real-time safety tooling: the audio thread fails loudly in debug builds if it allocates or locks.
 - Headless render harness and audio regression tests (render offline, then compare against reference output).
 - Skeleton of the engine/UI boundary: commands in, snapshots out, with undo/redo designed in from the start.
