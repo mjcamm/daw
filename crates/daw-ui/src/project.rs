@@ -9,7 +9,7 @@ use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
 use crate::zoom::Zoom;
-use daw_engine::{BlockId, Command, Edit, LayerId, LoopRange};
+use daw_engine::{BlockId, Command, Edit, LayerId, LoopRange, SignalId};
 use gpui::{
     Bounds, Context, DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, MouseMoveEvent,
     MouseUpEvent, Pixels, Subscription, Window, actions, canvas, div, prelude::*, px,
@@ -48,6 +48,7 @@ pub enum RenameTarget {
     Song,
     Node,
     Layer(LayerId),
+    Signal(SignalId),
 }
 
 /// A name being edited in place.
@@ -96,6 +97,10 @@ pub struct ProjectView {
     /// Each timeline page's zoom and scroll position.
     pub(crate) arrange_view: TimelineView,
     pub(crate) parameters_view: TimelineView,
+    pub(crate) signals_view: TimelineView,
+    /// A layer just jumped to from elsewhere, highlighted briefly so it is
+    /// easy to spot.
+    pub(crate) highlight: Option<(LayerId, std::time::Instant)>,
     /// A scrollbar or zoom slider being dragged.
     pub(crate) frame_drag: Option<FrameDrag>,
     pub(crate) rename: Option<Rename>,
@@ -127,6 +132,8 @@ impl ProjectView {
             mix_drag: None,
             arrange_view: TimelineView::new(Zoom::new(PIXELS_PER_BEAT, 56.)),
             parameters_view: TimelineView::new(DEFAULT_ZOOM),
+            signals_view: TimelineView::new(crate::signals::DEFAULT_ZOOM),
+            highlight: None,
             frame_drag: None,
             rename: None,
             save_error: None,
@@ -199,6 +206,12 @@ impl ProjectView {
             RenameTarget::Song => snapshot.song_name.clone(),
             RenameTarget::Node => snapshot.node.name.clone(),
             RenameTarget::Layer(id) => layer_name(snapshot, id),
+            RenameTarget::Signal(id) => snapshot
+                .signals
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
         };
         let input = cx.new(|cx| TextInput::new(&current, "Name", cx));
         window.focus(&input.read(cx).focus_handle(cx));
@@ -233,6 +246,7 @@ impl ProjectView {
                 RenameTarget::Song => Edit::RenameSong { name },
                 RenameTarget::Node => Edit::RenameNode { name },
                 RenameTarget::Layer(id) => Edit::RenameLayer { id, name },
+                RenameTarget::Signal(id) => Edit::RenameSignal { id, name },
             };
             self.session.apply(Command::Edit(edit));
         }
@@ -267,6 +281,7 @@ impl Render for ProjectView {
             Page::Parameters if self.node_selected => self
                 .render_parameters(&theme, window, cx)
                 .into_any_element(),
+            Page::Signals => self.render_signals(&theme, window, cx).into_any_element(),
             other => placeholder(&theme, other).into_any_element(),
         };
         let banner = |text: String| {

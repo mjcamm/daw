@@ -17,6 +17,10 @@ pub enum OpenMenu {
     BlendMode(daw_engine::LayerId),
     /// Snap or slide, and the snap grid.
     Snap,
+    /// A signal's colour swatches.
+    SignalColor(daw_engine::SignalId),
+    /// The layers listening to a signal.
+    SignalUses(daw_engine::SignalId),
 }
 
 /// The floating panel. Place it where the menu should appear; close it with

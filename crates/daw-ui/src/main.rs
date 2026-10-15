@@ -13,6 +13,7 @@ mod parameters;
 mod project;
 mod scroll;
 mod session;
+mod signals;
 mod slider;
 mod text_input;
 mod theme;

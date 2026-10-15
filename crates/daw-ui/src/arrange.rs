@@ -1,10 +1,9 @@
 //! The Arrange page: the node list on the left, the timeline beside it,
 //! framed by scrollbars and zoom sliders (see `frame.rs`).
 
-use crate::frame::Timeline;
+use crate::frame::{Timeline, grid_lines};
 use crate::layout::{
-    BEATS_PER_BAR, MIN_GRID_SPACING, grid_bar_step, meter_height, note_rows, ruler_label_step,
-    timeline_bars, x_to_snapped_position,
+    BEATS_PER_BAR, meter_height, note_rows, ruler_label_step, timeline_bars, x_to_snapped_position,
 };
 use crate::project::{ProjectView, RenameTarget};
 use crate::scroll;
@@ -220,32 +219,6 @@ impl ProjectView {
             theme.content(snapshot.node.color)
         };
 
-        // Bar lines, stronger than the beat lines between them, thinned out
-        // when zoomed out.
-        let bar_step = grid_bar_step(zoom.pixels_per_beat);
-        let show_beats = zoom.pixels_per_beat >= MIN_GRID_SPACING;
-        let grid_lines = (0..bars * 4)
-            .filter(move |beat| {
-                if beat % 4 == 0 {
-                    (beat / 4) % bar_step == 0
-                } else {
-                    show_beats
-                }
-            })
-            .map(|beat| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(zoom.beat_to_x(f64::from(beat))))
-                    .w(px(1.))
-                    .bg(if beat % 4 == 0 {
-                        theme.hairline
-                    } else {
-                        theme.grid
-                    })
-            });
-
         let lane = div()
             .relative()
             .h(px(zoom.row_height))
@@ -282,7 +255,7 @@ impl ProjectView {
                     .w(px(width))
                     .flex()
                     .flex_col()
-                    .children(grid_lines)
+                    .children(grid_lines(zoom, bars, theme))
                     .child(lane)
                     .child(playhead),
             )

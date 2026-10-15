@@ -10,9 +10,10 @@
 //! [ (left column) ][ h-scroll   ][ h-zoom ][corner  ]
 //! ```
 //!
-//! Each timeline page (Arrange, Parameters, later Signals) keeps its own
+//! Each timeline page (Arrange, Parameters, Signals) keeps its own
 //! zoom and scroll position.
 
+use crate::layout::{MIN_GRID_SPACING, grid_bar_step};
 use crate::project::ProjectView;
 use crate::scroll::{self, Extent, ScrollDrag};
 use crate::slider::Axis;
@@ -25,11 +26,38 @@ use gpui::{
 use std::cell::Cell;
 use std::rc::Rc;
 
+/// The timeline's vertical grid across `bars` bars: bar lines stronger than
+/// the beat lines between them, beat lines only when there is room, bar
+/// lines thinned out when zoomed far out.
+pub fn grid_lines(zoom: Zoom, bars: u32, theme: &Theme) -> impl Iterator<Item = Div> {
+    let bar_step = grid_bar_step(zoom.pixels_per_beat);
+    let show_beats = zoom.pixels_per_beat >= MIN_GRID_SPACING;
+    let (bar_line, beat_line) = (theme.hairline, theme.grid);
+    (0..bars * 4)
+        .filter(move |beat| {
+            if beat % 4 == 0 {
+                (beat / 4) % bar_step == 0
+            } else {
+                show_beats
+            }
+        })
+        .map(move |beat| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(zoom.beat_to_x(f64::from(beat))))
+                .w(px(1.))
+                .bg(if beat % 4 == 0 { bar_line } else { beat_line })
+        })
+}
+
 /// A page with a timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timeline {
     Arrange,
     Parameters,
+    Signals,
 }
 
 /// A timeline page's view state: zoom, scroll areas and where its
@@ -86,6 +114,7 @@ impl ProjectView {
         match timeline {
             Timeline::Arrange => &self.arrange_view,
             Timeline::Parameters => &self.parameters_view,
+            Timeline::Signals => &self.signals_view,
         }
     }
 
@@ -93,6 +122,7 @@ impl ProjectView {
         match timeline {
             Timeline::Arrange => &mut self.arrange_view,
             Timeline::Parameters => &mut self.parameters_view,
+            Timeline::Signals => &mut self.signals_view,
         }
     }
 
@@ -167,6 +197,8 @@ impl ProjectView {
             (Timeline::Arrange, Axis::Vertical) => "arrange-scroll-y",
             (Timeline::Parameters, Axis::Horizontal) => "parameters-scroll-x",
             (Timeline::Parameters, Axis::Vertical) => "parameters-scroll-y",
+            (Timeline::Signals, Axis::Horizontal) => "signals-scroll-x",
+            (Timeline::Signals, Axis::Vertical) => "signals-scroll-y",
         };
         scroll::scrollbar(id, axis, extent, active, theme)
             .child(
@@ -212,6 +244,8 @@ impl ProjectView {
             (Timeline::Arrange, Axis::Vertical) => "arrange-zoom-y",
             (Timeline::Parameters, Axis::Horizontal) => "parameters-zoom-x",
             (Timeline::Parameters, Axis::Vertical) => "parameters-zoom-y",
+            (Timeline::Signals, Axis::Horizontal) => "signals-zoom-x",
+            (Timeline::Signals, Axis::Vertical) => "signals-zoom-y",
         };
         let position = self.timeline(timeline).zoom.position(zoom_axis);
         zoom::slider(id, zoom_axis, position, active, theme).on_mouse_down(

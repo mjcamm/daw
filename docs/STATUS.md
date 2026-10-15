@@ -6,12 +6,13 @@
 
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
-- **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. UI not started; layout agreed.
+- **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to), not yet tried by the user. Next: the Parameters layer pick list, then "Publish as signal" on Arrange.
 
 ## In the app (`cargo run -p daw-ui`)
 
 - **Menu bar:** File → Preferences… (Ctrl+,: Appearance System/Light/Dark, saved to `preferences.json`) and Quit (Ctrl+Q, saves first).
 - **Launch page:** new project (`Documents/DAW Projects/<name>/project.json`), Open…, recent projects. New songs start with one Synth node and the demo notes.
+- **Signals:** "+ Add Signal" makes a drawn signal; draw on its lane like a layer. Colour bar picks a colour, double-click renames, × deletes, the uses chip lists listening layers with go-to icons.
 - **Header:** song name menu (Save, Rename, Back to projects), page tabs, snap control, transport.
 - **Arrange:** node row (colour, name, meter, M/S) and clips on the timeline; click the ruler to locate; click the node to select it (this enables Parameters).
 - **Parameters:** per device, "+ Add Parameter" makes a result row with its layers. Layers: drag to reorder, rename, blend mode (Add or Multiply, both centred), mix, show/hide, delete. Block editing on the lanes, settings bar, resting-value slider.
@@ -32,7 +33,7 @@
 
 ## Next up
 
-1. Signals page, then the layer source pick list on Parameters, then "Publish as signal" on Arrange. Ask about details of each before building. (UI block drawing still passes `None` for the signal to `CompiledBlock::sample`; listening layers should draw the signal's shape.)
+1. The layer pick list on Parameters ("Manual drawn" / "Listen to signal"), then "Publish as signal" on Arrange with the notes-signal bottom bar. Ask about details of each before building. (Parameters block drawing still passes `None` for the signal to `CompiledBlock::sample`; listening layers should draw the signal's shape.)
 2. The milestone gate ("does shaping movement feel great?").
 
 ## Design rules the user has set

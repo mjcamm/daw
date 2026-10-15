@@ -61,14 +61,15 @@ On a listening layer, **blocks are windows**: the signal plays wherever a block 
 
 ## Signals page layout
 
-Same timeline frame as Arrange and Parameters (`core-loop-ui.md`).
+Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Parameters (`core-loop-ui.md`); its own zoom and scroll.
 
-- **Left column, one row per signal:** colour swatch, name, "N uses". A published signal also shows muted "from Synth" with a go-to icon to that node on Arrange.
-- **"N uses"** opens a list (Parameter › Layer), each entry with a go-to icon to that layer on the Parameters page.
-- **"+ Add Signal"** at the bottom of the list makes a drawn motion signal straight away. Below it, hint text: *"Nodes can publish their notes as signals from the Arrange page."*
-- **Drawn signals** are edited exactly like layer lanes.
-- **Notes signals** draw the node's notes as faint ticks with the resulting line over them; selecting one opens a bottom bar: pitch filter, attack, decay, sustain, release, velocity amount.
-- Rows zoom like the other pages.
+- **Left column, one row per signal** (as tall as its lane): colour bar, name (double-click to rename) with "Drawn" under it, the uses chip, and an × that deletes at once (undo restores it and its listeners). A published signal shows muted "from Synth" with a go-to icon to that node on Arrange.
+- **Colour:** click the colour bar for the nine palette swatches. A new signal takes the first colour no other signal uses.
+- **Uses chip:** "Unused" (muted, inert), "1 use", "N uses". Clicking it lists Device › Parameter › Layer, each with a go-to icon: it opens the Parameters page scrolled to that layer, highlighted for a moment.
+- **"+ Add Signal"** below the list makes "Signal N", drawn, with an empty lane. Below it, hint text: *"Nodes can publish their notes as signals from the Arrange page."*
+- **Drawn signals** are edited exactly like layer lanes: the lane code is shared (`ProjectView::lane_cell`, `Lane::Layer` / `Lane::Signal`), including the bottom settings bar. Block ids come from one pool across layers and signals.
+- **Notes signals** draw the line their hits make (read-only). Still to design: faint note ticks, and the bottom bar (pitch filter, attack, decay, sustain, release, velocity amount).
+- **"SIGNALS"** heads the column beside the ruler.
 
 ## Elsewhere in the UI
 

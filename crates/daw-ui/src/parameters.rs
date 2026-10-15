@@ -18,11 +18,9 @@ use crate::block_edit::{
     edge_at, has_loop_handle, hit_test, loop_band, move_point, new_block, next_block_id, phase_at,
     point_at, point_positions, remove_point, room_around, scrub, value_to_y, y_to_value,
 };
-use crate::frame::Timeline;
+use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
-use crate::layout::{
-    BEATS_PER_BAR, MIN_GRID_SPACING, PIXELS_PER_BEAT, grid_bar_step, timeline_bars,
-};
+use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
 use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget};
 use crate::scroll;
@@ -32,7 +30,7 @@ use crate::zoom::Zoom;
 use daw_automation::{Automation, CompiledBlock};
 use daw_engine::{
     BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId,
-    ParamSnapshot, Snapshot, Ticks,
+    ParamSnapshot, SignalId, SignalSource, Snapshot, Ticks,
 };
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, Div, FontWeight, Hsla, Modifiers, MouseButton,
@@ -58,6 +56,8 @@ const BLOCK_INSET: f32 = BLOCK_MARGIN + 1.;
 const POINT_DOT: f32 = 3.;
 /// Half the width of the resize zone on a looped block's first cycle end.
 const CYCLE_EDGE_HALF: f32 = 4.;
+/// How long a layer jumped to from elsewhere stays highlighted.
+const HIGHLIGHT_TIME: std::time::Duration = std::time::Duration::from_millis(1500);
 
 const BLEND_MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
 
@@ -153,20 +153,54 @@ fn all_layers(snapshot: &Snapshot) -> impl Iterator<Item = &(LayerId, Layer)> {
         .flat_map(|p| &p.layers)
 }
 
-/// A block and the layer holding it.
-fn find_block(snapshot: &Snapshot, id: BlockId) -> Option<(LayerId, &Block)> {
-    all_layers(snapshot).find_map(|(layer_id, layer)| {
-        layer
-            .blocks
+/// A lane of blocks: a layer's on the Parameters page, or a drawn signal's
+/// on the Signals page. Both are edited the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Layer(LayerId),
+    Signal(SignalId),
+}
+
+impl Lane {
+    /// The page this lane is edited on.
+    fn page(self) -> Page {
+        match self {
+            Self::Layer(_) => Page::Parameters,
+            Self::Signal(_) => Page::Signals,
+        }
+    }
+}
+
+/// Every lane in the project with its blocks: layers, then drawn signals.
+fn all_lanes(snapshot: &Snapshot) -> impl Iterator<Item = (Lane, &[(BlockId, Block)])> {
+    let layers = all_layers(snapshot).map(|(id, l)| (Lane::Layer(*id), l.blocks.as_slice()));
+    let signals = snapshot.signals.iter().filter_map(|s| match &s.source {
+        SignalSource::Drawn(blocks) => Some((Lane::Signal(s.id), blocks.as_slice())),
+        SignalSource::Notes(_) => None,
+    });
+    layers.chain(signals)
+}
+
+/// A lane's blocks, if the lane exists.
+pub(crate) fn lane_blocks(snapshot: &Snapshot, lane: Lane) -> Option<&[(BlockId, Block)]> {
+    all_lanes(snapshot)
+        .find(|(l, _)| *l == lane)
+        .map(|(_, b)| b)
+}
+
+/// A block and the lane holding it.
+fn find_block(snapshot: &Snapshot, id: BlockId) -> Option<(Lane, &Block)> {
+    all_lanes(snapshot).find_map(|(lane, blocks)| {
+        blocks
             .iter()
             .find(|(block_id, _)| *block_id == id)
-            .map(|(_, block)| (*layer_id, block))
+            .map(|(_, block)| (lane, block))
     })
 }
 
-/// An id no block in the project uses yet.
+/// An id no block in the project uses yet, on layers or signals.
 fn next_block_id_in(snapshot: &Snapshot) -> BlockId {
-    next_block_id(all_layers(snapshot).flat_map(|(_, l)| l.blocks.iter().map(|(id, _)| id)))
+    next_block_id(all_lanes(snapshot).flat_map(|(_, blocks)| blocks.iter().map(|(id, _)| id)))
 }
 
 /// `blocks` with the block being dragged shown at its preview.
@@ -347,7 +381,6 @@ impl ProjectView {
         let zoom = self.parameters_view.zoom;
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
         let position = self.session.position_beats();
-        let selected = self.selected_block(snapshot);
         let rows = rows(snapshot);
 
         let left = div()
@@ -364,30 +397,6 @@ impl ProjectView {
                     .map(|(i, row)| self.left_cell(i, row, position, theme, cx)),
             );
 
-        // Beat lines only when there is room; bar lines thinned out likewise.
-        let bar_step = grid_bar_step(zoom.pixels_per_beat);
-        let show_beats = zoom.pixels_per_beat >= MIN_GRID_SPACING;
-        let grid_lines = (0..bars * 4)
-            .filter(move |beat| {
-                if beat % 4 == 0 {
-                    (beat / 4) % bar_step == 0
-                } else {
-                    show_beats
-                }
-            })
-            .map(|beat| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(zoom.beat_to_x(f64::from(beat))))
-                    .w(px(1.))
-                    .bg(if beat % 4 == 0 {
-                        theme.hairline
-                    } else {
-                        theme.grid
-                    })
-            });
         let playhead = div()
             .absolute()
             .top_0()
@@ -420,7 +429,7 @@ impl ProjectView {
                     .flex()
                     .flex_col()
                     .child(self.lanes_tracker())
-                    .children(grid_lines)
+                    .children(grid_lines(zoom, bars, theme))
                     .children(right_cells)
                     .child(playhead),
             );
@@ -475,13 +484,7 @@ impl ProjectView {
                     .border_color(theme.hairline),
             );
 
-        let settings = selected.map(|(id, _, block)| {
-            let shown = match &self.block_drag {
-                Some(drag) if drag.id == id => &drag.preview,
-                _ => block,
-            };
-            self.settings_bar(id, shown, theme, cx)
-        });
+        let settings = self.selected_settings(theme, cx);
 
         div()
             .flex_1()
@@ -521,14 +524,64 @@ impl ProjectView {
             .children(settings)
     }
 
-    /// The selected block, if it still exists: its id, layer and contents.
-    fn selected_block<'a>(&self, snapshot: &'a Snapshot) -> Option<(BlockId, LayerId, &'a Block)> {
+    /// The selected block, if it still exists and is on the current page:
+    /// its id, lane and contents.
+    pub(crate) fn selected_block<'a>(
+        &self,
+        snapshot: &'a Snapshot,
+    ) -> Option<(BlockId, Lane, &'a Block)> {
         let id = self.selected_block?;
-        find_block(snapshot, id).map(|(layer, block)| (id, layer, block))
+        find_block(snapshot, id)
+            .filter(|(lane, _)| lane.page() == self.page)
+            .map(|(lane, block)| (id, lane, block))
+    }
+
+    /// The selected block's settings bar, if one is selected on this page.
+    pub(crate) fn selected_settings(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<Div> {
+        let (id, _, block) = self.selected_block(self.session.snapshot())?;
+        let shown = match &self.block_drag {
+            Some(drag) if drag.id == id => &drag.preview,
+            _ => block,
+        };
+        Some(self.settings_bar(id, shown, theme, cx))
+    }
+
+    /// Shows a layer on the Parameters page: scrolled into view and
+    /// highlighted for a moment.
+    pub(crate) fn go_to_layer(&mut self, layer: LayerId) {
+        self.page = Page::Parameters;
+        self.node_selected = true;
+        let snapshot = self.session.snapshot();
+        let lane = self.parameters_view.zoom.row_height;
+        let top: f32 = rows(snapshot)
+            .iter()
+            .take_while(|row| !matches!(row, Row::Layer { id, .. } if *id == layer))
+            .map(|row| row.height(lane))
+            .sum();
+        // A little of the rows above stays in view, for context.
+        let offset = (top - 2. * lane).max(0.);
+        self.parameters_view
+            .y
+            .set_offset(point(px(0.), px(-offset)));
+        self.highlight = Some((layer, std::time::Instant::now()));
+    }
+
+    /// Whether `layer` was just jumped to.
+    fn highlighted(&self, layer: LayerId) -> bool {
+        self.highlight
+            .is_some_and(|(id, at)| id == layer && at.elapsed() < HIGHLIGHT_TIME)
+    }
+
+    /// The zoom of the page whose lanes are being edited.
+    fn lane_zoom(&self) -> Zoom {
+        match self.page {
+            Page::Signals => self.signals_view.zoom,
+            _ => self.parameters_view.zoom,
+        }
     }
 
     /// Records where the lanes are drawn, to turn presses into positions.
-    fn lanes_tracker(&self) -> impl IntoElement {
+    pub(crate) fn lanes_tracker(&self) -> impl IntoElement {
         let bounds_cell = self.lanes_bounds.clone();
         canvas(
             move |bounds, _, _| bounds_cell.set(bounds),
@@ -549,7 +602,7 @@ impl ProjectView {
         pointer: Point<Pixels>,
     ) -> Option<LaneCursor> {
         let lanes = self.lanes_bounds.get();
-        let zoom = self.parameters_view.zoom;
+        let zoom = self.lane_zoom();
         let x = (pointer.x - lanes.origin.x) / px(1.);
         let y = (pointer.y - lanes.origin.y) / px(1.) - top;
         let kind_of = |hit: Hit| match hit {
@@ -598,35 +651,37 @@ impl ProjectView {
         }
     }
 
-    /// A press on a layer lane whose row starts `top` pixels down the lanes
-    /// and is `height` tall.
-    fn lane_mouse_down(&mut self, layer: LayerId, top: f32, height: f32, event: &MouseDownEvent) {
+    /// A press on a lane whose row starts `top` pixels down the lanes and is
+    /// `height` tall.
+    fn lane_mouse_down(&mut self, lane: Lane, top: f32, height: f32, event: &MouseDownEvent) {
         let snapshot = self.session.snapshot();
-        let Some((_, lane)) = all_layers(snapshot).find(|(id, _)| *id == layer) else {
+        let Some(blocks) = lane_blocks(snapshot, lane) else {
             return;
         };
         let lanes = self.lanes_bounds.get();
         let x = (event.position.x - lanes.origin.x) / px(1.);
-        let zoom = self.parameters_view.zoom;
+        let zoom = self.lane_zoom();
         let ppb = zoom.pixels_per_beat;
         let at = Ticks::from_beats_f64(zoom.x_to_beats(x));
         let snap = self.snap_for(event.modifiers);
         let box_top = lanes.origin.y + px(top + BLOCK_INSET);
         let box_height = height - 2. * BLOCK_INSET;
 
-        let Some((id, block)) = lane
-            .blocks
+        let Some((id, block)) = blocks
             .iter()
             .find(|(_, b)| b.start <= at && at < b.end())
             .cloned()
         else {
             self.selected_block = None;
             if event.click_count >= 2
-                && let Some(block) = new_block(&lane.blocks, at, snap)
+                && let Some(block) = new_block(blocks, at, snap)
             {
                 let id = next_block_id_in(snapshot);
-                self.session
-                    .apply(Command::Edit(Edit::AddBlock { layer, id, block }));
+                let edit = match lane {
+                    Lane::Layer(layer) => Edit::AddBlock { layer, id, block },
+                    Lane::Signal(signal) => Edit::AddSignalBlock { signal, id, block },
+                };
+                self.session.apply(Command::Edit(edit));
                 self.selected_block = Some(id);
             }
             return;
@@ -636,7 +691,7 @@ impl ProjectView {
         let local_y = (event.position.y - box_top) / px(1.);
         let was_selected = self.selected_block == Some(id);
         let hit = hit_test(&block, local_x, local_y, ppb, box_height, was_selected);
-        let room = room_around(&lane.blocks, Some(id), block.start);
+        let room = room_around(blocks, Some(id), block.start);
         self.selected_block = Some(id);
         if event.click_count >= 2 && was_selected && !matches!(hit, Hit::Point(_)) {
             let at = phase_at(&block, local_x, ppb);
@@ -670,7 +725,7 @@ impl ProjectView {
             return;
         };
         let lanes = self.lanes_bounds.get();
-        let zoom = self.parameters_view.zoom;
+        let zoom = self.lane_zoom();
         let x =
             (event.position.x - lanes.origin.x) / px(1.) - zoom.beat_to_x(block.start.as_beats());
         let y = (event.position.y - lanes.origin.y) / px(1.) - top - BLOCK_INSET;
@@ -722,7 +777,7 @@ impl ProjectView {
             return;
         }
         let snap = self.snap_for(modifiers);
-        let ppb = self.parameters_view.zoom.pixels_per_beat;
+        let ppb = self.lane_zoom().pixels_per_beat;
         let Some(drag) = &mut self.block_drag else {
             return;
         };
@@ -895,12 +950,11 @@ impl ProjectView {
 
     /// Deletes the selected block (Delete or Backspace).
     pub(crate) fn delete_selection(&mut self) {
-        if self.page != Page::Parameters || self.block_drag.is_some() {
+        if self.block_drag.is_some() {
             return;
         }
-        if let Some(id) = self.selected_block.take()
-            && find_block(self.session.snapshot(), id).is_some()
-        {
+        if let Some((id, _, _)) = self.selected_block(self.session.snapshot()) {
+            self.selected_block = None;
             self.session.apply(Command::Edit(Edit::RemoveBlock { id }));
         }
     }
@@ -1223,6 +1277,7 @@ impl ProjectView {
         drop_highlight.a = 0.18;
 
         cell.id(("layer-row", id.0))
+            .when(self.highlighted(id), |d| d.bg(drop_highlight))
             .pl(px(18.))
             .pr(px(8.))
             .gap(px(6.))
@@ -1335,7 +1390,7 @@ impl ProjectView {
 }
 
 /// A small square icon button.
-fn small_button(id: impl Into<gpui::ElementId>, theme: &Theme) -> gpui::Stateful<Div> {
+pub(crate) fn small_button(id: impl Into<gpui::ElementId>, theme: &Theme) -> gpui::Stateful<Div> {
     let hover = theme.hover;
     div()
         .id(id)
@@ -1348,7 +1403,7 @@ fn small_button(id: impl Into<gpui::ElementId>, theme: &Theme) -> gpui::Stateful
 }
 
 /// A quiet "+ Label" row action.
-fn quiet_action(
+pub(crate) fn quiet_action(
     cell: Div,
     id: impl Into<gpui::ElementId>,
     label: &'static str,
@@ -1425,71 +1480,101 @@ impl ProjectView {
                     .into_any_element()
             }
             Row::Layer { id, layer, .. } => {
-                let layer_id = *id;
                 let colors = if layer.enabled {
                     color
                 } else {
                     theme.muted_content
                 };
-                let blocks = previewed_blocks(drag, &layer.blocks);
-                let mix = self.mix_of(layer_id, layer.mix);
-                let cursor = self.lane_cursor(&blocks, top, height, pointer);
-                // The centre line: no effect.
-                let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
-                cell.border_b_2()
-                    .border_color(theme.edge)
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(px(centre - 0.5))
-                            .h(px(1.))
-                            .bg(theme.grid),
-                    )
-                    .children(blocks.iter().map(|(id, block)| {
-                        block_view(
-                            *id,
-                            block,
-                            colors,
-                            self.selected_block == Some(*id),
-                            mix,
-                            zoom,
-                            cursor.is_some_and(|c| c.block == *id),
-                            height - 2. * BLOCK_INSET,
-                            theme,
-                        )
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                            this.lane_mouse_down(layer_id, top, height, event);
-                        }),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                            this.lane_right_click(top, height, event);
-                        }),
-                    )
-                    .when_some(cursor, |d, cursor| {
-                        // The system cursor is hidden; this icon takes its place.
-                        let (glyph, tint) = match cursor.kind {
-                            CursorKind::Loop => (Icon::Loop, theme.accent),
-                            CursorKind::Move => (Icon::Move, colors.detail),
-                        };
-                        d.cursor_none(gpui::CursorStyle::Arrow).child(
-                            div()
-                                .absolute()
-                                .left(px(cursor.x - CURSOR_ICON / 2.))
-                                .top(px(cursor.y - CURSOR_ICON / 2.))
-                                .child(icon(glyph, tint, CURSOR_ICON)),
-                        )
-                    })
-                    .into_any_element()
+                let mix = self.mix_of(*id, layer.mix);
+                self.lane_cell(
+                    cell,
+                    Lane::Layer(*id),
+                    &layer.blocks,
+                    colors,
+                    mix,
+                    top,
+                    pointer,
+                    theme,
+                    cx,
+                )
+                .into_any_element()
             }
             _ => cell.into_any_element(),
         }
+    }
+
+    /// Draws a lane of editable blocks into `cell`, a row that starts `top`
+    /// pixels down the lanes: its centre line, blocks (with any drag
+    /// previewed), presses and custom cursor.
+    #[allow(clippy::too_many_arguments, reason = "plain row data, passed through")]
+    pub(crate) fn lane_cell(
+        &self,
+        cell: Div,
+        lane: Lane,
+        blocks: &[(BlockId, Block)],
+        colors: ContentColor,
+        mix: f64,
+        top: f32,
+        pointer: Point<Pixels>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let zoom = self.lane_zoom();
+        let height = zoom.row_height;
+        let blocks = previewed_blocks(self.block_drag.as_ref(), blocks);
+        let cursor = self.lane_cursor(&blocks, top, height, pointer);
+        // The centre line: no effect.
+        let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
+        cell.border_b_2()
+            .border_color(theme.edge)
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(centre - 0.5))
+                    .h(px(1.))
+                    .bg(theme.grid),
+            )
+            .children(blocks.iter().map(|(id, block)| {
+                block_view(
+                    *id,
+                    block,
+                    colors,
+                    self.selected_block == Some(*id),
+                    mix,
+                    zoom,
+                    cursor.is_some_and(|c| c.block == *id),
+                    height - 2. * BLOCK_INSET,
+                    theme,
+                )
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                    this.lane_mouse_down(lane, top, height, event);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                    this.lane_right_click(top, height, event);
+                }),
+            )
+            .when_some(cursor, |d, cursor| {
+                // The system cursor is hidden; this icon takes its place.
+                let (glyph, tint) = match cursor.kind {
+                    CursorKind::Loop => (Icon::Loop, theme.accent),
+                    CursorKind::Move => (Icon::Move, colors.detail),
+                };
+                d.cursor_none(gpui::CursorStyle::Arrow).child(
+                    div()
+                        .absolute()
+                        .left(px(cursor.x - CURSOR_ICON / 2.))
+                        .top(px(cursor.y - CURSOR_ICON / 2.))
+                        .child(icon(glyph, tint, CURSOR_ICON)),
+                )
+            })
     }
 }
 
@@ -1681,7 +1766,7 @@ fn block_view(
 
 /// Draws `value(beat)` (0..=1, NaN for "nothing here") across `bounds`, with
 /// beat 0 at the left edge. Optionally fills under the line.
-fn paint_curve(
+pub(crate) fn paint_curve(
     window: &mut Window,
     bounds: Bounds<Pixels>,
     pixels_per_beat: f32,
@@ -1825,7 +1910,10 @@ mod tests {
     fn blocks_are_found_with_their_layer() {
         let snapshot = snapshot_with(layer_with_block());
         let (layer, block) = find_block(&snapshot, BlockId(4)).unwrap();
-        assert_eq!((layer, block.length), (LayerId(1), Ticks::from_beats(4)));
+        assert_eq!(
+            (layer, block.length),
+            (Lane::Layer(LayerId(1)), Ticks::from_beats(4))
+        );
         assert!(find_block(&snapshot, BlockId(5)).is_none());
         assert_eq!(next_block_id_in(&snapshot), BlockId(5));
     }
@@ -1843,9 +1931,9 @@ mod tests {
 
     #[test]
     fn grid_lines_thin_out_when_zoomed_out() {
-        assert_eq!(grid_bar_step(24.), 1);
-        assert_eq!(grid_bar_step(1.), 2);
-        assert_eq!(grid_bar_step(0.25), 8);
+        assert_eq!(crate::layout::grid_bar_step(24.), 1);
+        assert_eq!(crate::layout::grid_bar_step(1.), 2);
+        assert_eq!(crate::layout::grid_bar_step(0.25), 8);
     }
 
     #[test]
