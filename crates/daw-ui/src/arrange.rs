@@ -75,7 +75,10 @@ impl ProjectView {
                 .into_any_element(),
         };
 
+        let mut selected_bg = theme.accent;
+        selected_bg.a = 0.16;
         let row = div()
+            .id("node-row")
             .h(px(ROW_HEIGHT))
             .flex()
             .items_center()
@@ -83,6 +86,8 @@ impl ProjectView {
             .px(px(12.))
             .border_b_1()
             .border_color(theme.hairline)
+            .when(self.node_selected, |d| d.bg(selected_bg))
+            .on_click(cx.listener(|this, _, _, _| this.node_selected = true))
             .child(div().w(px(4.)).h(px(32.)).rounded(px(2.)).bg(color.detail))
             .child(
                 div().flex_1().flex().flex_col().child(node_name).child(
@@ -124,6 +129,13 @@ impl ProjectView {
                     .child("NODES"),
             )
             .child(row)
+            .child(
+                // Clicking the empty space below the nodes clears the selection.
+                div()
+                    .id("node-list-space")
+                    .flex_1()
+                    .on_click(cx.listener(|this, _, _, _| this.node_selected = false)),
+            )
     }
 
     fn render_timeline(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -185,7 +197,12 @@ impl ProjectView {
             )
     }
 
-    fn render_ruler(&self, theme: &Theme, bars: u32, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_ruler(
+        &self,
+        theme: &Theme,
+        bars: u32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let bounds_cell = self.ruler_bounds.clone();
         let mut loop_fill = theme.accent;
         loop_fill.a = 0.2;

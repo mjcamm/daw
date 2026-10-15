@@ -90,3 +90,10 @@ Application::new()
 ## Gotchas
 
 - On Windows, building fails with "failed to remove file ... daw.exe" while the app is running. Close it first.
+
+## Scrolling and hover reveal
+
+- Keeping two areas in step horizontally (e.g. a ruler above scrolling lanes): give the scrolling element `.track_scroll(&handle)` with a `ScrollHandle` kept in the view, and draw the other inside an `.overflow_hidden()` box shifted by `.relative().left(handle.offset().x)` (the offset is negative when scrolled). The view redraws every frame, so they stay together.
+- Vertical page scroll around a horizontally scrolling area: an outer `.overflow_y_scroll()` holding a row of [fixed left column][`.overflow_x_scroll()` lanes].
+- Show a control only while its row is hovered: name the row `.group("row-1")`, then on the control `.opacity(0.).group_hover("row-1", |s| s.opacity(1.))`.
+- Curves: `PathBuilder::stroke(px(1.5))` for lines, `PathBuilder::fill()` for the area under them, painted in a `canvas` sized to the row.

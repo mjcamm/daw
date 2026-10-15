@@ -41,25 +41,7 @@ impl ParamInfo {
 
     /// A real-unit value formatted for display.
     pub fn format(&self, plain: f64) -> String {
-        match self.unit {
-            _ if !self.choices.is_empty() => self
-                .choices
-                .get(plain as usize)
-                .copied()
-                .unwrap_or("?")
-                .to_owned(),
-            "Hz" if plain >= 1_000.0 => format!("{:.2} kHz", plain / 1_000.0),
-            "Hz" => format!("{plain:.0} Hz"),
-            "s" if plain < 1.0 => format!("{:.0} ms", plain * 1_000.0),
-            "s" => format!("{plain:.2} s"),
-            "dB" if plain == f64::NEG_INFINITY => "-inf dB".to_owned(),
-            "dB" => format!("{plain:.1} dB"),
-            "pan" if plain.abs() < 0.005 => "C".to_owned(),
-            "pan" if plain < 0.0 => format!("L{:.0}", -plain * 100.0),
-            "pan" => format!("R{:.0}", plain * 100.0),
-            "" => format!("{plain:.2}"),
-            unit => format!("{plain:.2} {unit}"),
-        }
+        daw_protocol::format_param_value(self.unit, self.choices, plain)
     }
 }
 

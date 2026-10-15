@@ -13,10 +13,15 @@ pub enum Icon {
     Stop,
     ToStart,
     Loop,
+    ChevronDown,
+    Eye,
+    EyeOff,
+    Close,
+    Plus,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 4] = [
+const ICONS: [(Icon, &str, &[u8]); 9] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -36,6 +41,31 @@ const ICONS: [(Icon, &str, &[u8]); 4] = [
         Icon::Loop,
         "icons/repeat.svg",
         include_bytes!("../assets/icons/repeat.svg"),
+    ),
+    (
+        Icon::ChevronDown,
+        "icons/chevron-down.svg",
+        include_bytes!("../assets/icons/chevron-down.svg"),
+    ),
+    (
+        Icon::Eye,
+        "icons/eye.svg",
+        include_bytes!("../assets/icons/eye.svg"),
+    ),
+    (
+        Icon::EyeOff,
+        "icons/eye-off.svg",
+        include_bytes!("../assets/icons/eye-off.svg"),
+    ),
+    (
+        Icon::Close,
+        "icons/x.svg",
+        include_bytes!("../assets/icons/x.svg"),
+    ),
+    (
+        Icon::Plus,
+        "icons/plus.svg",
+        include_bytes!("../assets/icons/plus.svg"),
     ),
 ];
 

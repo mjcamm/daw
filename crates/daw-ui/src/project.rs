@@ -1,12 +1,13 @@
 //! An open project: header and the current page.
 
+use crate::menu::OpenMenu;
 use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
-use daw_engine::{Command, Edit, LoopRange};
+use daw_engine::{Command, Edit, LayerId, LoopRange};
 use gpui::{
-    Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Subscription, Window,
-    actions, div, prelude::*, px,
+    Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, ScrollHandle,
+    Subscription, Window, actions, div, prelude::*, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -41,6 +42,7 @@ impl Page {
 pub enum RenameTarget {
     Song,
     Node,
+    Layer(LayerId),
 }
 
 /// A name being edited in place.
@@ -64,7 +66,13 @@ pub struct ProjectView {
     /// Where the timeline ruler was last drawn, for turning clicks into
     /// song positions.
     pub(crate) ruler_bounds: Rc<Cell<Bounds<Pixels>>>,
-    pub(crate) menu_open: bool,
+    pub(crate) open_menu: Option<OpenMenu>,
+    /// Whether the node is selected; the Parameters page shows the selected
+    /// node.
+    pub(crate) node_selected: bool,
+    /// Horizontal scroll of the Parameters page timeline, shared with its
+    /// ruler.
+    pub(crate) parameters_scroll: ScrollHandle,
     pub(crate) rename: Option<Rename>,
     pub(crate) save_error: Option<String>,
     window_title: String,
@@ -83,7 +91,9 @@ impl ProjectView {
             page: Page::Arrange,
             saved_loop,
             ruler_bounds: Rc::default(),
-            menu_open: false,
+            open_menu: None,
+            node_selected: false,
+            parameters_scroll: ScrollHandle::new(),
             rename: None,
             save_error: None,
             window_title: String::new(),
@@ -115,7 +125,7 @@ impl ProjectView {
     }
 
     pub(crate) fn save(&mut self) {
-        self.menu_open = false;
+        self.open_menu = None;
         self.save_error = self
             .session
             .save()
@@ -140,11 +150,12 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu_open = false;
+        self.open_menu = None;
         let snapshot = self.session.snapshot();
         let current = match target {
             RenameTarget::Song => snapshot.song_name.clone(),
             RenameTarget::Node => snapshot.node.name.clone(),
+            RenameTarget::Layer(id) => layer_name(snapshot, id),
         };
         let input = cx.new(|cx| TextInput::new(&current, "Name", cx));
         window.focus(&input.read(cx).focus_handle(cx));
@@ -178,6 +189,7 @@ impl ProjectView {
             let edit = match rename.target {
                 RenameTarget::Song => Edit::RenameSong { name },
                 RenameTarget::Node => Edit::RenameNode { name },
+                RenameTarget::Layer(id) => Edit::RenameLayer { id, name },
             };
             self.session.apply(Command::Edit(edit));
         }
@@ -209,6 +221,9 @@ impl Render for ProjectView {
 
         let page = match self.page {
             Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),
+            Page::Parameters if self.node_selected => {
+                self.render_parameters(&theme, cx).into_any_element()
+            }
             other => placeholder(&theme, other).into_any_element(),
         };
         let banner = |text: String| {
@@ -240,6 +255,18 @@ impl Render for ProjectView {
             .children(self.save_error.clone().map(banner))
             .child(page)
     }
+}
+
+/// The current name of a layer, or empty if it no longer exists.
+fn layer_name(snapshot: &daw_engine::Snapshot, id: LayerId) -> String {
+    snapshot
+        .devices
+        .iter()
+        .flat_map(|d| &d.params)
+        .flat_map(|p| &p.layers)
+        .find(|(layer_id, _)| *layer_id == id)
+        .map(|(_, layer)| layer.name.clone())
+        .unwrap_or_default()
 }
 
 fn placeholder(theme: &Theme, page: Page) -> impl IntoElement {

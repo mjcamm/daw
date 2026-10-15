@@ -95,6 +95,10 @@ pub enum BlendMode {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layer {
+    /// Shown in the layer list. Files from before names existed load with
+    /// an empty name.
+    #[serde(default)]
+    pub name: String,
     pub mode: BlendMode,
     pub enabled: bool,
     /// Non-overlapping blocks, sorted by start.
@@ -103,7 +107,12 @@ pub struct Layer {
 
 impl Layer {
     pub fn new(mode: BlendMode) -> Self {
+        Self::named("Layer", mode)
+    }
+
+    pub fn named(name: &str, mode: BlendMode) -> Self {
         Self {
+            name: name.to_owned(),
             mode,
             enabled: true,
             blocks: Vec::new(),

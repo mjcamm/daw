@@ -1427,6 +1427,7 @@ dependencies = [
 name = "daw-ui"
 version = "0.1.0"
 dependencies = [
+ "daw-automation",
  "daw-engine",
  "daw-host",
  "daw-rt",

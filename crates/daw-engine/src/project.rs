@@ -334,6 +334,12 @@ impl Project {
                     layer,
                 })
             }
+            Edit::RenameLayer { id, name } => {
+                let name = clean_name(&name)?;
+                let layer = node.layer_mut(id)?;
+                let previous = std::mem::replace(&mut layer.name, name);
+                Ok(Edit::RenameLayer { id, name: previous })
+            }
             Edit::SetLayerOptions { id, mode, enabled } => {
                 let layer = node.layer_mut(id)?;
                 let previous = Edit::SetLayerOptions {
@@ -596,6 +602,10 @@ mod tests {
                 id: LayerId(1),
                 mode: BlendMode::Multiply,
                 enabled: false,
+            },
+            Edit::RenameLayer {
+                id: LayerId(1),
+                name: "Wobble".to_owned(),
             },
             add_block(1, 2, block(4, 2)),
             Edit::RemoveBlock { id: BlockId(1) },

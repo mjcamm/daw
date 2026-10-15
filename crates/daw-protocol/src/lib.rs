@@ -91,6 +91,10 @@ pub enum Edit {
     RemoveLayer {
         id: LayerId,
     },
+    RenameLayer {
+        id: LayerId,
+        name: String,
+    },
     SetLayerOptions {
         id: LayerId,
         mode: BlendMode,
@@ -409,3 +413,31 @@ impl fmt::Display for InvalidBlock {
 }
 
 impl std::error::Error for CommandError {}
+
+/// A parameter value in real units formatted for display, using its unit and
+/// option names (see [`ParamSnapshot`]).
+pub fn format_param_value(unit: &str, choices: &[impl AsRef<str>], plain: f64) -> String {
+    match unit {
+        _ if !choices.is_empty() => choices
+            .get(plain as usize)
+            .map_or_else(|| "?".to_owned(), |c| c.as_ref().to_owned()),
+        "Hz" if plain >= 1_000.0 => format!("{:.2} kHz", plain / 1_000.0),
+        "Hz" => format!("{plain:.0} Hz"),
+        "s" if plain < 1.0 => format!("{:.0} ms", plain * 1_000.0),
+        "s" => format!("{plain:.2} s"),
+        "dB" if plain == f64::NEG_INFINITY => "-inf dB".to_owned(),
+        "dB" => format!("{plain:.1} dB"),
+        "pan" if plain.abs() < 0.005 => "C".to_owned(),
+        "pan" if plain < 0.0 => format!("L{:.0}", -plain * 100.0),
+        "pan" => format!("R{:.0}", plain * 100.0),
+        "" => format!("{plain:.2}"),
+        unit => format!("{plain:.2} {unit}"),
+    }
+}
+
+impl ParamSnapshot {
+    /// A normalized value of this parameter, formatted for display.
+    pub fn format_normalized(&self, normalized: f64) -> String {
+        format_param_value(&self.unit, &self.choices, self.scale.to_plain(normalized))
+    }
+}

@@ -6,6 +6,8 @@ mod header;
 mod icons;
 mod launch;
 mod layout;
+mod menu;
+mod parameters;
 mod project;
 mod session;
 mod text_input;

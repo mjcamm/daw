@@ -13,6 +13,7 @@ name = "daw"
 path = "src/main.rs"
 
 [dependencies]
+daw-automation.workspace = true
 daw-engine.workspace = true
 daw-host.workspace = true
 daw-rt.workspace = true
