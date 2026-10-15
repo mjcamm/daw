@@ -1,2 +1,4 @@
 .idea/
 /target/
+# Renders made from the project root
+/*.wav
