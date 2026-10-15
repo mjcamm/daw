@@ -19,9 +19,13 @@
 
 | Page | Selection | Shows |
 |---|---|---|
-| Signals | A notes signal | Pitches, Envelope (graph and sliders), Velocity clamp (`motion-signals.md`) |
+| Signals | A notes signal | Pitch range (switch), Envelope (graph and sliders), Velocity clamp (switch) (`motion-signals.md`) |
 | Signals | A drawn signal | Nothing yet |
 | Arrange, Parameters | | Nothing yet (later: the node's channel strip; maybe block settings) |
+
+## Optional sections
+
+A section that can be left out has an on/off switch at the right of its heading (green when on). Off folds its rows away, leaves a muted line saying what happens instead, and keeps its values for when it is switched back on. Each flip is one edit.
 
 ## Editing
 

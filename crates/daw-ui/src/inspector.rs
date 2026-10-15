@@ -121,6 +121,41 @@ impl NotesField {
     }
 }
 
+/// A notes signal section that can be switched off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesSwitch {
+    PitchRange,
+    VelocityClamp,
+}
+
+impl NotesSwitch {
+    fn label(self) -> &'static str {
+        match self {
+            Self::PitchRange => "Pitch range",
+            Self::VelocityClamp => "Velocity clamp",
+        }
+    }
+
+    fn tooltip(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Self::PitchRange, true) => "On: only notes in the range hit",
+            (Self::PitchRange, false) => "Off: every note hits",
+            (Self::VelocityClamp, true) => "On: hit heights are kept between Min and Max",
+            (Self::VelocityClamp, false) => "Off: hit heights follow velocity",
+        }
+    }
+
+    /// `source` with this switch flipped; the range or clamp is kept.
+    pub fn flipped(self, source: &NotesSource) -> NotesSource {
+        let mut source = source.clone();
+        match self {
+            Self::PitchRange => source.pitch_range = !source.pitch_range,
+            Self::VelocityClamp => source.velocity_clamp = !source.velocity_clamp,
+        }
+        source
+    }
+}
+
 /// A notes signal setting being dragged; previewed until release.
 #[derive(Debug, Clone)]
 pub struct NotesDrag {
@@ -298,11 +333,9 @@ impl ProjectView {
         } else {
             theme.text_tertiary
         };
-        let hint = match (open, content) {
-            (true, _) => "Hide details",
-            (false, true) => "Show details of the selection",
-            (false, false) => "Details: nothing selected to show",
-        };
+        // One fixed text: a tooltip keeps the text it was shown with, so
+        // one naming the state goes stale after a click.
+        let hint = "Details of the selection";
         let button = small_button("inspector-toggle", theme)
             .relative()
             .when(open, |d| d.bg(theme.control))
@@ -487,25 +520,91 @@ impl ProjectView {
                 .map(|(i, field)| self.slider_row(id, field, &source, i > 0, theme, cx)),
         );
 
+        let (ranged, clamped) = (source.pitch_range, source.velocity_clamp);
         div()
             .flex()
             .flex_col()
             .pb(px(16.))
             .child(header)
-            .child(section_label("Pitches", theme))
-            .child(pitches)
+            .child(self.switched_label(id, NotesSwitch::PitchRange, ranged, theme, cx))
+            .when(ranged, |d| d.child(pitches))
             .child(hint(
-                "Only notes in this range hit. Pick one drum to follow it.",
+                if ranged {
+                    "Only notes in this range hit. Pick one drum to follow it."
+                } else {
+                    "Every note hits."
+                },
                 theme,
             ))
             .child(section_label("Envelope", theme))
             .child(envelope)
-            .child(section_label("Velocity", theme))
-            .child(velocity)
+            .child(self.switched_label(id, NotesSwitch::VelocityClamp, clamped, theme, cx))
+            .when(clamped, |d| d.child(velocity))
             .child(hint(
-                "Each hit rises as high as its note's velocity, kept between Min and Max.",
+                if clamped {
+                    "Each hit rises as high as its note's velocity, kept between Min and Max."
+                } else {
+                    "Each hit rises as high as its note's velocity."
+                },
                 theme,
             ))
+    }
+
+    /// A section heading with an on/off switch at its right. Off folds the
+    /// section away; its values are kept for when it is switched back on.
+    fn switched_label(
+        &self,
+        id: SignalId,
+        switch: NotesSwitch,
+        on: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let track = if on { theme.active } else { theme.control };
+        let knob = div()
+            .absolute()
+            .top(px(2.))
+            .left(px(if on { 13. } else { 2. }))
+            .size(px(11.))
+            .rounded(px(5.5))
+            .bg(theme.on_accent)
+            .shadow_sm();
+        let toggle = div()
+            .id(("notes-switch", switch as usize))
+            .relative()
+            .w(px(26.))
+            .h(px(15.))
+            .flex_none()
+            .rounded(px(7.5))
+            .bg(track)
+            .cursor_pointer()
+            .child(knob)
+            .tooltip(tooltip::text(switch.tooltip(on)))
+            .on_click(cx.listener(move |this, _, _, _| this.flip_notes_switch(id, switch)));
+        section_label(switch.label(), theme)
+            .pr(px(14.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(toggle)
+    }
+
+    /// Turns a notes signal's pitch range or velocity clamp on or off, as
+    /// one edit.
+    fn flip_notes_switch(&mut self, id: SignalId, switch: NotesSwitch) {
+        let Some(SignalSource::Notes(source)) = self
+            .session
+            .snapshot()
+            .signals
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| &s.source)
+        else {
+            return;
+        };
+        let source = switch.flipped(source);
+        self.session
+            .apply(Command::Edit(Edit::SetNotesSource { id, source }));
     }
 
     /// A row with the shared slider and the value beside it.
@@ -728,6 +827,21 @@ mod tests {
             100.
         );
         assert!(slider_length(MIN_WIDTH) >= 40.);
+    }
+
+    #[test]
+    fn switches_flip_and_keep_their_values() {
+        let source = NotesSource {
+            lowest: 36,
+            highest: 36,
+            ..NotesSource::new()
+        };
+        let on = NotesSwitch::PitchRange.flipped(&source);
+        assert!(on.pitch_range && !on.velocity_clamp);
+        assert_eq!((on.lowest, on.highest), (36, 36), "range kept");
+        let off = NotesSwitch::PitchRange.flipped(&on);
+        assert_eq!(off, source);
+        assert!(NotesSwitch::VelocityClamp.flipped(&source).velocity_clamp);
     }
 
     #[test]

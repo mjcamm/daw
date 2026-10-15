@@ -35,10 +35,11 @@ A lane of blocks with the same `Block` as a layer lane and the same gestures (do
 Each note matching the pitch filter is a **hit** from 0 to +1, shaped by an envelope:
 
 - **ADSR:** attack up to the peak, decay to the sustain level, held while the note is held, release back to 0 after the note ends. A short note snaps back; a long one holds.
-- **Velocity clamp** (Min and Max, 0 to 100 %): a hit's peak is its note's velocity (`velocity / 127`) held between Min and Max. Min = Max = 100 % makes every hit reach +1. Replaced the earlier "velocity amount" at the user's request (file version 5).
+- **Velocity:** a hit's peak is its note's velocity (`velocity / 127`). The optional **velocity clamp** (a switch, off by default) holds it between Min and Max (0 to 100 %); Min = Max = 100 % makes every hit reach +1. Replaced the earlier "velocity amount" at the user's request (file version 5).
+- **Switched off keeps the values** (file version 6), so switching back on restores the range or clamp.
 - **Between hits** the signal rests at 0 (the centre line: no effect). It is always present.
 - **A new note restarts from wherever the line is**, so it never jumps.
-- **Pitch filter:** a pitch range, so one drum note (the kick) can drive the signal.
+- **Pitch range** (optional, a switch, off by default): only notes in Lowest..Highest hit, so one drum note (the kick) can drive the signal. Off, every note hits.
 - **Source node:** the node that published it. Until the node tree (Phase 5) this is the project's only node.
 
 The line is computed and drawn, not edited by hand; settings live in the signal's bottom bar. Known in advance from the notes, so identical live and offline.
@@ -76,7 +77,7 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 
 - **Arrange, node row** (built): a signal icon button (Lucide `radio`) left of M and S, tinted in the colour of the node's first published signal. It opens a menu: "Publish notes as motion signal" (greyed "no notes" without notes), "Publish sound as motion signal" and "Publish sound as audio signal" (greyed, "coming later" until Phase 6), then the node's signals, each with a colour dot and go-to icon. A node can publish several signals (kick and hat from one drum node). A new notes signal is "<node> notes", with every note, a short snappy hit and a velocity clamp of 0 to 100 %.
 - **Publishing stays on Arrange** (the user's call): the menu stays open and the new signal appears in it with its go-to icon. Go-to opens the Signals page with the signal selected and the inspector open.
-- **Inspector, notes signal** (built, `crates/daw-ui/src/inspector.rs`): header (colour dot, name, "Notes from <node>" with a go-to icon), then grouped panels: **Pitches** (Lowest, Highest as note names, middle C = C3, dragged sideways), **Envelope** (a graph of one note's hit, drawn by the engine's own code, then Attack, Decay, Sustain, Release sliders; times in beats, up to 4, on a square-root scale), **Velocity** (Min, Max). Dragging previews: the graph, the signal's lane and every listening layer redraw live; one edit on release.
+- **Inspector, notes signal** (built, `crates/daw-ui/src/inspector.rs`): header (colour dot, name, "Notes from <node>" with a go-to icon), then grouped panels: **Pitch range** (Lowest, Highest as note names, middle C = C3, dragged sideways), **Envelope** (a graph of one note's hit, drawn by the engine's own code, then Attack, Decay, Sustain, Release sliders; times in beats, up to 4, on a square-root scale), **Velocity clamp** (Min, Max). Pitch range and Velocity clamp have an on/off switch at the right of their heading (the user's call); off folds the rows away and a muted line says what happens instead. Seeing which pitches a node plays (note ticks on the lane) is left for later; the range picker is enough for now (the user's call). Dragging previews: the graph, the signal's lane and every listening layer redraw live; one edit on release.
 - **Parameters, adding a layer** (built): "+ Add Layer", and the first layer from "+ Add Parameter", open a menu: **Manual drawn** or **Listen to signal ›**, which swaps the menu to the signals (colour dot and name, "‹ Back"; with none, a go-to row to the Signals page). The menu says "A layer keeps its type once added": **the type is fixed** (the user's call), and a listening layer stays on its signal. New layers are "Layer N".
 - **Parameters, layer row** (built): a chip shows the type. Drawn: pencil and "Drawn". Listening: an inbound arrow and the signal's name in its colour, then a **go-to icon** to the signal on the Signals page (highlighted for a moment). Hovering the chip explains it.
 - **Windows** (built): blocks on a listening layer draw in the signal's colour and show the signal through them; no points, no loop handle, no Repeat in the settings bar. Result rows include listening layers.
@@ -110,7 +111,7 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 
 ## File
 
-Version 5 (the velocity clamp; an old amount `a` becomes the clamp `1 - a ..= 1`). Older files convert on load (`crates/daw-engine/src/upgrade.rs`). The first-draft signals (version 2 and 3) never reached the UI, so they convert as closely as the new model allows: a layer whose blocks all link to one signal listens to it (link ranges dropped); other links are dropped; an old notes envelope becomes a hit decaying over its length.
+Version 6 (switches for the pitch range and velocity clamp: on where the old values had an effect). Version 5 brought the velocity clamp (an old amount `a` becomes `1 - a ..= 1`). Older files convert on load (`crates/daw-engine/src/upgrade.rs`). The first-draft signals (version 2 and 3) never reached the UI, so they convert as closely as the new model allows: a layer whose blocks all link to one signal listens to it (link ranges dropped); other links are dropped; an old notes envelope becomes a hit decaying over its length.
 
 ## Done when (from `build-plan.md`)
 

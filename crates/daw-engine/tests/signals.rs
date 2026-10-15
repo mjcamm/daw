@@ -41,6 +41,8 @@ fn apply(engine: &mut Engine, edit: Edit) {
 /// Kicks hit straight up and fall back over `decay` beats.
 fn kick_envelope(decay: f64) -> NotesSource {
     NotesSource {
+        pitch_range: true,
+        velocity_clamp: true,
         lowest: KICK,
         highest: KICK,
         attack: Ticks::ZERO,

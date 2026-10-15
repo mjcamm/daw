@@ -802,6 +802,7 @@ mod tests {
 
     fn kick_envelope() -> NotesSource {
         NotesSource {
+            pitch_range: true,
             lowest: 36,
             highest: 36,
             ..NotesSource::new()

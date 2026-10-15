@@ -23,6 +23,10 @@
 //! minimum and a maximum. Amount `a` becomes the clamp `1 - a ..= 1`, exact
 //! at 0 (every hit full) and 1 (the peak is the velocity), and close
 //! between: soft notes are lifted to the minimum rather than scaled.
+//!
+//! Version 6 added switches for the pitch range and the velocity clamp. A
+//! range or clamp that does something is switched on; one that lets
+//! everything through (all pitches, a clamp of `0..=1`) is switched off.
 
 use serde_json::Value;
 
@@ -150,6 +154,27 @@ pub fn clamp_velocity(file: &mut Value) {
             .unwrap_or(0.0);
         notes.insert("velocity_min".to_owned(), (1.0 - amount).into());
         notes.insert("velocity_max".to_owned(), 1.0.into());
+    }
+}
+
+/// Adds the version 6 switches to every notes signal: on where the range
+/// or clamp has an effect.
+pub fn notes_switches(file: &mut Value) {
+    let signals = file.get_mut("signals").and_then(Value::as_array_mut);
+    for signal in signals.into_iter().flatten() {
+        let notes = signal
+            .get_mut("source")
+            .and_then(|s| s.get_mut("Notes"))
+            .and_then(Value::as_object_mut);
+        let Some(notes) = notes else {
+            continue;
+        };
+        let number =
+            |key: &str, default: f64| notes.get(key).and_then(Value::as_f64).unwrap_or(default);
+        let ranged = number("lowest", 0.0) > 0.0 || number("highest", 127.0) < 127.0;
+        let clamped = number("velocity_min", 0.0) > 0.0 || number("velocity_max", 1.0) < 1.0;
+        notes.insert("pitch_range".to_owned(), ranged.into());
+        notes.insert("velocity_clamp".to_owned(), clamped.into());
     }
 }
 
@@ -332,6 +357,7 @@ mod tests {
         });
         listen_to_signals(&mut file);
         clamp_velocity(&mut file);
+        notes_switches(&mut file);
         let source: daw_protocol::NotesSource =
             serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
         assert_eq!(source.decay, daw_protocol::Ticks(480));
@@ -353,6 +379,7 @@ mod tests {
                 }]
             });
             clamp_velocity(&mut file);
+            notes_switches(&mut file);
             let source: daw_protocol::NotesSource =
                 serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
             (source.velocity_min, source.velocity_max)
@@ -360,6 +387,30 @@ mod tests {
         assert_eq!(notes(0.0), (1.0, 1.0), "every hit full");
         assert_eq!(notes(1.0), (0.0, 1.0), "follows velocity");
         assert_eq!(notes(0.25), (0.75, 1.0), "softest hits lifted");
+    }
+
+    #[test]
+    fn switches_are_on_where_they_had_an_effect() {
+        let switches = |lowest: u8, highest: u8, min: f64, max: f64| {
+            let mut file = json!({
+                "nodes": [],
+                "signals": [{
+                    "id": 1, "name": "Kick", "color": 0,
+                    "source": { "Notes": {
+                        "lowest": lowest, "highest": highest, "attack": 0, "decay": 480,
+                        "sustain": 0.0, "release": 0,
+                        "velocity_min": min, "velocity_max": max
+                    }}
+                }]
+            });
+            notes_switches(&mut file);
+            let source: daw_protocol::NotesSource =
+                serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
+            (source.pitch_range, source.velocity_clamp)
+        };
+        assert_eq!(switches(0, 127, 0.0, 1.0), (false, false));
+        assert_eq!(switches(36, 36, 0.0, 1.0), (true, false));
+        assert_eq!(switches(0, 127, 1.0, 1.0), (false, true));
     }
 
     #[test]

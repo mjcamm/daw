@@ -190,15 +190,18 @@ pub enum SignalSource {
     Notes(NotesSource),
 }
 
-/// A signal made from MIDI notes. Each note with a pitch in
-/// `lowest..=highest` is a hit from the centre line (0) up towards the top
-/// (+1), shaped by an ADSR envelope: up to the peak over `attack`, down to
+/// A signal made from MIDI notes. Each note (with the pitch range on, each
+/// note with a pitch in `lowest..=highest`) is a hit from the centre line
+/// (0) up towards the top (+1), shaped by an ADSR envelope: up to the peak over `attack`, down to
 /// `sustain · peak` over `decay`, held while the note is held, then back to
 /// 0 over `release`. Between hits the signal rests at 0, which has no
 /// effect; a new note starts from wherever the line is, so it never jumps.
 /// The notes come from the project's node.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NotesSource {
+    /// Whether only notes in `lowest..=highest` hit. Off, every note hits;
+    /// the range is kept for when it is switched back on.
+    pub pitch_range: bool,
     pub lowest: u8,
     pub highest: u8,
     pub attack: Ticks,
@@ -206,18 +209,23 @@ pub struct NotesSource {
     /// Level held while the note is held, as a fraction of the peak, `0..=1`.
     pub sustain: f64,
     pub release: Ticks,
-    /// A hit's peak is its velocity (`velocity / 127`) clamped to
-    /// `velocity_min..=velocity_max`, both within `0..=1`. With both at 1
-    /// every hit reaches the top.
+    /// A hit's peak is its velocity, `velocity / 127`. With the clamp on, it
+    /// is held to `velocity_min..=velocity_max`, both within `0..=1`; with
+    /// both at 1 every hit reaches the top. Off, the clamp is kept for when
+    /// it is switched back on.
+    pub velocity_clamp: bool,
     pub velocity_min: f64,
     pub velocity_max: f64,
 }
 
 impl NotesSource {
     /// Every note, as a short, snappy hit: straight up as high as its
-    /// velocity, then back down over half a beat.
+    /// velocity, then back down over half a beat. The pitch range and the
+    /// velocity clamp start off.
     pub fn new() -> Self {
         Self {
+            pitch_range: false,
+            velocity_clamp: false,
             lowest: 0,
             highest: 127,
             attack: Ticks::ZERO,

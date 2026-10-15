@@ -20,7 +20,7 @@ pub const FORMAT: &str = "daw-project";
 /// Version 2 added motion signals; version 3 centred the blend modes;
 /// version 4 moved listening to signals onto layers and made notes signals
 /// ADSR hits.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -212,7 +212,10 @@ impl ProjectFile {
             if header.version < 4 {
                 crate::upgrade::listen_to_signals(&mut value);
             }
-            crate::upgrade::clamp_velocity(&mut value);
+            if header.version < 5 {
+                crate::upgrade::clamp_velocity(&mut value);
+            }
+            crate::upgrade::notes_switches(&mut value);
             return serde_json::from_value(value).map_err(LoadError::Json);
         }
         serde_json::from_str(json).map_err(LoadError::Json)
@@ -368,6 +371,8 @@ mod tests {
                     name: "Kick duck".to_owned(),
                     color: 4,
                     source: SignalSource::Notes(NotesSource {
+                        pitch_range: true,
+                        velocity_clamp: true,
                         lowest: 36,
                         highest: 37,
                         attack: Ticks(10),

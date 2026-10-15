@@ -7,7 +7,7 @@
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
 - **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to) and **listening layers on Parameters** (type picked when adding, then fixed; chip with hover explanation and go-to; windows show the signal). Driven and checked by Claude via `scripts/ui-drive.ps1`; not yet tried by the user. Layer rows are two lines (name; type chip and blend mode) and rows on every timeline page are at least 44 px; not yet seen running.
-- **Publish as signal and the inspector** (2026-10-16): the node row on Arrange publishes its notes as a signal; the **inspector** (right panel, folding into a tray, `docs/design/inspector.md`) configures a selected notes signal: pitch range, ADSR envelope with a live graph, and a velocity clamp (Min/Max, file version 5). Driven and checked by Claude; not yet tried by the user.
+- **Publish as signal and the inspector** (2026-10-16): the node row on Arrange publishes its notes as a signal; the **inspector** (right panel, folding into a tray, `docs/design/inspector.md`) configures a selected notes signal: an optional pitch range, ADSR envelope with a live graph, and an optional velocity clamp (Min/Max). The two optional parts have on/off switches, off by default (file version 6). Driven and checked by Claude; not yet tried by the user.
 
 ## In the app (`cargo run -p daw-ui`)
 
@@ -26,18 +26,17 @@
 - **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; `crates/daw-engine/src/upgrade.rs` converts older files exactly (Replace only when nothing below it acts).
 - **Layer mix** scales every block's weight on a layer.
 - **Signals** (file version 4): drawn, or ADSR hits from MIDI notes. A layer listens with `Layer.signal`; its blocks are windows onto the signal. No range: block depth and invert do it.
-- **Velocity clamp** (file version 5): a hit's peak is its velocity held between Min and Max (was a "velocity amount").
+- **Velocity clamp** (file version 5): a hit's peak is its velocity held between Min and Max (was a "velocity amount"). Version 6 added on/off switches for the clamp and the pitch range.
 
 ## Waiting on the user
 
 1. **Try publish + inspector:** publish from Arrange, follow go-to, tune the envelope and velocity clamp.
-2. **Pitch range kept:** Claude read "notes don't do anything for motion" as dropping the note count, and kept Lowest/Highest so one drum can be picked out. Confirm, or drop the pitch range.
-3. **Dark mode** look check.
-4. **Milestone gate placement:** `build-plan.md` has it after Phase 4; earlier notes had it after Phase 3.
+2. **Dark mode** look check.
+3. **Milestone gate placement:** `build-plan.md` has it after Phase 4; earlier notes had it after Phase 3.
 
 ## Next up
 
-1. Phase 4's "done when": build a kick ducking several parameters, all in the UI, and see what is missing (faint note ticks on notes lanes are still undesigned).
+1. Phase 4's "done when": build a kick ducking several parameters, all in the UI, and see what is missing. (Showing a node's pitches on notes lanes is deferred by the user; the range picker is enough for now.)
 2. The milestone gate ("does shaping movement feel great?").
 
 ## Design rules the user has set

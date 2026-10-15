@@ -65,12 +65,16 @@ impl NotesEnvelope {
         };
         let mut notes: Vec<SignalNote> = notes
             .into_iter()
-            .filter(|n| (source.lowest..=source.highest).contains(&n.pitch))
+            .filter(|n| !source.pitch_range || (source.lowest..=source.highest).contains(&n.pitch))
             .collect();
         notes.sort_by(|a, b| a.start.total_cmp(&b.start));
         for note in notes {
-            let peak =
-                (f64::from(note.velocity) / 127.0).clamp(source.velocity_min, source.velocity_max);
+            let velocity = f64::from(note.velocity) / 127.0;
+            let peak = if source.velocity_clamp {
+                velocity.clamp(source.velocity_min, source.velocity_max)
+            } else {
+                velocity
+            };
             let hit = Hit {
                 start: note.start,
                 end: note.end,
@@ -211,6 +215,8 @@ mod tests {
     /// Kicks only, with the given attack, decay, sustain and release (beats).
     fn envelope(attack: f64, decay: f64, sustain: f64, release: f64) -> NotesSource {
         NotesSource {
+            pitch_range: true,
+            velocity_clamp: true,
             lowest: KICK,
             highest: KICK,
             attack: beats(attack),
@@ -331,6 +337,31 @@ mod tests {
         assert!(close(clamped(0.6, 1.0, 64), 0.6), "raised to the minimum");
         assert!(close(clamped(0.0, 0.3, 127), 0.3), "held to the maximum");
         assert!(close(clamped(1.0, 1.0, 1), 1.0), "every hit full");
+    }
+
+    #[test]
+    fn without_the_clamp_hits_follow_velocity() {
+        let soft = SignalNote {
+            velocity: 64,
+            ..kick(0.0)
+        };
+        let source = NotesSource {
+            velocity_clamp: false,
+            velocity_min: 1.0,
+            velocity_max: 1.0,
+            ..envelope(0.0, 1.0, 0.0, 0.0)
+        };
+        assert!(close(level(source, &[soft], 0.0).0, 64.0 / 127.0));
+    }
+
+    #[test]
+    fn without_the_pitch_range_every_note_hits() {
+        let source = NotesSource {
+            pitch_range: false,
+            ..envelope(0.0, 1.0, 0.0, 0.0)
+        };
+        let snare = [note(0.0, 1.0, 60)];
+        assert!(close(level(source, &snare, 0.0).0, 1.0));
     }
 
     #[test]
