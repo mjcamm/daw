@@ -15,11 +15,12 @@ use crate::project::{ProjectView, RenameTarget};
 use crate::scroll;
 use crate::theme::{ContentColor, Theme};
 use crate::zoom::Zoom;
-use daw_automation::{CompiledSignal, SignalNote};
+use daw_automation::{CompiledSignal, SignalNote, Signals};
 use daw_engine::{
     Command, Edit, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot,
 };
 use gpui::{AnyElement, ClickEvent, Context, Div, FontWeight, Window, canvas, div, prelude::*, px};
+use std::rc::Rc;
 
 const LIST_WIDTH: f32 = 260.;
 const RULER_HEIGHT: f32 = 28.;
@@ -107,7 +108,57 @@ fn signal_notes(snapshot: &Snapshot) -> Vec<SignalNote> {
         .collect()
 }
 
+/// Every signal compiled, as the engine plays them.
+fn compile_all(snapshot: &Snapshot) -> Signals {
+    let notes = signal_notes(snapshot);
+    let mut signals = Signals::default();
+    for signal in &snapshot.signals {
+        let source = Signal {
+            name: signal.name.clone(),
+            color: signal.color,
+            source: signal.source.clone(),
+        };
+        signals.insert(
+            signal.id,
+            CompiledSignal::compile(&source, notes.iter().copied()),
+        );
+    }
+    signals
+}
+
 impl ProjectView {
+    /// Every signal compiled, recompiled only when the project changes.
+    pub(crate) fn compiled_signals(&self) -> Rc<Signals> {
+        let snapshot = self.session.snapshot();
+        let mut cache = self.signal_cache.borrow_mut();
+        match &*cache {
+            Some((revision, signals)) if *revision == snapshot.revision => signals.clone(),
+            _ => {
+                let signals = Rc::new(compile_all(snapshot));
+                *cache = Some((snapshot.revision, signals.clone()));
+                signals
+            }
+        }
+    }
+
+    /// Shows a signal on the Signals page: scrolled into view and
+    /// highlighted for a moment.
+    pub(crate) fn go_to_signal(&mut self, id: SignalId) {
+        self.page = crate::project::Page::Signals;
+        let snapshot = self.session.snapshot();
+        let row = self.signals_view.zoom.row_height;
+        let index = snapshot
+            .signals
+            .iter()
+            .position(|s| s.id == id)
+            .unwrap_or(0);
+        let offset = (index as f32 - 1.).max(0.) * row;
+        self.signals_view
+            .y
+            .set_offset(gpui::point(px(0.), px(-offset)));
+        self.signal_highlight = Some((id, std::time::Instant::now()));
+    }
+
     pub(crate) fn render_signals(
         &self,
         theme: &Theme,
@@ -119,7 +170,7 @@ impl ProjectView {
         let zoom = self.signals_view.zoom;
         let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
-        let notes = signal_notes(snapshot);
+        let compiled = self.compiled_signals();
 
         let list = div()
             .w(px(LIST_WIDTH))
@@ -176,6 +227,7 @@ impl ProjectView {
                             blocks,
                             colors,
                             1.0,
+                            None,
                             top,
                             pointer,
                             theme,
@@ -183,7 +235,8 @@ impl ProjectView {
                         )
                         .into_any_element(),
                     SignalSource::Notes(_) => {
-                        notes_lane(cell, signal, &notes, colors, zoom, theme).into_any_element()
+                        notes_lane(cell, signal.id, compiled.clone(), colors, zoom, theme)
+                            .into_any_element()
                     }
                 };
                 top += zoom.row_height;
@@ -300,6 +353,11 @@ impl ProjectView {
         let colors = theme.content(signal.color);
         let row_height = self.signals_view.zoom.row_height;
         let hover = theme.hover;
+        let highlighted = self
+            .signal_highlight
+            .is_some_and(|(s, at)| s == id && at.elapsed() < crate::parameters::HIGHLIGHT_TIME);
+        let mut highlight = theme.accent;
+        highlight.a = 0.18;
 
         let color_open = self.open_menu == Some(OpenMenu::SignalColor(id));
         let swatch = div()
@@ -397,6 +455,7 @@ impl ProjectView {
         div()
             .h(px(row_height))
             .flex_none()
+            .when(highlighted, |d| d.bg(highlight))
             .flex()
             .items_center()
             .gap(px(8.))
@@ -525,18 +584,12 @@ impl ProjectView {
 /// A notes signal's lane: the line its hits make, drawn, not edited.
 fn notes_lane(
     cell: Div,
-    signal: &SignalSnapshot,
-    notes: &[SignalNote],
+    id: SignalId,
+    signals: Rc<Signals>,
     colors: ContentColor,
     zoom: Zoom,
     theme: &Theme,
 ) -> Div {
-    let source = Signal {
-        name: signal.name.clone(),
-        color: signal.color,
-        source: signal.source.clone(),
-    };
-    let compiled = CompiledSignal::compile(&source, notes.iter().copied());
     let mut centre = theme.grid;
     centre.a *= 1.5;
     cell.border_b_2().border_color(theme.edge).child(
@@ -555,7 +608,7 @@ fn notes_lane(
                     zoom.pixels_per_beat,
                     colors.detail,
                     Some((colors.fill, 0.5)),
-                    |beat| compiled.sample(beat).0,
+                    |beat| signals.get(id).map_or(0.5, |s| s.sample(beat).0),
                 );
             },
         )

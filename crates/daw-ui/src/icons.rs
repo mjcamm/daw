@@ -22,10 +22,14 @@ pub enum Icon {
     Magnet,
     Move,
     GoTo,
+    Pencil,
+    Inbound,
+    ChevronLeft,
+    ChevronRight,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 13] = [
+const ICONS: [(Icon, &str, &[u8]); 17] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -90,6 +94,26 @@ const ICONS: [(Icon, &str, &[u8]); 13] = [
         Icon::GoTo,
         "icons/arrow-up-right.svg",
         include_bytes!("../assets/icons/arrow-up-right.svg"),
+    ),
+    (
+        Icon::Pencil,
+        "icons/pencil.svg",
+        include_bytes!("../assets/icons/pencil.svg"),
+    ),
+    (
+        Icon::Inbound,
+        "icons/arrow-down-left.svg",
+        include_bytes!("../assets/icons/arrow-down-left.svg"),
+    ),
+    (
+        Icon::ChevronLeft,
+        "icons/chevron-left.svg",
+        include_bytes!("../assets/icons/chevron-left.svg"),
+    ),
+    (
+        Icon::ChevronRight,
+        "icons/chevron-right.svg",
+        include_bytes!("../assets/icons/chevron-right.svg"),
     ),
 ];
 

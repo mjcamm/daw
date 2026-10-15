@@ -101,6 +101,16 @@ pub struct ProjectView {
     /// A layer just jumped to from elsewhere, highlighted briefly so it is
     /// easy to spot.
     pub(crate) highlight: Option<(LayerId, std::time::Instant)>,
+    /// A signal just jumped to from elsewhere, highlighted briefly.
+    pub(crate) signal_highlight: Option<(SignalId, std::time::Instant)>,
+    /// Every signal compiled, for drawing what listening layers do; kept
+    /// until the engine's state changes.
+    pub(crate) signal_cache: std::cell::RefCell<Option<(u64, Rc<daw_automation::Signals>)>>,
+    /// Which step the add-layer menu shows.
+    pub(crate) layer_menu: crate::parameters::LayerMenu,
+    /// The parameter chosen in an add-parameter menu, now picking its first
+    /// layer's type.
+    pub(crate) pending_param: Option<daw_engine::ParamId>,
     /// A scrollbar or zoom slider being dragged.
     pub(crate) frame_drag: Option<FrameDrag>,
     pub(crate) rename: Option<Rename>,
@@ -134,6 +144,10 @@ impl ProjectView {
             parameters_view: TimelineView::new(DEFAULT_ZOOM),
             signals_view: TimelineView::new(crate::signals::DEFAULT_ZOOM),
             highlight: None,
+            signal_highlight: None,
+            signal_cache: std::cell::RefCell::default(),
+            layer_menu: crate::parameters::LayerMenu::Kind,
+            pending_param: None,
             frame_drag: None,
             rename: None,
             save_error: None,
@@ -333,6 +347,9 @@ impl ProjectView {
         } else {
             Some(menu)
         };
+        // Menus with steps always open at their first.
+        self.layer_menu = crate::parameters::LayerMenu::Kind;
+        self.pending_param = None;
     }
 
     /// Closes the open menu because a press landed outside it.

@@ -13,6 +13,8 @@ pub enum OpenMenu {
     Song,
     /// Choosing a parameter to give layers, for a device.
     AddParam(daw_engine::DeviceRef),
+    /// Adding a layer to a parameter: its type, then (to listen) a signal.
+    AddLayer(daw_engine::ParamId),
     /// A layer's blend mode.
     BlendMode(daw_engine::LayerId),
     /// Snap or slide, and the snap grid.

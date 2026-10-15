@@ -16,7 +16,8 @@
 use crate::block_edit::{
     EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, cycle_end_x, decide, drag_block,
     edge_at, has_loop_handle, hit_test, loop_band, move_point, new_block, next_block_id, phase_at,
-    point_at, point_positions, remove_point, room_around, scrub, value_to_y, y_to_value,
+    point_at, point_positions, remove_point, room_around, scrub, value_to_y, window_hit_test,
+    y_to_value,
 };
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
@@ -26,8 +27,9 @@ use crate::project::{Page, ProjectView, RenameTarget};
 use crate::scroll;
 use crate::slider;
 use crate::theme::{ContentColor, MONO_FONT, Theme};
+use crate::tooltip;
 use crate::zoom::Zoom;
-use daw_automation::{Automation, CompiledBlock};
+use daw_automation::{Automation, CompiledBlock, Signals};
 use daw_engine::{
     BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId,
     ParamSnapshot, SignalId, SignalSource, Snapshot, Ticks,
@@ -38,6 +40,7 @@ use gpui::{
     prelude::*, px, size,
 };
 use std::borrow::Cow;
+use std::rc::Rc;
 
 const LEFT_WIDTH: f32 = 320.;
 const RULER_HEIGHT: f32 = 28.;
@@ -57,7 +60,7 @@ const POINT_DOT: f32 = 3.;
 /// Half the width of the resize zone on a looped block's first cycle end.
 const CYCLE_EDGE_HALF: f32 = 4.;
 /// How long a layer jumped to from elsewhere stays highlighted.
-const HIGHLIGHT_TIME: std::time::Duration = std::time::Duration::from_millis(1500);
+pub(crate) const HIGHLIGHT_TIME: std::time::Duration = std::time::Duration::from_millis(1500);
 
 const BLEND_MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
 
@@ -186,6 +189,16 @@ pub(crate) fn lane_blocks(snapshot: &Snapshot, lane: Lane) -> Option<&[(BlockId,
     all_lanes(snapshot)
         .find(|(l, _)| *l == lane)
         .map(|(_, b)| b)
+}
+
+/// The signal a lane's layer listens to, if any. Signal lanes never listen.
+pub(crate) fn listened_signal(snapshot: &Snapshot, lane: Lane) -> Option<SignalId> {
+    match lane {
+        Lane::Layer(id) => all_layers(snapshot)
+            .find(|(layer, _)| *layer == id)
+            .and_then(|(_, layer)| layer.signal),
+        Lane::Signal(_) => None,
+    }
 }
 
 /// A block and the lane holding it.
@@ -538,12 +551,14 @@ impl ProjectView {
 
     /// The selected block's settings bar, if one is selected on this page.
     pub(crate) fn selected_settings(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<Div> {
-        let (id, _, block) = self.selected_block(self.session.snapshot())?;
+        let snapshot = self.session.snapshot();
+        let (id, lane, block) = self.selected_block(snapshot)?;
         let shown = match &self.block_drag {
             Some(drag) if drag.id == id => &drag.preview,
             _ => block,
         };
-        Some(self.settings_bar(id, shown, theme, cx))
+        let windows = listened_signal(snapshot, lane).is_some();
+        Some(self.settings_bar(id, shown, windows, theme, cx))
     }
 
     /// Shows a layer on the Parameters page: scrolled into view and
@@ -593,10 +608,11 @@ impl ProjectView {
 
     /// The custom cursor for a lane, if the pointer is over (or dragging) a
     /// block's loop handle or one of its points. `top` and `height` place
-    /// the lane's row.
+    /// the lane's row; `windows` is true on a listening layer.
     fn lane_cursor(
         &self,
         blocks: &[(BlockId, Block)],
+        windows: bool,
         top: f32,
         height: f32,
         pointer: Point<Pixels>,
@@ -631,14 +647,19 @@ impl ProjectView {
             let left = zoom.beat_to_x(b.start.as_beats());
             (left..left + zoom.beat_to_x(b.length.as_beats())).contains(&x)
         })?;
-        let hit = hit_test(
-            block,
-            x - zoom.beat_to_x(block.start.as_beats()),
-            y - BLOCK_INSET,
-            zoom.pixels_per_beat,
-            height - 2. * BLOCK_INSET,
-            self.selected_block == Some(*id),
-        );
+        let local_x = x - zoom.beat_to_x(block.start.as_beats());
+        let hit = if windows {
+            window_hit_test(block, local_x, zoom.pixels_per_beat)
+        } else {
+            hit_test(
+                block,
+                local_x,
+                y - BLOCK_INSET,
+                zoom.pixels_per_beat,
+                height - 2. * BLOCK_INSET,
+                self.selected_block == Some(*id),
+            )
+        };
         kind_of(hit).map(|kind| at(*id, kind))
     }
 
@@ -658,6 +679,7 @@ impl ProjectView {
         let Some(blocks) = lane_blocks(snapshot, lane) else {
             return;
         };
+        let windows = listened_signal(snapshot, lane).is_some();
         let lanes = self.lanes_bounds.get();
         let x = (event.position.x - lanes.origin.x) / px(1.);
         let zoom = self.lane_zoom();
@@ -690,10 +712,15 @@ impl ProjectView {
         let local_x = x - zoom.beat_to_x(block.start.as_beats());
         let local_y = (event.position.y - box_top) / px(1.);
         let was_selected = self.selected_block == Some(id);
-        let hit = hit_test(&block, local_x, local_y, ppb, box_height, was_selected);
+        let hit = if windows {
+            window_hit_test(&block, local_x, ppb)
+        } else {
+            hit_test(&block, local_x, local_y, ppb, box_height, was_selected)
+        };
         let room = room_around(blocks, Some(id), block.start);
         self.selected_block = Some(id);
-        if event.click_count >= 2 && was_selected && !matches!(hit, Hit::Point(_)) {
+        // Windows have no points: the signal decides what plays through.
+        if !windows && event.click_count >= 2 && was_selected && !matches!(hit, Hit::Point(_)) {
             let at = phase_at(&block, local_x, ppb);
             let (shape, _) = add_point(&block.shape, at, y_to_value(local_y, box_height));
             self.session.apply(Command::Edit(Edit::SetBlock {
@@ -721,9 +748,13 @@ impl ProjectView {
     /// A right-click on a lane: removes the point under the pointer from the
     /// selected block.
     fn lane_right_click(&mut self, top: f32, height: f32, event: &MouseDownEvent) {
-        let Some((id, _, block)) = self.selected_block(self.session.snapshot()) else {
+        let snapshot = self.session.snapshot();
+        let Some((id, lane, block)) = self.selected_block(snapshot) else {
             return;
         };
+        if listened_signal(snapshot, lane).is_some() {
+            return;
+        }
         let lanes = self.lanes_bounds.get();
         let zoom = self.lane_zoom();
         let x =
@@ -960,15 +991,21 @@ impl ProjectView {
     }
 
     /// The selected block's settings: drag a value sideways to change it.
+    /// A window (on a listening layer) has no repeat: the signal decides
+    /// what plays through it.
     fn settings_bar(
         &self,
         id: BlockId,
         block: &Block,
+        windows: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Div {
         let hover = theme.hover;
-        let fields = Setting::ALL.map(|setting| {
+        let settings = Setting::ALL
+            .into_iter()
+            .filter(|s| !(windows && *s == Setting::Cycle));
+        let fields = settings.map(|setting| {
             div()
                 .flex()
                 .items_center()
@@ -1051,7 +1088,11 @@ impl ProjectView {
                 div()
                     .text_size(px(11.))
                     .text_color(theme.text_tertiary)
-                    .child("Double-click to add a point · right-click to remove · Alt flips snap"),
+                    .child(if windows {
+                        "A window onto the signal · Alt flips snap"
+                    } else {
+                        "Double-click to add a point · right-click to remove · Alt flips snap"
+                    }),
             )
     }
 
@@ -1101,7 +1142,9 @@ impl ProjectView {
                 let base = self.base_of(param);
                 let layers =
                     previewed_mix(self.mix_drag.as_ref(), Cow::Borrowed(&param.layers[..]));
-                let value = Automation::compile_layers(base, &layers).value_at(position);
+                let value =
+                    Automation::compile_layers_with(base, &layers, &self.compiled_signals())
+                        .value_at(position);
                 cell.pl(px(16.))
                     .pr(px(12.))
                     .gap(px(8.))
@@ -1133,13 +1176,26 @@ impl ProjectView {
                 .layer_header(*param, *index, *id, layer, cell, theme, cx)
                 .into_any_element(),
             Row::AddLayer(param) => {
-                let (param_id, count) = (param.id, param.layers.len());
-                quiet_action(cell.pl(px(32.)), ("add-layer", index), "Add Layer", theme)
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        let name = format!("Layer {}", count + 1);
-                        // New layers go at the bottom, beside the button.
-                        this.add_layer(param_id, 0, &name);
-                    }))
+                let param_id = param.id;
+                let open = self.open_menu == Some(OpenMenu::AddLayer(param_id));
+                let button =
+                    quiet_action(cell.pl(px(32.)), ("add-layer", index), "Add Layer", theme)
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.toggle_menu(OpenMenu::AddLayer(param_id));
+                        }));
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(button)
+                    .when(open, |d| {
+                        d.child(menu::float(self.layer_kind_panel(
+                            param_id,
+                            param.layers.len(),
+                            theme,
+                            cx,
+                        )))
+                    })
                     .into_any_element()
             }
             Row::AddParam(device) => {
@@ -1188,6 +1244,7 @@ impl ProjectView {
                 .id(("layer-name", id.0))
                 .flex_1()
                 .min_w_0()
+                .truncate()
                 .text_size(px(13.))
                 .text_color(if enabled {
                     theme.text
@@ -1236,6 +1293,70 @@ impl ProjectView {
             .when(mode_open, |d| {
                 d.child(self.blend_mode_menu(id, mode, enabled, theme, cx))
             });
+
+        // What the layer is: drawn, or listening to a signal (fixed when the
+        // layer was added). Hover explains; the arrow shows the signal.
+        let source: AnyElement = match layer
+            .signal
+            .and_then(|s| self.session.snapshot().signals.iter().find(|x| x.id == s))
+        {
+            None => div()
+                .id(("layer-source", id.0))
+                .flex()
+                .items_center()
+                .gap(px(3.))
+                .px(px(5.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .text_size(px(11.))
+                .text_color(theme.text_tertiary)
+                .child(icon(Icon::Pencil, theme.text_tertiary, 11.))
+                .child("Drawn")
+                .tooltip(tooltip::text(
+                    "Manual drawn: the blocks on this layer draw their own shapes.",
+                ))
+                .into_any_element(),
+            Some(signal) => {
+                let signal_id = signal.id;
+                let colors = theme.content(signal.color);
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(1.))
+                    .child(
+                        div()
+                            .id(("layer-source", id.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .px(px(5.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .bg(colors.fill)
+                            .text_size(px(11.))
+                            .text_color(colors.detail)
+                            .child(icon(Icon::Inbound, colors.detail, 11.))
+                            .child(div().max_w(px(72.)).truncate().child(signal.name.clone()))
+                            .tooltip(tooltip::text(format!(
+                                "Listens to {}: each block is a window that lets the signal through, at its depth, flipped by invert.",
+                                signal.name
+                            ))),
+                    )
+                    .child(
+                        small_button(("layer-go-to-signal", id.0), theme)
+                            .size(px(18.))
+                            .child(icon(Icon::GoTo, theme.text_secondary, 11.))
+                            .tooltip(tooltip::text(format!(
+                                "Show {} on the Signals page",
+                                signal.name
+                            )))
+                            .on_click(cx.listener(move |this, _, _, _| {
+                                this.go_to_signal(signal_id);
+                            })),
+                    )
+                    .into_any_element()
+            }
+        };
 
         let toggle = small_button(("layer-toggle", id.0), theme)
             .on_click(cx.listener(move |this, _, _, _| {
@@ -1300,6 +1421,7 @@ impl ProjectView {
             .child(grip)
             .child(name)
             .child(self.mix_slider(id, layer.mix, theme, cx))
+            .child(source)
             .child(mode_chip)
             .child(toggle)
             .child(delete)
@@ -1334,13 +1456,17 @@ impl ProjectView {
         )
     }
 
-    /// Picks a parameter of `device` that has no layers yet.
+    /// Picks a parameter of `device` that has no layers yet, then its first
+    /// layer's type.
     fn add_param_menu(
         &self,
         device: &DeviceSnapshot,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if let Some(param) = self.pending_param.filter(|p| p.device == device.device) {
+            return menu::float(self.layer_kind_panel(param, 0, theme, cx));
+        }
         let available: Vec<_> = device
             .params
             .iter()
@@ -1354,8 +1480,8 @@ impl ProjectView {
                     "",
                 )
                 .on_click(cx.listener(move |this, _, _, _| {
-                    this.open_menu = None;
-                    this.add_layer(param, 0, "Layer 1");
+                    this.pending_param = Some(param);
+                    this.layer_menu = LayerMenu::Kind;
                 }))
             })
             .collect();
@@ -1376,17 +1502,151 @@ impl ProjectView {
         )
     }
 
-    /// Adds a layer at `index` in the parameter's stack (0 is the bottom;
-    /// the stack length puts it on top).
-    fn add_layer(&mut self, param: ParamId, index: usize, name: &str) {
+    /// The menu for adding a layer to `param` (which has `count` layers):
+    /// first its type, then, to listen, which signal. The type is fixed
+    /// once the layer exists.
+    fn layer_kind_panel(
+        &self,
+        param: ParamId,
+        count: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let panel =
+            menu::panel(theme).on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()));
+        match self.layer_menu {
+            LayerMenu::Kind => panel
+                .child(
+                    menu_row(
+                        theme,
+                        "layer-kind-drawn",
+                        Icon::Pencil,
+                        "Manual drawn",
+                        None,
+                    )
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.open_menu = None;
+                        let name = format!("Layer {}", count + 1);
+                        this.add_layer(param, &name, None);
+                    })),
+                )
+                .child(
+                    menu_row(
+                        theme,
+                        "layer-kind-signal",
+                        Icon::Inbound,
+                        "Listen to signal",
+                        Some(Icon::ChevronRight),
+                    )
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.layer_menu = LayerMenu::Signals;
+                    })),
+                )
+                .child(menu::separator(theme))
+                .child(
+                    div()
+                        .px(px(10.))
+                        .py(px(3.))
+                        .text_size(px(11.))
+                        .text_color(theme.text_tertiary)
+                        .child("A layer keeps its type once added."),
+                ),
+            LayerMenu::Signals => {
+                let signals = &self.session.snapshot().signals;
+                let back = menu_row(theme, "layer-kind-back", Icon::ChevronLeft, "Back", None)
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.layer_menu = LayerMenu::Kind;
+                    }));
+                let items = signals.iter().map(|signal| {
+                    let id = signal.id;
+                    let dot = theme.content(signal.color).detail;
+                    let hover = theme.hover;
+                    div()
+                        .id(("layer-kind-pick", id.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(10.))
+                        .py(px(5.))
+                        .rounded(px(5.))
+                        .hover(move |s| s.bg(hover))
+                        .child(div().size(px(8.)).rounded(px(4.)).bg(dot))
+                        .child(signal.name.clone())
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.open_menu = None;
+                            let name = format!("Layer {}", count + 1);
+                            this.add_layer(param, &name, Some(id));
+                        }))
+                });
+                let empty = signals.is_empty();
+                panel
+                    .child(back)
+                    .child(menu::separator(theme))
+                    .children(items)
+                    .when(empty, |d| {
+                        d.child(
+                            menu_row(
+                                theme,
+                                "layer-kind-none",
+                                Icon::GoTo,
+                                "No signals yet: open Signals",
+                                None,
+                            )
+                            .on_click(cx.listener(|this, _, _, _| {
+                                this.open_menu = None;
+                                this.page = Page::Signals;
+                            })),
+                        )
+                    })
+            }
+        }
+    }
+
+    /// Adds a layer at the bottom of the parameter's stack, beside the add
+    /// button: drawn, or listening to `signal`.
+    fn add_layer(&mut self, param: ParamId, name: &str, signal: Option<SignalId>) {
         let id = next_layer_id(self.session.snapshot());
+        let mut layer = Layer::named(name, BlendMode::Add);
+        layer.signal = signal;
         self.session.apply(Command::Edit(Edit::AddLayer {
             param,
             id,
-            index,
-            layer: Layer::named(name, BlendMode::Add),
+            index: 0,
+            layer,
         }));
     }
+}
+
+/// Which step the add-layer menu shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerMenu {
+    /// Manual drawn, or listen to a signal.
+    Kind,
+    /// Which signal to listen to.
+    Signals,
+}
+
+/// A menu row with an icon, a label and an optional trailing icon.
+fn menu_row(
+    theme: &Theme,
+    id: &'static str,
+    leading: Icon,
+    label: &'static str,
+    trailing: Option<Icon>,
+) -> gpui::Stateful<Div> {
+    let hover = theme.hover;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(5.))
+        .rounded(px(5.))
+        .hover(move |s| s.bg(hover))
+        .child(icon(leading, theme.text_secondary, 13.))
+        .child(div().flex_1().child(label))
+        .children(trailing.map(|t| icon(t, theme.text_tertiary, 13.)))
 }
 
 /// A small square icon button.
@@ -1443,7 +1703,8 @@ impl ProjectView {
                     previewed_layers(drag, &param.layers),
                 );
                 let base = self.base_of(param);
-                let automation = Automation::compile_layers(base, &layers);
+                let automation =
+                    Automation::compile_layers_with(base, &layers, &self.compiled_signals());
                 let (line, area) = (color.detail, color.fill);
                 let mut rest_line = color.detail;
                 rest_line.a *= 0.35;
@@ -1480,10 +1741,15 @@ impl ProjectView {
                     .into_any_element()
             }
             Row::Layer { id, layer, .. } => {
-                let colors = if layer.enabled {
-                    color
-                } else {
-                    theme.muted_content
+                // A listening layer takes its signal's colour.
+                let signal_color = layer.signal.and_then(|s| {
+                    let signals = &self.session.snapshot().signals;
+                    signals.iter().find(|x| x.id == s).map(|x| x.color)
+                });
+                let colors = match (layer.enabled, signal_color) {
+                    (false, _) => theme.muted_content,
+                    (true, Some(c)) => theme.content(c),
+                    (true, None) => color,
                 };
                 let mix = self.mix_of(*id, layer.mix);
                 self.lane_cell(
@@ -1492,6 +1758,7 @@ impl ProjectView {
                     &layer.blocks,
                     colors,
                     mix,
+                    layer.signal,
                     top,
                     pointer,
                     theme,
@@ -1505,7 +1772,8 @@ impl ProjectView {
 
     /// Draws a lane of editable blocks into `cell`, a row that starts `top`
     /// pixels down the lanes: its centre line, blocks (with any drag
-    /// previewed), presses and custom cursor.
+    /// previewed), presses and custom cursor. On a layer listening to
+    /// `signal`, the blocks are windows showing the signal.
     #[allow(clippy::too_many_arguments, reason = "plain row data, passed through")]
     pub(crate) fn lane_cell(
         &self,
@@ -1514,6 +1782,7 @@ impl ProjectView {
         blocks: &[(BlockId, Block)],
         colors: ContentColor,
         mix: f64,
+        signal: Option<SignalId>,
         top: f32,
         pointer: Point<Pixels>,
         theme: &Theme,
@@ -1522,7 +1791,8 @@ impl ProjectView {
         let zoom = self.lane_zoom();
         let height = zoom.row_height;
         let blocks = previewed_blocks(self.block_drag.as_ref(), blocks);
-        let cursor = self.lane_cursor(&blocks, top, height, pointer);
+        let cursor = self.lane_cursor(&blocks, signal.is_some(), top, height, pointer);
+        let window = signal.map(|id| (self.compiled_signals(), id));
         // The centre line: no effect.
         let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
         cell.border_b_2()
@@ -1546,6 +1816,7 @@ impl ProjectView {
                     zoom,
                     cursor.is_some_and(|c| c.block == *id),
                     height - 2. * BLOCK_INSET,
+                    window.clone(),
                     theme,
                 )
             }))
@@ -1594,8 +1865,13 @@ fn block_view(
     zoom: Zoom,
     hide_cursor: bool,
     box_height: f32,
+    window: Option<(Rc<Signals>, SignalId)>,
     theme: &Theme,
 ) -> impl IntoElement {
+    // A window shows its signal, has no points to edit and does not loop.
+    let is_window = window.is_some();
+    // Named apart from the painting closure's `window`.
+    let signal = window;
     let band = loop_band(box_height);
     let ppb = zoom.pixels_per_beat;
     let left = zoom.beat_to_x(block.start.as_beats());
@@ -1603,7 +1879,7 @@ fn block_view(
     let compiled = CompiledBlock::compile(block);
     let start = compiled.start;
     // Where each cycle of a looped block ends and the next repeat begins.
-    let cycle_ends: Vec<f32> = if block.cycle.is_some_and(|c| c < block.length) {
+    let cycle_ends: Vec<f32> = if !is_window && block.cycle.is_some_and(|c| c < block.length) {
         let (cycle, nudge, length) = (compiled.cycle, compiled.nudge, compiled.end - start);
         let first = (nudge / cycle).floor() as i64 + 1;
         (first..)
@@ -1615,7 +1891,7 @@ fn block_view(
     } else {
         Vec::new()
     };
-    let points: Vec<(f32, f64)> = if selected {
+    let points: Vec<(f32, f64)> = if selected && !is_window {
         point_positions(block, ppb)
             .into_iter()
             .map(|(index, x)| (x, block.shape.points[index].value))
@@ -1677,20 +1953,21 @@ fn block_view(
                     // and mix applied, around the centre line.
                     let mut faint = colors.detail;
                     faint.a *= 0.4;
+                    let signal = signal.as_ref().and_then(|(signals, id)| signals.get(*id));
                     paint_curve(window, bounds, ppb, faint, None, |beat| {
                         let beat = start + beat;
                         if compiled.contains(beat) {
-                            let (x, w) = compiled.sample(beat, None);
+                            let (x, w) = compiled.sample(beat, signal);
                             0.5 + (x - 0.5) * w * mix
                         } else {
                             f64::NAN
                         }
                     });
-                    // The shape as drawn.
+                    // The shape as drawn, or the signal through the window.
                     paint_curve(window, bounds, ppb, colors.detail, None, |beat| {
                         let beat = start + beat;
                         if compiled.contains(beat) {
-                            compiled.sample(beat, None).0
+                            compiled.sample(beat, signal).0
                         } else {
                             f64::NAN
                         }
@@ -1745,7 +2022,7 @@ fn block_view(
                 .w(px(edge))
                 .cursor_ew_resize(),
         )
-        .when(has_loop_handle(width), |d| {
+        .when(!is_window && has_loop_handle(width), |d| {
             d.child(
                 div()
                     .absolute()
@@ -1761,7 +2038,7 @@ fn block_view(
                     .child(icon(Icon::Loop, colors.detail, band.min(10.))),
             )
         })
-        .children(cycle_edge)
+        .children(cycle_edge.filter(|_| !is_window))
 }
 
 /// Draws `value(beat)` (0..=1, NaN for "nothing here") across `bounds`, with
@@ -1905,6 +2182,47 @@ mod tests {
                 block: Block::new(Ticks::ZERO, Ticks::from_beats(4), Shape::constant(0.5)),
             },
         ]
+    }
+
+    #[test]
+    fn signal_blocks_share_the_id_pool_and_layers_know_what_they_hear() {
+        let mut edits = layer_with_block();
+        edits.extend([
+            Edit::AddSignal {
+                id: SignalId(2),
+                signal: daw_engine::Signal {
+                    name: "Sweep".to_owned(),
+                    color: 0,
+                    source: SignalSource::Drawn(Vec::new()),
+                },
+                listeners: Vec::new(),
+            },
+            Edit::AddSignalBlock {
+                signal: SignalId(2),
+                id: BlockId(9),
+                block: Block::new(Ticks::ZERO, Ticks::from_beats(1), Shape::constant(0.5)),
+            },
+            Edit::AddLayer {
+                param: VOLUME,
+                id: LayerId(2),
+                index: 0,
+                layer: Layer::named("Hear", BlendMode::Add).listening(SignalId(2)),
+            },
+        ]);
+        let snapshot = snapshot_with(edits);
+        assert_eq!(
+            next_block_id_in(&snapshot),
+            BlockId(10),
+            "signal blocks count"
+        );
+        let (lane, _) = find_block(&snapshot, BlockId(9)).unwrap();
+        assert_eq!(lane, Lane::Signal(SignalId(2)));
+        assert_eq!(
+            listened_signal(&snapshot, Lane::Layer(LayerId(2))),
+            Some(SignalId(2))
+        );
+        assert_eq!(listened_signal(&snapshot, Lane::Layer(LayerId(1))), None);
+        assert_eq!(listened_signal(&snapshot, lane), None);
     }
 
     #[test]

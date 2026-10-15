@@ -233,6 +233,16 @@ pub fn hit_test(
     edge_at(block, x, pixels_per_beat).unwrap_or(Hit::Body)
 }
 
+/// What a press at `x` on a window (a block on a layer listening to
+/// a signal) would grab: its edges or its body. Windows have no points to
+/// drag and nothing to loop: the signal decides what plays through them.
+pub fn window_hit_test(block: &Block, x: f32, pixels_per_beat: f32) -> Hit {
+    match edge_at(block, x, pixels_per_beat) {
+        Some(Hit::CycleEnd) | None => Hit::Body,
+        Some(edge) => edge,
+    }
+}
+
 /// The top part of the right edge that loops rather than resizes.
 const LOOP_EDGE_FRACTION: f32 = 0.25;
 /// The loop band is never thinner than this, so it stays grabbable.
@@ -754,6 +764,15 @@ mod tests {
         assert_eq!(hit_test(&b, 83., 4., PPB, h, false), Hit::Loop);
         assert_eq!(hit_test(&b, 83., 12., PPB, h, false), Hit::Body);
         assert_eq!(hit_test(&b, 48., 20., PPB, h, false), Hit::Body);
+    }
+
+    #[test]
+    fn windows_have_edges_and_a_body_only() {
+        // A block on a listening layer: no points to drag, nothing to loop.
+        let b = block(0, 4);
+        assert_eq!(window_hit_test(&b, 2., PPB), Hit::Start);
+        assert_eq!(window_hit_test(&b, 94., PPB), Hit::End, "no loop band");
+        assert_eq!(window_hit_test(&b, 48., PPB), Hit::Body);
     }
 
     #[test]

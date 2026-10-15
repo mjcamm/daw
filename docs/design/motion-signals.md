@@ -55,7 +55,7 @@ The choice is made **per layer**, not per block. A layer is either:
 On a listening layer, **blocks are windows**: the signal plays wherever a block sits, read at song position (plus the block's nudge); gaps let nothing through. Each block draws the signal's shape in the signal's colour. Depth, invert and fades still apply per block, so a duck can fade in over a build. The block's weight is `depth · fade · mix · signal presence`, and its shape value is the signal's value (internally `x = (s + 1) / 2`, inverted if the block is).
 
 - **No range setting.** Depth scales and invert flips; nothing else is needed.
-- **Switching** between Manual drawn and Listen to signal (or to another signal) keeps the blocks: drawn blocks become windows and back. Each block keeps its own shape, so switching back brings the drawing back.
+- **The type is chosen when the layer is added and then fixed** (revised by the user; the engine still has `SetLayerSignal`, which the UI does not use). Removing a signal is the one thing that turns its listeners into drawn layers.
 - **Blocks inside a signal cannot listen to signals.** No chains, no cycles.
 - **Removing a signal that layers listen to is allowed:** those layers go back to Manual drawn, keeping their blocks. Undo restores everything.
 
@@ -74,7 +74,9 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 ## Elsewhere in the UI
 
 - **Arrange, node row:** a signal icon button. It opens a menu: "Publish notes as motion signal" (when the node has notes), "Publish sound as motion signal" and "Publish sound as audio signal" (greyed, "coming later" until Phase 6), then the node's existing signals, each with a go-to icon. A node can publish several signals (kick and hat from one drum node). A new notes signal starts with all notes and a short, snappy envelope.
-- **Parameters, layer row:** a pick list "Manual drawn" / "Listen to signal". Choosing Listen to signal turns it into a list of signals. A listening layer shows the signal's name and colour and a **go-to icon** to the signal on the Signals page.
+- **Parameters, adding a layer** (built): "+ Add Layer", and the first layer from "+ Add Parameter", open a menu: **Manual drawn** or **Listen to signal ›**, which swaps the menu to the signals (colour dot and name, "‹ Back"; with none, a go-to row to the Signals page). The menu says "A layer keeps its type once added": **the type is fixed** (the user's call), and a listening layer stays on its signal. New layers are "Layer N".
+- **Parameters, layer row** (built): a chip shows the type. Drawn: pencil and "Drawn". Listening: an inbound arrow and the signal's name in its colour, then a **go-to icon** to the signal on the Signals page (highlighted for a moment). Hovering the chip explains it.
+- **Windows** (built): blocks on a listening layer draw in the signal's colour and show the signal through them; no points, no loop handle, no Repeat in the settings bar. Result rows include listening layers.
 
 ## Edits
 
