@@ -250,9 +250,9 @@ impl Render for ProjectView {
 
         let page = match self.page {
             Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),
-            Page::Parameters if self.node_selected => {
-                self.render_parameters(&theme, cx).into_any_element()
-            }
+            Page::Parameters if self.node_selected => self
+                .render_parameters(&theme, window, cx)
+                .into_any_element(),
             other => placeholder(&theme, other).into_any_element(),
         };
         let banner = |text: String| {

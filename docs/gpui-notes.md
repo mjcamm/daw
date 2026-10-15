@@ -112,4 +112,6 @@ Application::new()
 - `MouseDownEvent` has `click_count` (double-click without `on_click`) and `modifiers` (`.alt`, `.shift`, `.platform`).
 - Cursors: `.cursor_ew_resize()`, `.cursor_grab()`, `.cursor_crosshair()` and so on, from `gpui-macros` `styles.rs`. An invisible absolutely-positioned child with a cursor style gives a zone its own cursor without blocking the parent's mouse handlers.
 - Render helpers that take `cx: &mut Context<Self>` and return `impl IntoElement` capture `cx`'s lifetime (Rust 2024), so two calls in one expression fail to borrow. Return a concrete type (`Stateful<Div>`) instead.
+- **Custom cursors** (GPUI 0.2.2 on Windows has no four-way move or loop cursor; `cursor_move()` is a closed hand that falls back to the arrow): hide the system cursor with `.cursor_none(CursorStyle::Arrow)` (the argument is ignored) on the hovered element and draw an icon at `window.mouse_position()`. The deepest hovered element's cursor wins, so leave no cursor-styled child over the zone.
+- Percentage positions: `.top(relative(0.25))` (from `gpui::relative`).
 - Round dots in a canvas: `window.paint_quad(fill(bounds, color).corner_radii(px(r)))`.

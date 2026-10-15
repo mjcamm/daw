@@ -190,9 +190,18 @@ pub enum Hit {
     Start,
     /// The right edge: drag to move where the block ends; its contents stay put.
     End,
+    /// The end of a looped block's first cycle: the edge of the block that
+    /// repeats. Drag to widen or narrow it; the repeats follow.
+    CycleEnd,
     /// Anywhere else: drag to move.
     Body,
 }
+
+/// Half the width of the grab zone on a looped block's first cycle end.
+const CYCLE_EDGE: f32 = 4.;
+/// How far the pointer moves before an ambiguous press (a point sitting on
+/// an edge) decides what it is dragging.
+const DECIDE_DISTANCE: f32 = 4.;
 
 /// Which part of `block` is at local `(x, y)`, for a box `height` pixels
 /// tall drawn at `pixels_per_beat`.
@@ -208,17 +217,54 @@ pub fn hit_test(
     if selected && let Some(index) = point_at(block, x, y, pixels_per_beat, height) {
         return Hit::Point(index);
     }
+    // The top quarter of the right edge, and the loop icon beside it, loop;
+    // the rest of the right edge resizes.
+    let edge = EDGE_ZONE.min(width / 4.);
+    let on_loop_edge = x >= width - edge && y <= height * LOOP_EDGE_FRACTION;
+    let on_loop_icon = has_loop_handle(width)
+        && (width - edge - LOOP_HANDLE..width - edge).contains(&x)
+        && y <= LOOP_HANDLE;
+    if on_loop_edge || on_loop_icon {
+        return Hit::Loop;
+    }
+    edge_at(block, x, pixels_per_beat).unwrap_or(Hit::Body)
+}
+
+/// The top part of the right edge that loops rather than resizes.
+pub const LOOP_EDGE_FRACTION: f32 = 0.25;
+
+/// The edge of `block` at local `x`, if any: its start, its end, or the end
+/// of a looped block's first cycle. A selected block's point can sit on an
+/// edge too; then the first movement decides (see [`decide`]).
+pub fn edge_at(block: &Block, x: f32, pixels_per_beat: f32) -> Option<Hit> {
+    let width = beats_to_px(block.length, pixels_per_beat);
     // Small blocks keep a middle to grab.
     let edge = EDGE_ZONE.min(width / 4.);
     if x < edge {
-        Hit::Start
+        Some(Hit::Start)
     } else if x >= width - edge {
-        Hit::End
-    } else if has_loop_handle(width) && x >= width - edge - LOOP_HANDLE && y <= LOOP_HANDLE {
-        Hit::Loop
+        Some(Hit::End)
+    } else if cycle_end_x(block, pixels_per_beat).is_some_and(|end| (x - end).abs() <= CYCLE_EDGE) {
+        Some(Hit::CycleEnd)
     } else {
-        Hit::Body
+        None
     }
+}
+
+/// Where a looped block's first cycle ends, in local pixels: the right edge
+/// of the block that repeats. `None` if the block does not loop.
+pub fn cycle_end_x(block: &Block, pixels_per_beat: f32) -> Option<f32> {
+    let cycle = block.cycle.filter(|c| *c < block.length)?.0;
+    let first = block.nudge.0.div_euclid(cycle) + 1;
+    let end = Ticks(first * cycle - block.nudge.0);
+    (end > Ticks::ZERO && end < block.length).then(|| beats_to_px(end, pixels_per_beat))
+}
+
+/// For a press that could grab a point or an edge: `None` until the pointer
+/// has moved far enough, then `Some(true)` for the edge (mostly sideways)
+/// or `Some(false)` for the point (mostly up or down).
+pub fn decide(dx: f32, dy: f32) -> Option<bool> {
+    (dx.hypot(dy) >= DECIDE_DISTANCE).then_some(dx.abs() > dy.abs())
 }
 
 /// Whether a block `width` pixels wide has room for its loop handle, which
@@ -283,6 +329,22 @@ pub fn drag_block(
             Block {
                 length: end - original.start,
                 cycle: Some(original.cycle.unwrap_or(original.length)),
+                ..original.clone()
+            }
+        }
+        Hit::CycleEnd => {
+            // The repeating block widens or narrows as a window: its drawn
+            // shape stays put within each cycle, and every repeat follows.
+            let cycle = cycle_of(original);
+            let new_cycle = snap.round(cycle + delta).max(min);
+            let ratio = new_cycle.0 as f64 / cycle.0 as f64;
+            let length = Ticks((original.length.0 as f64 * ratio).round() as i64)
+                .min(room_end - original.start)
+                .max(new_cycle.min(room_end - original.start));
+            Block {
+                length,
+                cycle: Some(new_cycle),
+                shape: reframe_shape(&original.shape, cycle, Ticks::ZERO, new_cycle),
                 ..original.clone()
             }
         }
@@ -664,10 +726,12 @@ mod tests {
         let h = 40.;
         assert_eq!(hit_test(&b, 2., 30., PPB, h, false), Hit::Start);
         assert_eq!(hit_test(&b, 94., 30., PPB, h, false), Hit::End);
-        // The loop handle sits just inside the right edge, so the edge
-        // stretches over its full height.
+        // The top quarter of the right edge loops, and so does the loop
+        // icon just inside it; the rest of the edge resizes.
+        assert_eq!(hit_test(&b, 94., 4., PPB, h, false), Hit::Loop);
+        assert_eq!(hit_test(&b, 94., 12., PPB, h, false), Hit::End);
         assert_eq!(hit_test(&b, 83., 4., PPB, h, false), Hit::Loop);
-        assert_eq!(hit_test(&b, 94., 4., PPB, h, false), Hit::End);
+        assert_eq!(hit_test(&b, 83., 20., PPB, h, false), Hit::Body);
         assert_eq!(hit_test(&b, 48., 20., PPB, h, false), Hit::Body);
     }
 
@@ -760,6 +824,56 @@ mod tests {
             (0.0, 0.0),
             "a start point at the new edge"
         );
+    }
+
+    fn looped(start: i64, cycle: i64, repeats: i64) -> Block {
+        let mut b = block(start, cycle * repeats);
+        b.cycle = Some(beats(cycle));
+        b
+    }
+
+    #[test]
+    fn a_looped_block_has_an_edge_where_its_first_cycle_ends() {
+        let b = looped(0, 2, 3); // cycles end at 48 and 96 px
+        assert_eq!(cycle_end_x(&b, PPB), Some(48.));
+        assert_eq!(edge_at(&b, 50., PPB), Some(Hit::CycleEnd));
+        assert_eq!(edge_at(&b, 60., PPB), None);
+        assert_eq!(cycle_end_x(&block(0, 4), PPB), None, "not looped");
+        let mut nudged = looped(0, 2, 3);
+        nudged.nudge = beats(1);
+        assert_eq!(cycle_end_x(&nudged, PPB), Some(24.));
+    }
+
+    #[test]
+    fn widening_the_repeating_block_keeps_its_shape_and_its_repeats() {
+        let b = looped(0, 2, 3);
+        let wider = drag_block(&b, Hit::CycleEnd, PPB, PPB, BEATS, ANYWHERE);
+        assert_eq!(wider.cycle, Some(beats(3)));
+        assert_eq!(wider.length, beats(9), "still three repeats");
+        // The ramp is untouched within the cycle; the new beat holds its end.
+        let points: Vec<(f64, f64)> = wider.shape.points.iter().map(|p| (p.at, p.value)).collect();
+        assert_eq!(points.len(), 3);
+        assert!((points[1].0 - 2. / 3.).abs() < 1e-9 && points[1].1 == 1.0);
+        assert_eq!(points[2], (1.0, 1.0));
+        let capped = drag_block(
+            &b,
+            Hit::CycleEnd,
+            PPB * 10.,
+            PPB,
+            BEATS,
+            Room {
+                start: Ticks::ZERO,
+                end: Some(beats(10)),
+            },
+        );
+        assert_eq!(capped.end(), beats(10), "never past the next block");
+    }
+
+    #[test]
+    fn ambiguous_presses_wait_for_the_first_movement() {
+        assert_eq!(decide(1., 1.), None);
+        assert_eq!(decide(6., 1.), Some(true), "sideways: the edge");
+        assert_eq!(decide(1., -6.), Some(false), "up or down: the point");
     }
 
     #[test]

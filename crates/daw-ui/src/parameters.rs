@@ -14,9 +14,9 @@
 //! becomes one edit when the mouse is released.
 
 use crate::block_edit::{
-    EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, drag_block, has_loop_handle,
-    hit_test, move_point, new_block, next_block_id, phase_at, point_at, point_positions,
-    remove_point, room_around, scrub, value_to_y, y_to_value,
+    EDGE_ZONE, Hit, LOOP_EDGE_FRACTION, LOOP_HANDLE, Room, Setting, Snap, add_point, cycle_end_x,
+    decide, drag_block, edge_at, has_loop_handle, hit_test, move_point, new_block, next_block_id,
+    phase_at, point_at, point_positions, remove_point, room_around, scrub, value_to_y, y_to_value,
 };
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
@@ -33,7 +33,7 @@ use daw_engine::{
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Div, FontWeight, Hsla, Modifiers,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point,
-    SharedString, Window, canvas, div, fill, point, prelude::*, px, size,
+    SharedString, Window, canvas, div, fill, point, prelude::*, px, relative, size,
 };
 use std::borrow::Cow;
 
@@ -52,9 +52,8 @@ const BLOCK_MARGIN: f32 = 3.;
 const BLOCK_INSET: f32 = BLOCK_MARGIN + 1.;
 /// Radius of a drawn shape point.
 const POINT_DOT: f32 = 3.;
-/// Size of the hover zone around a point, and of the four-way arrow shown
-/// in it.
-const POINT_HANDLE: f32 = 14.;
+/// Half the width of the resize zone on a looped block's first cycle end.
+const CYCLE_EDGE_HALF: f32 = 4.;
 
 const BLEND_MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
 
@@ -216,11 +215,35 @@ fn previewed_layers<'a>(
     }
 }
 
+/// A custom cursor drawn on a lane, since GPUI has no loop or four-way
+/// move cursor: the system cursor hides and an icon is drawn at the pointer.
+#[derive(Debug, Clone, Copy)]
+struct LaneCursor {
+    /// The block it belongs to.
+    block: BlockId,
+    kind: CursorKind,
+    /// Pointer position within the lane's row.
+    x: f32,
+    y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorKind {
+    Loop,
+    Move,
+}
+
+/// Size of a custom cursor icon.
+const CURSOR_ICON: f32 = 16.;
+
 /// What a drag changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DragKind {
     /// Part of a block on its lane.
     Block(Hit),
+    /// A point sitting on an edge: the first movement decides which one is
+    /// dragged (sideways: the edge; up or down: the point).
+    Undecided { point: usize, edge: Hit },
     /// A setting in the settings bar.
     Setting(Setting),
 }
@@ -324,8 +347,10 @@ impl ProjectView {
     pub(crate) fn render_parameters(
         &self,
         theme: &Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let pointer = window.mouse_position();
         let snapshot = self.session.snapshot();
         let color = theme.content(snapshot.node.color);
         let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
@@ -384,7 +409,7 @@ impl ProjectView {
         let right_cells: Vec<AnyElement> = rows
             .iter()
             .map(|row| {
-                let cell = self.right_cell(row, top, color, theme, width, cx);
+                let cell = self.right_cell(row, top, color, theme, width, pointer, cx);
                 top += row.height(zoom.row_height);
                 cell
             })
@@ -594,6 +619,57 @@ impl ProjectView {
         true
     }
 
+    /// The custom cursor for a lane, if the pointer is over (or dragging) a
+    /// block's loop handle or one of its points. `top` and `height` place
+    /// the lane's row.
+    fn lane_cursor(
+        &self,
+        blocks: &[(BlockId, Block)],
+        top: f32,
+        height: f32,
+        pointer: Point<Pixels>,
+    ) -> Option<LaneCursor> {
+        let lanes = self.lanes_bounds.get();
+        let zoom = self.parameters_zoom;
+        let x = (pointer.x - lanes.origin.x) / px(1.);
+        let y = (pointer.y - lanes.origin.y) / px(1.) - top;
+        let kind_of = |hit: Hit| match hit {
+            Hit::Loop => Some(CursorKind::Loop),
+            Hit::Point(_) => Some(CursorKind::Move),
+            _ => None,
+        };
+        let at = |block: BlockId, kind| LaneCursor { block, kind, x, y };
+        // While dragging, the cursor stays what the drag began as.
+        if let Some(drag) = &self.block_drag {
+            return blocks
+                .iter()
+                .any(|(id, _)| *id == drag.id)
+                .then_some(drag.kind)
+                .and_then(|kind| match kind {
+                    DragKind::Block(hit) => kind_of(hit),
+                    DragKind::Undecided { .. } => Some(CursorKind::Move),
+                    DragKind::Setting(_) => None,
+                })
+                .map(|kind| at(drag.id, kind));
+        }
+        if !(0.0..height).contains(&y) {
+            return None;
+        }
+        let (id, block) = blocks.iter().find(|(_, b)| {
+            let left = zoom.beat_to_x(b.start.as_beats());
+            (left..left + zoom.beat_to_x(b.length.as_beats())).contains(&x)
+        })?;
+        let hit = hit_test(
+            block,
+            x - zoom.beat_to_x(block.start.as_beats()),
+            y - BLOCK_INSET,
+            zoom.pixels_per_beat,
+            height - 2. * BLOCK_INSET,
+            self.selected_block == Some(*id),
+        );
+        kind_of(hit).map(|kind| at(*id, kind))
+    }
+
     /// The snap to use with `modifiers` held: Alt flips snap and slide.
     fn snap_for(&self, modifiers: Modifiers) -> Snap {
         if modifiers.alt {
@@ -652,9 +728,13 @@ impl ProjectView {
             }));
             return;
         }
+        let kind = match (hit, edge_at(&block, local_x, ppb)) {
+            (Hit::Point(point), Some(edge)) => DragKind::Undecided { point, edge },
+            _ => DragKind::Block(hit),
+        };
         self.block_drag = Some(BlockDrag {
             id,
-            kind: DragKind::Block(hit),
+            kind,
             origin: event.position,
             preview: block.clone(),
             original: block,
@@ -728,6 +808,14 @@ impl ProjectView {
             return;
         };
         let dx = (position.x - drag.origin.x) / px(1.);
+        if let DragKind::Undecided { point, edge } = drag.kind {
+            let dy = (position.y - drag.origin.y) / px(1.);
+            match decide(dx, dy) {
+                Some(true) => drag.kind = DragKind::Block(edge),
+                Some(false) => drag.kind = DragKind::Block(Hit::Point(point)),
+                None => return,
+            }
+        }
         let original = &drag.original;
         drag.preview = match drag.kind {
             DragKind::Block(Hit::Point(index)) => {
@@ -742,6 +830,7 @@ impl ProjectView {
             }
             DragKind::Block(hit) => drag_block(original, hit, dx, ppb, snap, drag.room),
             DragKind::Setting(setting) => scrub(original, setting, dx, snap),
+            DragKind::Undecided { .. } => original.clone(),
         };
     }
 
@@ -1356,6 +1445,7 @@ fn quiet_action(
 
 impl ProjectView {
     /// The timeline side of a row that starts `top` pixels down the lanes.
+    #[allow(clippy::too_many_arguments, reason = "plain row data, passed through")]
     fn right_cell(
         &self,
         row: &Row<'_>,
@@ -1363,6 +1453,7 @@ impl ProjectView {
         color: ContentColor,
         theme: &Theme,
         width: f32,
+        pointer: Point<Pixels>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let zoom = self.parameters_zoom;
@@ -1407,6 +1498,7 @@ impl ProjectView {
                 };
                 let blocks = previewed_blocks(drag, &layer.blocks);
                 let mix = self.mix_of(layer_id, layer.mix);
+                let cursor = self.lane_cursor(&blocks, top, height, pointer);
                 // The centre line: no effect.
                 let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
                 cell.border_b_2()
@@ -1428,7 +1520,7 @@ impl ProjectView {
                             self.selected_block == Some(*id),
                             mix,
                             zoom,
-                            height - 2. * BLOCK_INSET,
+                            cursor.is_some_and(|c| c.block == *id),
                             theme,
                         )
                     }))
@@ -1444,6 +1536,20 @@ impl ProjectView {
                             this.lane_right_click(top, height, event);
                         }),
                     )
+                    .when_some(cursor, |d, cursor| {
+                        // The system cursor is hidden; this icon takes its place.
+                        let (glyph, tint) = match cursor.kind {
+                            CursorKind::Loop => (Icon::Loop, theme.accent),
+                            CursorKind::Move => (Icon::Move, colors.detail),
+                        };
+                        d.cursor_none(gpui::CursorStyle::Arrow).child(
+                            div()
+                                .absolute()
+                                .left(px(cursor.x - CURSOR_ICON / 2.))
+                                .top(px(cursor.y - CURSOR_ICON / 2.))
+                                .child(icon(glyph, tint, CURSOR_ICON)),
+                        )
+                    })
                     .into_any_element()
             }
             _ => cell.into_any_element(),
@@ -1465,7 +1571,7 @@ fn block_view(
     selected: bool,
     mix: f64,
     zoom: Zoom,
-    box_height: f32,
+    hide_cursor: bool,
     theme: &Theme,
 ) -> impl IntoElement {
     let ppb = zoom.pixels_per_beat;
@@ -1500,20 +1606,15 @@ fn block_view(
     repeat_wash.a = 0.45;
     let mut cycle_end = colors.detail;
     cycle_end.a *= 0.7;
-    // Hovering a point hides the cursor and shows a four-way arrow there.
-    let point_handles = points.clone().into_iter().map(move |(x, value)| {
+    // The end of a looped block's first cycle resizes the repeating block.
+    let cycle_edge = cycle_end_x(block, ppb).map(|x| {
         div()
             .absolute()
-            .left(px(x - POINT_HANDLE / 2.))
-            .top(px(value_to_y(value, box_height) - POINT_HANDLE / 2.))
-            .size(px(POINT_HANDLE))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_none(gpui::CursorStyle::Arrow)
-            .opacity(0.)
-            .hover(|s| s.opacity(1.))
-            .child(icon(Icon::Move, colors.detail, POINT_HANDLE))
+            .left(px(x - CYCLE_EDGE_HALF))
+            .top_0()
+            .bottom_0()
+            .w(px(2. * CYCLE_EDGE_HALF))
+            .cursor_ew_resize()
     });
 
     div()
@@ -1533,6 +1634,7 @@ fn block_view(
             colors.outline
         })
         .overflow_hidden()
+        .when(hide_cursor, |d| d.cursor_none(gpui::CursorStyle::Arrow))
         .child(
             canvas(
                 |_, _, _| {},
@@ -1611,17 +1713,16 @@ fn block_view(
                 .cursor_ew_resize(),
         )
         .child(
+            // The right edge resizes below its top quarter, which loops.
             div()
                 .absolute()
                 .right_0()
-                .top_0()
+                .top(relative(LOOP_EDGE_FRACTION))
                 .bottom_0()
                 .w(px(edge))
                 .cursor_ew_resize(),
         )
         .when(has_loop_handle(width), |d| {
-            // Just inside the right edge, so the edge stretches over its
-            // full height.
             d.child(
                 div()
                     .absolute()
@@ -1631,13 +1732,12 @@ fn block_view(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .cursor_ew_resize()
                     .opacity(if selected { 1. } else { 0. })
                     .group_hover(group, |s| s.opacity(1.))
                     .child(icon(Icon::Loop, colors.detail, 10.)),
             )
         })
-        .children(point_handles)
+        .children(cycle_edge)
 }
 
 /// Draws `value(beat)` (0..=1, NaN for "nothing here") across `bounds`, with

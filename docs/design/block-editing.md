@@ -9,9 +9,10 @@
 | Double-click empty space | New block: one bar, flat line at 0.5, starting on the snap grid, shortened to fit before the next block |
 | Click a block | Selects it: accent outline, points shown, settings bar appears |
 | Drag the body | Moves the block, snapped, never overlapping its neighbours |
-| Drag an edge | Moves that edge **without moving the contents**: the block is a window onto song time (see below) |
-| Drag the corner handle (top right just inside the edge, shown on hover) | Repeats the shape: the cycle is fixed at the current length and the block extends. Repeats draw softer than the first cycle, with a clear line at each cycle's end (block, block, block) |
-| Drag a point (selected block) | Moves it, kept between its neighbours; points do not snap. Hovering a point hides the cursor and shows a four-way arrow (GPUI 0.2.2 has no native move cursor on Windows) |
+| Drag an edge (left edge, or the bottom three quarters of the right edge) | Moves that edge **without moving the contents**: the block is a window onto song time (see below) |
+| Drag the top quarter of the right edge, or the loop icon beside it (shown on hover) | Loops: the block repeats as it extends. Repeats draw softer than the first cycle, with a clear line at each cycle's end (block, block, block). A loop cursor shows over this zone |
+| Drag a looped block's first cycle end | Widens or narrows the block that repeats, as a window (its shape stays put); the repeats follow, keeping their count |
+| Drag a point (selected block) | Moves it, kept between its neighbours; points do not snap. A four-way arrow cursor shows over points. A point sitting on an edge waits for the first few pixels of movement: sideways drags the edge, up or down drags the point |
 | Double-click inside the selected block | Adds a point |
 | Right-click a point | Removes it (a shape keeps at least one point) |
 | Delete / Backspace | Removes the selected block (Parameters page only) |
@@ -24,7 +25,7 @@ The user asked for edges to leave the contents fixed and give more room to work,
 - **Repeating shape** (cycle set, or a nudge): the cycle keeps its length and the nudge shifts by the edge's movement, so the repeats stay where they are in song time.
 - Fades keep their length in ticks, capped at the block length.
 
-The loop handle sits just inside the right edge zone, so the right edge resizes over its full height. (It used to cover the top 14 px of the edge, so grabbing the upper half of the edge looped instead of resizing.)
+Loop and resize are distinct zones on the right edge (the user's call): the top quarter, plus the loop icon just inside it, loops; the rest resizes. Custom cursors (loop, four-way move) are drawn by the lane: each frame it hit-tests the pointer with the same function clicks use, hides the system cursor and draws the icon at the pointer, so the cursor always matches what a press would do and holds through the drag.
 
 ## Snap
 
