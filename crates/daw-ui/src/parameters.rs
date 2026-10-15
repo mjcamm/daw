@@ -186,6 +186,7 @@ impl ProjectView {
             .child(
                 div()
                     .relative()
+                    .min_h_full()
                     .w(px(width))
                     .flex()
                     .flex_col()
@@ -242,7 +243,11 @@ impl ProjectView {
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
-                .child(div().flex().child(left).child(lanes)),
+                .child(
+                    // At least a full page tall, so the column and grid reach the
+                    // bottom however few rows there are.
+                    div().flex().min_h_full().child(left).child(lanes),
+                ),
         )
     }
 
