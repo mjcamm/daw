@@ -4,8 +4,13 @@
 //! and renders the [`Snapshot`]s it gets back. This crate has no dependency on
 //! the engine, so either side can be replaced without touching the other.
 
+mod automation;
 mod time;
 
+pub use automation::{
+    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Layer, LayerId, ParamId,
+    ParamState, Scale, Segment, Shape, ShapePoint,
+};
 pub use time::{TICKS_PER_BEAT, Ticks};
 
 use std::fmt;
@@ -30,13 +35,14 @@ pub enum Command {
 }
 
 /// An undoable change to the project.
+///
+/// Ids are chosen by the sender and must be unused anywhere in the project.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edit {
     /// Set the song tempo in beats per minute.
     SetTempo {
         bpm: f64,
     },
-    /// Add a MIDI clip. The id is chosen by the sender and must be unused.
     AddClip {
         id: ClipId,
         clip: MidiClip,
@@ -44,13 +50,50 @@ pub enum Edit {
     RemoveClip {
         id: ClipId,
     },
-    /// Set the node volume in decibels. `-inf` mutes.
-    SetVolume {
-        db: f32,
+    /// Set a parameter's default state (normalized). This is what moving a
+    /// knob does; it never records movement.
+    SetParam {
+        param: ParamId,
+        value: f64,
     },
-    /// Set the node pan, from -1 (left) to 1 (right).
-    SetPan {
-        pan: f32,
+    /// Insert an effect into the chain at `index` (0 is first).
+    AddEffect {
+        id: DeviceId,
+        index: usize,
+        effect: Effect,
+    },
+    /// Remove an effect, with its parameters and layers.
+    RemoveEffect {
+        id: DeviceId,
+    },
+    /// Insert a layer into a parameter's stack at `index` (0 is the bottom).
+    AddLayer {
+        param: ParamId,
+        id: LayerId,
+        index: usize,
+        layer: Layer,
+    },
+    /// Remove a layer with its blocks.
+    RemoveLayer {
+        id: LayerId,
+    },
+    SetLayerOptions {
+        id: LayerId,
+        mode: BlendMode,
+        enabled: bool,
+    },
+    AddBlock {
+        layer: LayerId,
+        id: BlockId,
+        block: Block,
+    },
+    RemoveBlock {
+        id: BlockId,
+    },
+    /// Replace a block: move, stretch, reshape or change its controls.
+    SetBlock {
+        id: BlockId,
+        block: Block,
     },
 }
 
@@ -97,10 +140,10 @@ pub struct Snapshot {
     /// Transport position in beats, as last reported by the audio side.
     pub position_beats: f64,
     pub loop_range: Option<LoopRange>,
-    pub volume_db: f32,
-    pub pan: f32,
     /// Clips in id order.
     pub clips: Vec<ClipSummary>,
+    /// The node's devices in signal order: instrument, effects, channel.
+    pub devices: Vec<DeviceSnapshot>,
     pub can_undo: bool,
     pub can_redo: bool,
 }
@@ -113,17 +156,103 @@ pub struct ClipSummary {
     pub note_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceSnapshot {
+    pub device: DeviceRef,
+    pub name: String,
+    pub params: Vec<ParamSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamSnapshot {
+    pub id: ParamId,
+    pub name: String,
+    pub scale: Scale,
+    /// Unit suffix for display, e.g. "Hz". Empty for unitless values.
+    pub unit: String,
+    /// Display names of the options, for [`Scale::Choice`] parameters.
+    pub choices: Vec<String>,
+    /// Normalized default state.
+    pub base: f64,
+    /// Normalized value at the playhead, after all layers.
+    pub value: f64,
+    /// The value at the playhead in real units, ready to show.
+    pub display: String,
+    /// Layers from bottom to top.
+    pub layers: Vec<(LayerId, Layer)>,
+}
+
 /// Why the engine rejected a command. A rejected command changes nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandError {
-    TempoOutOfRange { bpm: f64, min: f64, max: f64 },
-    VolumeOutOfRange { db: f32, max: f32 },
-    PanOutOfRange { pan: f32 },
-    NegativePosition { position: Ticks },
-    InvalidLoop { range: LoopRange, min_length: Ticks },
-    DuplicateClip { id: ClipId },
-    UnknownClip { id: ClipId },
-    InvalidClip { reason: InvalidClip },
+    TempoOutOfRange {
+        bpm: f64,
+        min: f64,
+        max: f64,
+    },
+    NegativePosition {
+        position: Ticks,
+    },
+    InvalidLoop {
+        range: LoopRange,
+        min_length: Ticks,
+    },
+    DuplicateClip {
+        id: ClipId,
+    },
+    UnknownClip {
+        id: ClipId,
+    },
+    InvalidClip {
+        reason: InvalidClip,
+    },
+    UnknownParam {
+        param: ParamId,
+    },
+    /// Normalized values must be within `0..=1`.
+    ValueOutOfRange {
+        value: f64,
+    },
+    DuplicateDevice {
+        id: DeviceId,
+    },
+    UnknownDevice {
+        id: DeviceId,
+    },
+    TooManyEffects {
+        max: usize,
+    },
+    /// An insert position past the end of a list.
+    IndexOutOfRange {
+        index: usize,
+        len: usize,
+    },
+    /// An effect's parameter list does not match its kind.
+    WrongParamCount {
+        expected: usize,
+        found: usize,
+    },
+    DuplicateLayer {
+        id: LayerId,
+    },
+    UnknownLayer {
+        id: LayerId,
+    },
+    DuplicateBlock {
+        id: BlockId,
+    },
+    UnknownBlock {
+        id: BlockId,
+    },
+    InvalidBlock {
+        id: BlockId,
+        reason: InvalidBlock,
+    },
+    /// The block would overlap another block on the same layer.
+    OverlappingBlocks {
+        id: BlockId,
+        other: BlockId,
+    },
     NothingToUndo,
     NothingToRedo,
 }
@@ -147,16 +276,37 @@ pub enum InvalidClip {
     },
 }
 
+/// Why a block was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidBlock {
+    NegativeStart,
+    EmptyLength,
+    EmptyCycle,
+    NegativeFade,
+    /// Depth must be within `0..=1`.
+    Depth,
+    /// A shape needs at least one point.
+    NoPoints,
+    /// Point positions must be within `0..=1` and in order.
+    PointOrder {
+        index: usize,
+    },
+    /// Point values must be within `0..=1`.
+    PointValue {
+        index: usize,
+    },
+    /// Curve tension must be within `-1..=1`.
+    CurveTension {
+        index: usize,
+    },
+}
+
 impl fmt::Display for CommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TempoOutOfRange { bpm, min, max } => {
                 write!(f, "tempo {bpm} BPM is outside {min}..={max} BPM")
             }
-            Self::VolumeOutOfRange { db, max } => {
-                write!(f, "volume {db} dB is not a number at most {max} dB")
-            }
-            Self::PanOutOfRange { pan } => write!(f, "pan {pan} is outside -1..=1"),
             Self::NegativePosition { position } => {
                 write!(f, "position {} ticks is before the song start", position.0)
             }
@@ -168,6 +318,27 @@ impl fmt::Display for CommandError {
             Self::DuplicateClip { id } => write!(f, "clip {} already exists", id.0),
             Self::UnknownClip { id } => write!(f, "clip {} does not exist", id.0),
             Self::InvalidClip { reason } => write!(f, "invalid clip: {reason}"),
+            Self::UnknownParam { param } => write!(f, "parameter {param:?} does not exist"),
+            Self::ValueOutOfRange { value } => {
+                write!(f, "normalized value {value} is outside 0..=1")
+            }
+            Self::DuplicateDevice { id } => write!(f, "device {} already exists", id.0),
+            Self::UnknownDevice { id } => write!(f, "device {} does not exist", id.0),
+            Self::TooManyEffects { max } => write!(f, "a node holds at most {max} effects"),
+            Self::IndexOutOfRange { index, len } => {
+                write!(f, "index {index} is past the end of a list of {len}")
+            }
+            Self::WrongParamCount { expected, found } => {
+                write!(f, "expected {expected} parameters, found {found}")
+            }
+            Self::DuplicateLayer { id } => write!(f, "layer {} already exists", id.0),
+            Self::UnknownLayer { id } => write!(f, "layer {} does not exist", id.0),
+            Self::DuplicateBlock { id } => write!(f, "block {} already exists", id.0),
+            Self::UnknownBlock { id } => write!(f, "block {} does not exist", id.0),
+            Self::InvalidBlock { id, reason } => write!(f, "invalid block {}: {reason}", id.0),
+            Self::OverlappingBlocks { id, other } => {
+                write!(f, "block {} would overlap block {}", id.0, other.0)
+            }
             Self::NothingToUndo => f.write_str("nothing to undo"),
             Self::NothingToRedo => f.write_str("nothing to redo"),
         }
@@ -184,6 +355,26 @@ impl fmt::Display for InvalidClip {
                 write!(f, "note {index} has a velocity outside 1..=127")
             }
             Self::NoteLength { index } => write!(f, "note {index} has no length"),
+        }
+    }
+}
+
+impl fmt::Display for InvalidBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NegativeStart => f.write_str("starts before the song start"),
+            Self::EmptyLength => f.write_str("has no length"),
+            Self::EmptyCycle => f.write_str("has a cycle with no length"),
+            Self::NegativeFade => f.write_str("has a negative fade"),
+            Self::Depth => f.write_str("depth is outside 0..=1"),
+            Self::NoPoints => f.write_str("shape has no points"),
+            Self::PointOrder { index } => {
+                write!(f, "point {index} is outside 0..=1 or out of order")
+            }
+            Self::PointValue { index } => write!(f, "point {index} value is outside 0..=1"),
+            Self::CurveTension { index } => {
+                write!(f, "point {index} curve tension is outside -1..=1")
+            }
         }
     }
 }

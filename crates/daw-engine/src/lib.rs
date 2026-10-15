@@ -12,20 +12,25 @@
 //! regularly so queued messages are delivered and retired state is freed.
 
 mod audio;
+pub mod devices;
 mod history;
 mod project;
 mod schedule;
 mod transport;
 
-pub use audio::AudioProcessor;
+pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
-    ClipId, ClipSummary, Command, CommandError, Edit, InvalidClip, LoopRange, MidiClip, MidiNote,
+    BlendMode, Block, BlockId, ClipId, ClipSummary, Command, CommandError, DeviceId, DeviceRef,
+    DeviceSnapshot, Edit, Effect, EffectKind, InvalidBlock, InvalidClip, Layer, LayerId, LoopRange,
+    MidiClip, MidiNote, ParamId, ParamSnapshot, ParamState, Scale, Segment, Shape, ShapePoint,
     Snapshot, TICKS_PER_BEAT, Ticks,
 };
-pub use project::{DEFAULT_TEMPO_BPM, MAX_TEMPO_BPM, MAX_VOLUME_DB, MIN_TEMPO_BPM, Node, Project};
-pub use schedule::{RenderState, ScheduledNote};
+pub use project::{DEFAULT_TEMPO_BPM, MAX_EFFECTS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Node, Project};
+pub use schedule::{EffectState, RenderState, ScheduledNote};
 
 use audio::{AudioMsg, SharedStatus};
+use daw_automation::Automation;
+use devices::{ParamInfo, effect_name};
 use history::History;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -160,14 +165,35 @@ impl Engine {
 
     pub fn snapshot(&self) -> Snapshot {
         let node = &self.project.node;
+        let position_beats = self.status.position_beats();
         Snapshot {
             revision: self.revision,
             tempo_bpm: self.project.tempo_bpm,
             playing: self.playing,
-            position_beats: self.status.position_beats(),
+            position_beats,
             loop_range: self.loop_range,
-            volume_db: node.volume_db,
-            pan: node.pan,
+            devices: node
+                .devices()
+                .map(|(device, params)| {
+                    let infos = node.param_infos(device).unwrap_or(&[]);
+                    DeviceSnapshot {
+                        device,
+                        name: device_name(node, device).to_owned(),
+                        params: params
+                            .iter()
+                            .zip(infos)
+                            .enumerate()
+                            .map(|(index, (state, info))| {
+                                let id = ParamId {
+                                    device,
+                                    index: index as u32,
+                                };
+                                param_snapshot(id, state, info, position_beats)
+                            })
+                            .collect(),
+                    }
+                })
+                .collect(),
             clips: node
                 .clips
                 .iter()
@@ -203,6 +229,38 @@ impl Engine {
             .retain(|msg| !matches!(msg, AudioMsg::SwapState(_)));
         let state = Box::new(RenderState::compile(&self.project));
         self.outbox.push_back(AudioMsg::SwapState(state));
+    }
+}
+
+fn device_name(node: &Node, device: DeviceRef) -> &'static str {
+    match device {
+        DeviceRef::Instrument => "Synth",
+        DeviceRef::Channel => "Channel",
+        DeviceRef::Effect(id) => node
+            .effects
+            .iter()
+            .find(|(e, _)| *e == id)
+            .map_or("Effect", |(_, effect)| effect_name(effect.kind)),
+    }
+}
+
+fn param_snapshot(
+    id: ParamId,
+    state: &ParamState,
+    info: &ParamInfo,
+    position_beats: f64,
+) -> ParamSnapshot {
+    let value = Automation::compile(state).value_at(position_beats);
+    ParamSnapshot {
+        id,
+        name: info.name.to_owned(),
+        scale: info.scale,
+        unit: info.unit.to_owned(),
+        choices: info.choices.iter().map(|&c| c.to_owned()).collect(),
+        base: state.base,
+        value,
+        display: info.format(info.scale.to_plain(value)),
+        layers: state.layers.clone(),
     }
 }
 

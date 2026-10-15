@@ -11,6 +11,7 @@ repository = "https://github.com/mjcamm/daw"
 publish = false
 
 [workspace.dependencies]
+daw-automation = { path = "crates/daw-automation" }
 daw-dsp = { path = "crates/daw-dsp" }
 daw-engine = { path = "crates/daw-engine" }
 daw-protocol = { path = "crates/daw-protocol" }

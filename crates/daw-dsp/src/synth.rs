@@ -2,7 +2,7 @@
 //! swept by the amp envelope.
 
 use crate::envelope::{Adsr, AdsrParams};
-use crate::filter::LowPass;
+use crate::filter::Svf;
 use crate::midi_to_hz;
 use crate::oscillator::Saw;
 
@@ -46,7 +46,7 @@ struct Voice {
     increment: f32,
     velocity: f32,
     osc: Saw,
-    filter: LowPass,
+    filter: Svf,
     env: Adsr,
 }
 

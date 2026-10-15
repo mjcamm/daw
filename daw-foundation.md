@@ -154,11 +154,12 @@ It is an original design, not a clone or clean-room copy of any existing DAW. It
 
 To be resolved in the detailed spec:
 
-- How layers combine in practice: which blend modes, and in what value space (raw control range vs real units).
-- What happens when a value exceeds a parameter's range after layering.
-- Whether moving a plugin's knob edits its default state or records new movement.
 - How collapsed nodes summarise their contents.
 - Whether plugins run in separate processes to protect against crashes.
 - How the app stays robust when a plugin update changes its parameters.
 - How live-followed signals (audio after effects, and audio signals pulled into layers) behave before they have been captured, when the audio feeding them changes, and during offline render/export.
 - Working name.
+
+Resolved, with the decisions recorded in `docs/design/`:
+
+- Layer blend modes, value space, out-of-range values and knob behaviour: `parameters-and-layers.md`.

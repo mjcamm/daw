@@ -1,18 +1,30 @@
 //! Compiling the project into the flat, time-sorted form the audio side plays.
 
 use crate::project::Project;
-use daw_dsp::synth::SynthParams;
+use daw_automation::Automation;
+use daw_protocol::{DeviceId, EffectKind, ParamState};
 
 /// Everything the audio thread needs to render, compiled from the project by
 /// the control side. Immutable once sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderState {
     pub tempo_bpm: f64,
-    pub volume_db: f32,
-    pub pan: f32,
-    pub instrument: SynthParams,
     /// Every note on the timeline, sorted by start.
     pub notes: Vec<ScheduledNote>,
+    /// One automation per instrument parameter, in index order.
+    pub instrument: Vec<Automation>,
+    /// The effect chain in signal order.
+    pub effects: Vec<EffectState>,
+    /// One automation per channel parameter, in index order.
+    pub channel: Vec<Automation>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectState {
+    pub id: DeviceId,
+    pub kind: EffectKind,
+    /// One automation per parameter, in index order.
+    pub params: Vec<Automation>,
 }
 
 /// A note at an absolute song position, in beats.
@@ -22,6 +34,10 @@ pub struct ScheduledNote {
     pub end_beats: f64,
     pub pitch: u8,
     pub velocity: u8,
+}
+
+fn compile_params(params: &[ParamState]) -> Vec<Automation> {
+    params.iter().map(Automation::compile).collect()
 }
 
 impl RenderState {
@@ -48,10 +64,18 @@ impl RenderState {
         notes.sort_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
         Self {
             tempo_bpm: project.tempo_bpm,
-            volume_db: node.volume_db,
-            pan: node.pan,
-            instrument: node.instrument,
             notes,
+            instrument: compile_params(&node.instrument),
+            effects: node
+                .effects
+                .iter()
+                .map(|(id, effect)| EffectState {
+                    id: *id,
+                    kind: effect.kind,
+                    params: compile_params(&effect.params),
+                })
+                .collect(),
+            channel: compile_params(&node.channel),
         }
     }
 }

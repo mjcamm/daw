@@ -2,9 +2,10 @@
 
 #![allow(clippy::unwrap_used, reason = "test helpers fail the test on error")]
 
+use daw_engine::devices::{CHANNEL_PARAMS, channel};
 use daw_engine::{
-    AudioProcessor, ClipId, Command, CommandError, Edit, Engine, EngineConfig, LoopRange, MidiClip,
-    MidiNote, Ticks,
+    AudioProcessor, ClipId, Command, CommandError, DeviceRef, Edit, Engine, EngineConfig,
+    LoopRange, MidiClip, MidiNote, ParamId, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, assert_reference, render};
 
@@ -255,8 +256,27 @@ fn locate_moves_where_playback_starts() {
     assert_starts_at(&rendered, FRAMES_PER_BEAT / 2);
 }
 
+fn channel_param(index: u32, plain: f64) -> Edit {
+    let info = &CHANNEL_PARAMS[index as usize];
+    Edit::SetParam {
+        param: ParamId {
+            device: DeviceRef::Channel,
+            index,
+        },
+        value: info.scale.to_normalized(plain),
+    }
+}
+
+fn volume_db(db: f64) -> Edit {
+    channel_param(channel::VOLUME, db)
+}
+
+fn pan(pan: f64) -> Edit {
+    channel_param(channel::PAN, pan)
+}
+
 /// Renders a held note with volume and pan applied before playback, skipping
-/// the 10 ms gain ramp from the defaults.
+/// the first moments.
 fn render_held_note(edits: &[Edit], channels: u16) -> Rendered {
     let (mut engine, mut processor) = Engine::new(EngineConfig {
         channels,
@@ -286,22 +306,17 @@ fn channel(rendered: &Rendered, index: usize) -> Vec<f32> {
 #[test]
 fn volume_scales_the_output() {
     let full = render_held_note(&[], 2);
-    let half = render_held_note(&[Edit::SetVolume { db: -6.0206 }], 2);
+    let half = render_held_note(&[volume_db(-6.0206)], 2);
     let ratio = peak(&half.samples) / peak(&full.samples);
     assert!((ratio - 0.5).abs() < 1e-3, "{ratio}");
 
-    let muted = render_held_note(
-        &[Edit::SetVolume {
-            db: f32::NEG_INFINITY,
-        }],
-        2,
-    );
+    let muted = render_held_note(&[volume_db(f64::NEG_INFINITY)], 2);
     assert!(muted.is_silent());
 }
 
 #[test]
 fn pan_moves_sound_between_channels() {
-    let left = render_held_note(&[Edit::SetPan { pan: -1.0 }], 2);
+    let left = render_held_note(&[pan(-1.0)], 2);
     assert!(peak(&channel(&left, 0)) > 0.01);
     assert_silent(&channel(&left, 1));
 
@@ -310,8 +325,8 @@ fn pan_moves_sound_between_channels() {
 }
 
 #[test]
-fn mono_output_ignores_pan() {
-    let mono = render_held_note(&[Edit::SetPan { pan: 1.0 }], 1);
+fn mono_output_keeps_panned_sound() {
+    let mono = render_held_note(&[pan(1.0)], 1);
     assert!(peak(&mono.samples) > 0.01);
 }
 
@@ -353,16 +368,16 @@ fn invalid_transport_commands_are_rejected() {
 fn snapshot_lists_clips_and_mix_settings() {
     let (mut engine, _processor) = engine();
     add_clip(&mut engine, 5, 4.0, 4.0, &[(0.0, 1.0, 60), (1.0, 1.0, 62)]);
-    engine
-        .apply(Command::Edit(Edit::SetPan { pan: 0.25 }))
-        .unwrap();
+    engine.apply(Command::Edit(pan(0.25))).unwrap();
     let range = LoopRange {
         start: Ticks::ZERO,
         end: Ticks::from_bars(2),
     };
     engine.apply(Command::SetLoop(Some(range))).unwrap();
     let snapshot = engine.snapshot();
-    assert_eq!(snapshot.pan, 0.25);
+    let channel = snapshot.devices.last().unwrap();
+    assert_eq!(channel.device, DeviceRef::Channel);
+    assert_eq!(channel.params[1].display, "R25");
     assert_eq!(snapshot.loop_range, Some(range));
     assert_eq!(snapshot.clips.len(), 1);
     assert_eq!(snapshot.clips[0].id, ClipId(5));

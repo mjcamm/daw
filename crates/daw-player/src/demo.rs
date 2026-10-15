@@ -1,9 +1,22 @@
 //! A four-bar demo pattern: offbeat bass and a sixteenth-note arpeggio over
-//! Am - F - C - G, looping.
+//! Am - F - C - G, looping, shaped by layers:
+//!
+//! - a filter effect sweeps open across the four bars;
+//! - the volume pumps on every beat, like sidechain ducking;
+//! - the synth cutoff wobbles through bars 3 and 4.
 
+use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
-    ClipId, Command, CommandError, Edit, Engine, LoopRange, MidiClip, MidiNote, Ticks,
+    BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, Edit, Effect,
+    EffectKind, Engine, Layer, LayerId, LoopRange, MidiClip, MidiNote, ParamId, Segment, Shape,
+    ShapePoint, Ticks,
 };
+
+/// What to listen for, printed by the player.
+pub const DESCRIPTION: &str = "Listen for: the filter opening over each four bars, the volume \
+                                   pumping on every beat, and the arpeggio wobbling in bars 3 and 4.";
+
+const FILTER: DeviceId = DeviceId(1);
 
 pub const TEMPO_BPM: f64 = 124.0;
 pub const BARS: i64 = 4;
@@ -23,6 +36,7 @@ pub fn load(engine: &mut Engine) -> Result<(), CommandError> {
     engine.apply(Command::Edit(Edit::SetTempo { bpm: TEMPO_BPM }))?;
     add(engine, 1, bass())?;
     add(engine, 2, arpeggio())?;
+    add_layers(engine)?;
     engine.apply(Command::SetLoop(Some(LoopRange {
         start: Ticks::ZERO,
         end: Ticks::from_bars(BARS),
@@ -72,4 +86,86 @@ fn arpeggio() -> Vec<MidiNote> {
         }
     }
     notes
+}
+
+fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
+    engine.apply(Command::Edit(Edit::AddEffect {
+        id: FILTER,
+        index: 0,
+        effect: Effect::new(EffectKind::Filter),
+    }))?;
+
+    // The filter opens slowly at first, then quickly, over the whole loop.
+    let sweep = Block::new(
+        Ticks::ZERO,
+        Ticks::from_bars(BARS),
+        Shape {
+            points: vec![
+                ShapePoint::new(0.0, 0.35).with_segment(Segment::Curve(0.6)),
+                ShapePoint::new(1.0, 0.95),
+            ],
+        },
+    );
+    let filter_cutoff = ParamId {
+        device: DeviceRef::Effect(FILTER),
+        index: filter::CUTOFF,
+    };
+    add_layer(engine, filter_cutoff, 1, BlendMode::Replace, sweep)?;
+
+    // Each beat starts quiet and swells back: ducking, drawn once.
+    let mut pump = Block::new(
+        Ticks::ZERO,
+        Ticks::from_bars(BARS),
+        Shape {
+            points: vec![
+                ShapePoint::new(0.0, 0.15).with_segment(Segment::Curve(-0.5)),
+                ShapePoint::new(0.7, 1.0),
+            ],
+        },
+    );
+    pump.cycle = Some(Ticks::from_beats(1));
+    let volume = ParamId {
+        device: DeviceRef::Channel,
+        index: channel::VOLUME,
+    };
+    add_layer(engine, volume, 2, BlendMode::Multiply, pump)?;
+
+    // A triangle wobble every eighth note, fading in over a beat.
+    let mut wobble = Block::new(
+        Ticks::from_bars(2),
+        Ticks::from_bars(2),
+        Shape {
+            points: vec![
+                ShapePoint::new(0.0, 0.0),
+                ShapePoint::new(0.5, 1.0),
+                ShapePoint::new(1.0, 0.0),
+            ],
+        },
+    );
+    wobble.cycle = Some(sixteenths(2));
+    wobble.depth = 0.2;
+    wobble.fade_in = Ticks::from_beats(1);
+    let synth_cutoff = ParamId {
+        device: DeviceRef::Instrument,
+        index: instrument::CUTOFF,
+    };
+    add_layer(engine, synth_cutoff, 3, BlendMode::Modulate, wobble)
+}
+
+/// Adds a single-block layer, using one id for both the layer and the block.
+fn add_layer(
+    engine: &mut Engine,
+    param: ParamId,
+    id: u64,
+    mode: BlendMode,
+    block: Block,
+) -> Result<(), CommandError> {
+    let mut layer = Layer::new(mode);
+    layer.blocks.push((BlockId(id), block));
+    engine.apply(Command::Edit(Edit::AddLayer {
+        param,
+        id: LayerId(id),
+        index: 0,
+        layer,
+    }))
 }

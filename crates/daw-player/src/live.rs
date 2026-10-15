@@ -35,6 +35,7 @@ pub fn play(bars: u32, compare: bool) -> Result<()> {
         config.sample_rate,
         config.channels
     );
+    println!("{}", demo::DESCRIPTION);
 
     let (mut engine, mut processor) = Engine::new(config);
     demo::load(&mut engine)?;

@@ -23,10 +23,14 @@ A manual GitHub workflow (`.github/workflows/cross-platform.yml`) runs the same 
 
 - `daw-protocol`: engine/UI boundary. Commands in, snapshots out. Depends on nothing; a front end depends only on this.
 - `daw-engine`: authoritative state. `Engine` (control thread: commands, undo, snapshots) and `AudioProcessor` (audio thread), connected only by lock-free `rtrb` queues. The control side compiles the project into an immutable `RenderState` and swaps it in whole.
-- `daw-dsp`: standalone, portable DSP modules (synth, filter, envelope, smoothing, pan). No engine knowledge.
+- `daw-automation`: pure evaluation of parameter layer stacks (shapes, blend modes, blocks). No engine knowledge; heavily unit tested.
+- `daw-engine/src/devices.rs`: every built-in device's parameters (name, unit, scale, default) and how values map onto DSP settings. Layers and devices meet here.
+- `daw-dsp`: standalone, portable DSP modules (synth, filter, filter effect, envelope, smoothing, pan). No engine knowledge.
 - `daw-player`: command-line host. Live playback through `cpal`, offline render to WAV.
 - `daw-rt`: realtime safety guard (`GuardedAllocator`, `realtime`, `count_violations`).
 - `daw-testkit`: headless offline render (`render`), reference audio comparison (`assert_reference!`). Linking it installs the guard.
+
+Design decisions per phase live in `docs/design/`. Read the relevant one before changing that area.
 
 ## Rules
 
