@@ -25,7 +25,7 @@ The user asked for edges to leave the contents fixed and give more room to work,
 - **Repeating shape** (cycle set, or a nudge): the cycle keeps its length and the nudge shifts by the edge's movement, so the repeats stay where they are in song time.
 - Fades keep their length in ticks, capped at the block length.
 
-Loop and resize are distinct zones on the right edge (the user's call): the top quarter, plus the loop icon just inside it, loops; the rest resizes. Custom cursors (loop, four-way move) are drawn by the lane: each frame it hit-tests the pointer with the same function clicks use, hides the system cursor and draws the icon at the pointer, so the cursor always matches what a press would do and holds through the drag.
+Loop and resize are distinct zones on the right edge (the user's call): a band along the top quarter (at least 6 px), covering the edge and the loop icon just inside it, loops; everything below it resizes. (The icon's zone was once 14 px tall, nearly half a 32 px block, which swallowed edge drags.) Blocks that do not loop no longer draw a phantom copy of their first point at the right edge. Custom cursors (loop, four-way move) are drawn by the lane: each frame it hit-tests the pointer with the same function clicks use, hides the system cursor and draws the icon at the pointer, so the cursor always matches what a press would do and holds through the drag.
 
 ## Snap
 

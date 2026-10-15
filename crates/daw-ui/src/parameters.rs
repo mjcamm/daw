@@ -14,9 +14,9 @@
 //! becomes one edit when the mouse is released.
 
 use crate::block_edit::{
-    EDGE_ZONE, Hit, LOOP_EDGE_FRACTION, LOOP_HANDLE, Room, Setting, Snap, add_point, cycle_end_x,
-    decide, drag_block, edge_at, has_loop_handle, hit_test, move_point, new_block, next_block_id,
-    phase_at, point_at, point_positions, remove_point, room_around, scrub, value_to_y, y_to_value,
+    EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, cycle_end_x, decide, drag_block,
+    edge_at, has_loop_handle, hit_test, loop_band, move_point, new_block, next_block_id, phase_at,
+    point_at, point_positions, remove_point, room_around, scrub, value_to_y, y_to_value,
 };
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
@@ -33,7 +33,7 @@ use daw_engine::{
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Div, FontWeight, Hsla, Modifiers,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point,
-    SharedString, Window, canvas, div, fill, point, prelude::*, px, relative, size,
+    SharedString, Window, canvas, div, fill, point, prelude::*, px, size,
 };
 use std::borrow::Cow;
 
@@ -1521,6 +1521,7 @@ impl ProjectView {
                             mix,
                             zoom,
                             cursor.is_some_and(|c| c.block == *id),
+                            height - 2. * BLOCK_INSET,
                             theme,
                         )
                     }))
@@ -1572,8 +1573,10 @@ fn block_view(
     mix: f64,
     zoom: Zoom,
     hide_cursor: bool,
+    box_height: f32,
     theme: &Theme,
 ) -> impl IntoElement {
+    let band = loop_band(box_height);
     let ppb = zoom.pixels_per_beat;
     let left = zoom.beat_to_x(block.start.as_beats());
     let width = zoom.beat_to_x(block.length.as_beats());
@@ -1717,7 +1720,7 @@ fn block_view(
             div()
                 .absolute()
                 .right_0()
-                .top(relative(LOOP_EDGE_FRACTION))
+                .top(px(band))
                 .bottom_0()
                 .w(px(edge))
                 .cursor_ew_resize(),
@@ -1728,13 +1731,14 @@ fn block_view(
                     .absolute()
                     .top_0()
                     .right(px(edge))
-                    .size(px(LOOP_HANDLE))
+                    .w(px(LOOP_HANDLE))
+                    .h(px(band))
                     .flex()
                     .items_center()
                     .justify_center()
                     .opacity(if selected { 1. } else { 0. })
                     .group_hover(group, |s| s.opacity(1.))
-                    .child(icon(Icon::Loop, colors.detail, 10.)),
+                    .child(icon(Icon::Loop, colors.detail, band.min(10.))),
             )
         })
         .children(cycle_edge)

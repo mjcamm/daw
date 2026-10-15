@@ -220,18 +220,29 @@ pub fn hit_test(
     // The top quarter of the right edge, and the loop icon beside it, loop;
     // the rest of the right edge resizes.
     let edge = EDGE_ZONE.min(width / 4.);
-    let on_loop_edge = x >= width - edge && y <= height * LOOP_EDGE_FRACTION;
-    let on_loop_icon = has_loop_handle(width)
-        && (width - edge - LOOP_HANDLE..width - edge).contains(&x)
-        && y <= LOOP_HANDLE;
-    if on_loop_edge || on_loop_icon {
+    let loop_from = width
+        - edge
+        - if has_loop_handle(width) {
+            LOOP_HANDLE
+        } else {
+            0.
+        };
+    if x >= loop_from && y <= loop_band(height) {
         return Hit::Loop;
     }
     edge_at(block, x, pixels_per_beat).unwrap_or(Hit::Body)
 }
 
 /// The top part of the right edge that loops rather than resizes.
-pub const LOOP_EDGE_FRACTION: f32 = 0.25;
+const LOOP_EDGE_FRACTION: f32 = 0.25;
+/// The loop band is never thinner than this, so it stays grabbable.
+const MIN_LOOP_BAND: f32 = 6.;
+
+/// Height of the band along the top of a block's right end (the edge and
+/// the loop icon beside it) that loops, for a box `height` tall.
+pub fn loop_band(height: f32) -> f32 {
+    (height * LOOP_EDGE_FRACTION).max(MIN_LOOP_BAND)
+}
 
 /// The edge of `block` at local `x`, if any: its start, its end, or the end
 /// of a looped block's first cycle. A selected block's point can sit on an
@@ -466,7 +477,11 @@ pub fn point_positions(block: &Block, pixels_per_beat: f32) -> Vec<(usize, f32)>
     for k in first..=last {
         for (index, point) in block.shape.points.iter().enumerate() {
             let beat = (k as f64 + point.at) * cycle - nudge;
-            if (0.0..=length).contains(&beat) {
+            // Not the next cycle's start at the right edge, nor the last
+            // cycle's end at the left edge: those are not in the block.
+            let phantom = (beat - length).abs() < 1e-9 && point.at < 1.0
+                || beat.abs() < 1e-9 && point.at > 0.0 && k < 0;
+            if (0.0..=length).contains(&beat) && !phantom {
                 positions.push((index, beat as f32 * pixels_per_beat));
             }
         }
@@ -731,7 +746,7 @@ mod tests {
         assert_eq!(hit_test(&b, 94., 4., PPB, h, false), Hit::Loop);
         assert_eq!(hit_test(&b, 94., 12., PPB, h, false), Hit::End);
         assert_eq!(hit_test(&b, 83., 4., PPB, h, false), Hit::Loop);
-        assert_eq!(hit_test(&b, 83., 20., PPB, h, false), Hit::Body);
+        assert_eq!(hit_test(&b, 83., 12., PPB, h, false), Hit::Body);
         assert_eq!(hit_test(&b, 48., 20., PPB, h, false), Hit::Body);
     }
 
@@ -870,6 +885,34 @@ mod tests {
     }
 
     #[test]
+    fn a_new_block_has_no_phantom_point_at_its_end() {
+        let b = new_block(&[], Ticks::ZERO, BEATS).unwrap();
+        assert_eq!(point_positions(&b, PPB), [(0, 0.)]);
+        // A ramp's own end point is real and shows.
+        assert_eq!(point_positions(&block(0, 4), PPB), [(0, 0.), (1, 96.)]);
+    }
+
+    #[test]
+    fn the_right_edge_resizes_everywhere_below_the_top_quarter() {
+        let b = new_block(&[], Ticks::ZERO, BEATS).unwrap(); // 96 px wide
+        let h = 32.;
+        for y in [9., 16., 24., 31.] {
+            assert_eq!(hit_test(&b, 94., y, PPB, h, true), Hit::End, "edge at {y}");
+            assert_eq!(
+                hit_test(&b, 80., y, PPB, h, true),
+                Hit::Body,
+                "beside the edge at {y}"
+            );
+        }
+        assert_eq!(hit_test(&b, 94., 7., PPB, h, true), Hit::Loop);
+        assert_eq!(
+            hit_test(&b, 80., 7., PPB, h, true),
+            Hit::Loop,
+            "the loop icon"
+        );
+    }
+
+    #[test]
     fn ambiguous_presses_wait_for_the_first_movement() {
         assert_eq!(decide(1., 1.), None);
         assert_eq!(decide(6., 1.), Some(true), "sideways: the edge");
@@ -943,7 +986,11 @@ mod tests {
         b.shape = Shape::constant(0.5);
         b.cycle = Some(beats(1));
         let xs: Vec<f32> = point_positions(&b, PPB).iter().map(|(_, x)| *x).collect();
-        assert_eq!(xs, [0., 24., 48., 72., 96.]);
+        assert_eq!(
+            xs,
+            [0., 24., 48., 72.],
+            "not the next cycle's start at the end"
+        );
         assert!((phase_at(&b, 36., PPB) - 0.5).abs() < 1e-9);
     }
 
