@@ -333,13 +333,17 @@ pub fn drag_block(
             reframed(original, original.start, end - original.start)
         }
         Hit::Loop => {
+            // Only repeats come and go: never shorter than one cycle (the
+            // block itself). With every repeat gone it is a plain block.
+            let cycle = cycle_of(original).min(original.length);
             let end = snap
                 .round(original.end() + delta)
                 .min(room_end)
-                .max((original.start + min).min(room_end));
+                .max(original.start + cycle);
+            let length = end - original.start;
             Block {
-                length: end - original.start,
-                cycle: Some(original.cycle.unwrap_or(original.length)),
+                length,
+                cycle: (length > cycle).then_some(cycle),
                 ..original.clone()
             }
         }
@@ -378,9 +382,11 @@ fn reframed(original: &Block, start: Ticks, length: Ticks) -> Block {
         fade_out: fade(original.fade_out),
         ..original.clone()
     };
-    if original.cycle.is_none() && original.nudge == Ticks::ZERO {
+    let looped = original.cycle.is_some_and(|c| c < original.length);
+    if !looped && original.nudge == Ticks::ZERO {
         // One cycle spans the block, so the points move within it.
         Block {
+            cycle: None,
             shape: reframe_shape(&original.shape, original.length, offset, length),
             ..base
         }
@@ -969,6 +975,36 @@ mod tests {
         assert_eq!(looped.cycle, Some(beats(4)), "one cycle is the old block");
         let capped = drag_block(&block(0, 4), Hit::Loop, PPB * 100., PPB, BEATS, room);
         assert_eq!(capped.end(), beats(20));
+    }
+
+    #[test]
+    fn dragging_the_loop_back_stops_at_the_original_block() {
+        let b = looped(0, 2, 3);
+        let back = drag_block(&b, Hit::Loop, -PPB * 100., PPB, BEATS, ANYWHERE);
+        assert_eq!(
+            back.length,
+            beats(2),
+            "every repeat removed, the block kept"
+        );
+        assert_eq!(back.cycle, None, "no longer looped");
+        // A block that never looped cannot be shortened by the loop handle.
+        let plain = drag_block(&block(0, 4), Hit::Loop, -PPB * 3., PPB, BEATS, ANYWHERE);
+        assert_eq!((plain.length, plain.cycle), (beats(4), None));
+    }
+
+    #[test]
+    fn a_block_whose_loops_were_removed_extends_as_a_window_again() {
+        let b = looped(0, 2, 3);
+        let unlooped = drag_block(&b, Hit::Loop, -PPB * 100., PPB, BEATS, ANYWHERE);
+        let wider = drag_block(&unlooped, Hit::End, PPB * 2., PPB, BEATS, ANYWHERE);
+        assert_eq!(wider.cycle, None, "extends, does not repeat");
+        assert_same_contents(&unlooped, &wider, &[0., 1., 1.9]);
+        // Older blocks may hold a cycle as long as themselves: not looped.
+        let mut full = block(0, 4);
+        full.cycle = Some(beats(4));
+        let wider = drag_block(&full, Hit::End, PPB * 2., PPB, BEATS, ANYWHERE);
+        assert_eq!(wider.cycle, None);
+        assert_same_contents(&full, &wider, &[0., 2., 3.9]);
     }
 
     #[test]

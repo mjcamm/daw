@@ -10,7 +10,7 @@ Decisions behind the Parameters page and the shared timeline frame. Gesture logi
 | Click a block | Select: accent outline, points shown, settings bar at the bottom |
 | Drag the body | Move, snapped, never overlapping neighbours |
 | Drag the left edge, or the right edge below its top quarter | Resize as a **window**: contents stay put in song time (below) |
-| Drag the top quarter of the right edge, or the loop icon beside it | Loop: the block repeats as it extends |
+| Drag the top quarter of the right edge, or the loop icon beside it | Loop: adds or removes repeats only. Dragging back stops at the block itself; with every repeat gone it is a plain block again |
 | Drag a looped block's first cycle end | Resize the block that repeats (as a window); the repeats follow, keeping their count |
 | Drag a point | Move it between its neighbours (points do not snap) |
 | Double-click in the selected block / right-click a point | Add / remove a point (a shape keeps at least one) |
