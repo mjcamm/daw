@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mjcamm/daw"
+publish = false
+
+[workspace.dependencies]
+daw-dsp = { path = "crates/daw-dsp" }
+daw-engine = { path = "crates/daw-engine" }
+daw-protocol = { path = "crates/daw-protocol" }
+daw-rt = { path = "crates/daw-rt" }
+daw-testkit = { path = "crates/daw-testkit" }
+
+hound = "3.5.1"
+rtrb = "0.4.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"

@@ -1,0 +1,16 @@
+# Real-time safety: the audio thread must never block. These are banned
+# workspace-wide so every use is a deliberate, reviewed decision. Control-side
+# code that genuinely needs one must opt in with
+# `#[allow(clippy::disallowed_types, reason = "...")]`.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "locks are forbidden on the audio thread" },
+    { path = "std::sync::RwLock", reason = "locks are forbidden on the audio thread" },
+    { path = "std::sync::Condvar", reason = "blocking is forbidden on the audio thread" },
+    { path = "std::sync::Barrier", reason = "blocking is forbidden on the audio thread" },
+    { path = "std::sync::mpsc::Sender", reason = "allocates and may block; use rtrb queues" },
+    { path = "std::sync::mpsc::SyncSender", reason = "may block; use rtrb queues" },
+]
+disallowed-methods = [
+    { path = "std::thread::sleep", reason = "blocking is forbidden on the audio thread" },
+]
+allow-unwrap-in-tests = true
