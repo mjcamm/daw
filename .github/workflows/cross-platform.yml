@@ -1,0 +1,38 @@
+name: Cross-platform check
+
+# Manual only: run on request from the Actions tab ("Run workflow") or with
+# `gh workflow run cross-platform.yml`. Day-to-day checks run locally via
+# scripts/check.sh.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Release compiles out debug-only code; catch anything left unused.
+      - run: cargo clippy --workspace --all-targets --release -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Debug builds: the realtime allocation guard is active.
+      - run: cargo test --workspace
+      # Release builds: the guard compiles away; behaviour must not change.
+      - run: cargo test --workspace --release

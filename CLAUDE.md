@@ -13,7 +13,9 @@ cargo fmt --all
 DAW_BLESS=1 cargo test -p <crate> --test <t> # write/update reference audio
 ```
 
-There is no hosted CI; checks run locally. Run `./scripts/check.sh` before every commit.
+Checks run locally. Run `./scripts/check.sh` before every commit.
+
+A manual GitHub workflow (`.github/workflows/cross-platform.yml`) runs the same checks on Linux, Windows and macOS. Only run it when the user asks for a cross-platform check; it never runs on push.
 
 ## Crates
 
