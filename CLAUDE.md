@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 A DAW where movement is the core of the music and automation is the core of the app.
-Read `daw-foundation.md` (vision, principles, concepts) and `build-plan.md` (phases) before starting work.
+Read `docs/STATUS.md` first (where things stand, what is next, open questions, how the user likes to work), then `daw-foundation.md` (vision, principles, concepts) and `build-plan.md` (phases).
 
 ## Commands
 
