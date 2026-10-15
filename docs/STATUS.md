@@ -6,7 +6,7 @@
 
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
-- **Phase 4 (motion signals): engine done** and tested (`docs/design/motion-signals.md`, `crates/daw-engine/tests/signals.rs`). UI not started.
+- **Phase 4 (motion signals): design revised with the user** (2026-10-15): layers (not blocks) listen to signals, signals are centred, notes become ADSR hits, Signals page layout agreed. The first-draft engine (`crates/daw-engine/tests/signals.rs`) is being changed to match; see "Engine changes" in `docs/design/motion-signals.md`. UI not started.
 
 ## In the app (`cargo run -p daw-ui`)
 
@@ -22,18 +22,24 @@
 
 - **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; `crates/daw-engine/src/upgrade.rs` converts older files exactly (Replace only when nothing below it acts).
 - **Layer mix** scales every block's weight on a layer.
-- **Signals** (file version 2): drawn or from MIDI notes; a block links with `Block.link` and reads the signal in song time, mapped into its low..high range.
+- **Signals** (file version 2, first draft): drawn or from MIDI notes; a block links with `Block.link` and a low..high range. Being replaced by layer-level listening (version 4).
 
 ## Waiting on the user
 
-1. **Three signal decisions** marked **(confirm)** in `motion-signals.md`: a signal gap means no effect; a notes envelope is silent once it ends; a signal in use cannot be removed.
-2. **Signals UI layout** (questions asked, unanswered): Signals page in the same timeline frame with one row per signal; "+ Add Signal" (Drawn / From notes); drawn signals edited like blocks; notes settings in a bottom bar; a "N uses" list that jumps to the Parameters page; linking from the block settings bar (signal dropdown plus low/high).
-3. **Dark mode** look check.
-4. **Milestone gate placement:** `build-plan.md` has it after Phase 4; earlier notes had it after Phase 3.
+1. **Node signal menu wording** (Arrange): "Publish notes as motion signal", "Publish sound as motion signal" / "Publish sound as audio signal" (greyed until Phase 6).
+2. **Dark mode** look check.
+3. **Milestone gate placement:** `build-plan.md` has it after Phase 4; earlier notes had it after Phase 3.
 
 ## Next up
 
-Phase 4 UI once the layout is agreed: the Signals page, then linking blocks to signals on the Parameters page. Then the milestone gate ("does shaping movement feel great?").
+1. Engine changes listed in `motion-signals.md` (test-first).
+2. Signals page, then the layer source pick list on Parameters, then "Publish as signal" on Arrange. Ask about details of each before building.
+3. The milestone gate ("does shaping movement feel great?").
+
+## Design rules the user has set
+
+- **One way to do anything.** No duplicate routes to the same result.
+- **Visible, not hidden.** Clear icons and buttons (e.g. go-to icons), not secret clicks or right-click-only menus.
 
 ## How the user likes to work
 

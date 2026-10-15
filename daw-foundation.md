@@ -48,14 +48,14 @@ It is an original design, not a clone or clean-room copy of any existing DAW. It
 - Every parameter rests at its **default state** (e.g. the plugin's own value). With nothing acting on it, it sits there, so "snap back" is automatic.
 - Each parameter has a **stack of layer lanes**. Layers combine using **blend modes** (e.g. add, multiply, replace), like image-editing layers. A wobble layer plus a rising curve layer gives a rising wobble.
 - Layer lanes hold **blocks** that are dragged, stretched and copied like clips.
-- A block is either **drawn locally** or **linked to a Signal** (which plays what the original signal plays at this point in the song), selected from the block itself.
+- A layer either holds **drawn** blocks or **listens to a Signal**, chosen on the layer. On a listening layer, blocks are windows: the signal plays wherever a block sits (what the signal plays at this point in the song), and gaps let nothing through.
 - **Gaps mean no effect**: the layer contributes nothing and the parameter falls through to what's underneath.
 - Each block has simple per-use controls: depth, invert, small time nudge, and edge fades to avoid clicks.
 
 ### 3.3 Signals: movement drawn once, used anywhere
 
 - A **Signal** is anything published so it can be pulled in anywhere in the project. There are two kinds:
-  - **Motion signals**: a shape over time, with no units or target of their own. They produce no audio. Each use sets where the bottom and top of the shape land on its target parameter.
+  - **Motion signals**: a centred shape over time (-1 to +1, like a layer lane), with no units or target of their own. They produce no audio. Each use scales and flips it with its blocks' depth and invert.
   - **Audio signals**: a node's sound, pulled into sidechain inputs or into other nodes (e.g. sends to a shared reverb).
 - Signals **always run in song time**, like a radio station that is always broadcasting. Anything that links to a signal hears it at the same song position; nothing ever restarts a signal.
 - **Sidechaining is a Signal.** Cross-branch effects (e.g. kick ducking the bass) are handled by publishing a signal and linking to it, not by drawing routing cables across the tree.
@@ -78,7 +78,7 @@ It is an original design, not a clone or clean-room copy of any existing DAW. It
 
 ### 3.4 The one rule
 
-> **Every parameter has a stack of layers. Each layer holds blocks. Each block is either drawn there or linked to a signal.**
+> **Every parameter has a stack of layers. Each layer holds blocks. A layer either draws its blocks or listens to a signal through them.**
 
 ---
 
