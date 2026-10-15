@@ -1,5 +1,6 @@
 //! The header bar: song details, page tabs, then the transport.
 
+use crate::block_edit::Grid;
 use crate::icons::{Icon, icon};
 use crate::layout::format_position;
 use crate::menu::{self, OpenMenu};
@@ -71,6 +72,7 @@ impl ProjectView {
             .child(song)
             .child(self.render_tabs(theme, cx))
             .child(div().flex_1())
+            .child(self.render_snap(theme, cx))
             .child(self.render_transport(theme, cx))
     }
 
@@ -165,6 +167,113 @@ impl ProjectView {
                     .child(loop_button),
             )
             .child(position)
+    }
+}
+
+impl ProjectView {
+    /// Snap or slide for block edits: a chip that opens a small panel.
+    fn render_snap(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let snap = self.snap;
+        let open = self.open_menu == Some(OpenMenu::Snap);
+        let hover = theme.hover;
+        let chip = div()
+            .id("snap")
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .h(px(26.))
+            .pl(px(8.))
+            .pr(px(6.))
+            .rounded(px(6.))
+            .bg(theme.control)
+            .hover(move |s| s.bg(hover))
+            .child(icon(
+                Icon::Magnet,
+                if snap.enabled {
+                    theme.accent
+                } else {
+                    theme.text_tertiary
+                },
+                13.,
+            ))
+            .child(
+                div()
+                    .min_w(px(34.))
+                    .text_color(theme.text_secondary)
+                    .child(snap.label()),
+            )
+            .child(icon(Icon::ChevronDown, theme.text_tertiary, 11.))
+            .on_click(cx.listener(|this, _, _, _| {
+                this.open_menu = match this.open_menu {
+                    Some(OpenMenu::Snap) => None,
+                    _ => Some(OpenMenu::Snap),
+                };
+            }));
+        div()
+            .flex()
+            .flex_col()
+            .child(chip)
+            .when(open, |d| d.child(self.render_snap_panel(theme, cx)))
+    }
+
+    fn render_snap_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let snap = self.snap;
+        let segment = |id: &'static str, label: &'static str, selected: bool| {
+            div()
+                .id(id)
+                .flex_1()
+                .flex()
+                .justify_center()
+                .py(px(2.))
+                .rounded(px(5.))
+                .when(selected, |d| d.bg(theme.control_selected))
+                .text_color(if selected {
+                    theme.text
+                } else {
+                    theme.text_secondary
+                })
+                .child(label)
+        };
+        let mode = div()
+            .flex()
+            .m(px(4.))
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(7.))
+            .bg(theme.control)
+            .text_size(px(12.))
+            .child(
+                segment("snap-on", "Snap", snap.enabled)
+                    .on_click(cx.listener(|this, _, _, _| this.snap.enabled = true)),
+            )
+            .child(
+                segment("snap-off", "Slide", !snap.enabled)
+                    .on_click(cx.listener(|this, _, _, _| this.snap.enabled = false)),
+            );
+        let grids = Grid::ALL.map(|grid| {
+            let current = snap.enabled && snap.grid == grid;
+            menu::item(
+                theme,
+                ("snap-grid", grid as usize),
+                grid.label(),
+                if current { "✓" } else { "" },
+            )
+            .when(!snap.enabled, |d| d.text_color(theme.text_tertiary))
+            .on_click(cx.listener(move |this, _, _, _| {
+                // Picking a grid while sliding switches snapping back on.
+                this.snap.enabled = true;
+                this.snap.grid = grid;
+                this.open_menu = None;
+            }))
+        });
+        menu::float(
+            menu::panel(theme)
+                .min_w(px(160.))
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.open_menu = None))
+                .child(mode)
+                .child(menu::separator(theme))
+                .children(grids),
+        )
     }
 }
 

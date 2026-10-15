@@ -1,10 +1,12 @@
 //! An open project: header and the current page.
 
+use crate::block_edit::Snap;
 use crate::menu::OpenMenu;
+use crate::parameters::BlockDrag;
 use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
-use daw_engine::{Command, Edit, LayerId, LoopRange};
+use daw_engine::{BlockId, Command, Edit, LayerId, LoopRange};
 use gpui::{
     Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, ScrollHandle,
     Subscription, Window, actions, div, prelude::*, px,
@@ -12,7 +14,7 @@ use gpui::{
 use std::cell::Cell;
 use std::rc::Rc;
 
-actions!(daw, [TogglePlay, Save, Undo, Redo]);
+actions!(daw, [TogglePlay, Save, Undo, Redo, DeleteSelection]);
 
 /// The key context of an open project, for its shortcuts.
 pub const KEY_CONTEXT: &str = "Workspace";
@@ -73,6 +75,15 @@ pub struct ProjectView {
     /// Horizontal scroll of the Parameters page timeline, shared with its
     /// ruler.
     pub(crate) parameters_scroll: ScrollHandle,
+    /// Where the Parameters page lanes were last drawn: the top-left is
+    /// beat 0 of the first row.
+    pub(crate) lanes_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Snap or slide for block edits. A UI preference, not project state.
+    pub(crate) snap: Snap,
+    pub(crate) selected_block: Option<BlockId>,
+    /// A block being dragged, shown as a preview until the mouse is
+    /// released; then it becomes one edit.
+    pub(crate) block_drag: Option<BlockDrag>,
     pub(crate) rename: Option<Rename>,
     pub(crate) save_error: Option<String>,
     window_title: String,
@@ -94,6 +105,10 @@ impl ProjectView {
             open_menu: None,
             node_selected: false,
             parameters_scroll: ScrollHandle::new(),
+            lanes_bounds: Rc::default(),
+            snap: Snap::default(),
+            selected_block: None,
+            block_drag: None,
             rename: None,
             save_error: None,
             window_title: String::new(),
@@ -245,6 +260,7 @@ impl Render for ProjectView {
             .on_action(cx.listener(|this, _: &Save, _, _| this.save()))
             .on_action(cx.listener(|this, _: &Undo, _, _| this.session.apply(Command::Undo)))
             .on_action(cx.listener(|this, _: &Redo, _, _| this.session.apply(Command::Redo)))
+            .on_action(cx.listener(|this, _: &DeleteSelection, _, _| this.delete_selection()))
             .child(self.render_header(&theme, cx))
             .children(
                 self.session

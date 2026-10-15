@@ -104,3 +104,10 @@ Application::new()
 - The dragged value is any `Clone + 'static` type. On the handle: `.on_drag(value, |value, grab_offset, window, cx| cx.new(|_| preview))`, where the preview is a view (the value can be its own view by implementing `Render`).
 - On targets: `.drag_over::<T>(|style, value, window, cx| style.bg(..))` to highlight while hovering, and `.on_drop(cx.listener(|this, value: &T, window, cx| ...))`. Both are filtered by type, so different drag kinds don't interfere.
 - `.cursor_move()` on the handle shows a move cursor.
+
+## Free-form drags (moving, resizing, scrubbing)
+
+- `.on_mouse_move` only fires while the element is hovered, so it loses a drag once the pointer leaves. To follow the mouse anywhere, register window-level listeners while dragging, from a `canvas` paint closure: `window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| ...)` (and `MouseUpEvent` to finish). They last one frame, so register them on every frame while the drag is active (fine here: the view redraws every frame). They see both phases; act on one (`DispatchPhase::Capture`). Reach the view with a `cx.entity().downgrade()` captured from `render`, then `weak.update(cx, |this, cx| ...)`.
+- `MouseDownEvent` has `click_count` (double-click without `on_click`) and `modifiers` (`.alt`, `.shift`, `.platform`).
+- Cursors: `.cursor_ew_resize()`, `.cursor_grab()`, `.cursor_crosshair()` and so on, from `gpui-macros` `styles.rs`. An invisible absolutely-positioned child with a cursor style gives a zone its own cursor without blocking the parent's mouse handlers.
+- Round dots in a canvas: `window.paint_quad(fill(bounds, color).corner_radii(px(r)))`.

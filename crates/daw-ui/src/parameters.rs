@@ -6,21 +6,34 @@
 //! result row showing the final value over time, then its layers, listed
 //! like image-editor layers (the top one applies last). The right side shows
 //! the same rows on the timeline.
+//!
+//! Blocks are edited on the layer lanes: double-click empty space for a new
+//! block, drag it to move, drag its edges to show more or less of it (the
+//! contents stay put), drag the corner handle to repeat it. A selected
+//! block shows its points and a settings bar. A drag is previewed here and
+//! becomes one edit when the mouse is released.
 
+use crate::block_edit::{
+    EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, drag_block, hit_test, move_point,
+    new_block, next_block_id, phase_at, point_at, point_positions, remove_point, room_around,
+    scrub, value_to_y, y_to_value,
+};
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, beat_to_x, timeline_bars};
 use crate::menu::{self, OpenMenu};
-use crate::project::{ProjectView, RenameTarget};
+use crate::project::{Page, ProjectView, RenameTarget};
 use crate::theme::{ContentColor, MONO_FONT, Theme};
 use daw_automation::{Automation, CompiledBlock};
 use daw_engine::{
-    BlendMode, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId, ParamSnapshot,
-    Snapshot,
+    BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId,
+    ParamSnapshot, Snapshot, Ticks,
 };
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Context, Div, FontWeight, Hsla, PathBuilder, Pixels, Point,
-    Window, canvas, div, point, prelude::*, px,
+    AnyElement, Bounds, ClickEvent, Context, DispatchPhase, Div, FontWeight, Hsla, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point,
+    SharedString, Window, canvas, div, fill, point, prelude::*, px, size,
 };
+use std::borrow::Cow;
 
 const LEFT_WIDTH: f32 = 260.;
 const RULER_HEIGHT: f32 = 28.;
@@ -28,9 +41,17 @@ const SECTION_HEIGHT: f32 = 30.;
 const DEVICE_HEIGHT: f32 = 30.;
 const SET_HEIGHT: f32 = 48.;
 const LAYER_HEIGHT: f32 = 40.;
+/// The layer holding the selected block grows, to give room for its points.
+const TALL_LAYER_HEIGHT: f32 = 96.;
 const ADD_HEIGHT: f32 = 26.;
-/// Space above and below a curve inside its row.
-const CURVE_PADDING: f32 = 6.;
+const SETTINGS_HEIGHT: f32 = 34.;
+/// Gap between a lane's edges and its blocks.
+const BLOCK_MARGIN: f32 = 3.;
+/// From a lane's top to the top of a block's drawing box: the margin plus
+/// the block's 1 px outline.
+const BLOCK_INSET: f32 = BLOCK_MARGIN + 1.;
+/// Radius of a drawn shape point.
+const POINT_DOT: f32 = 3.;
 
 const BLEND_MODES: [BlendMode; 5] = [
     BlendMode::Replace,
@@ -64,6 +85,8 @@ enum Row<'a> {
         index: usize,
         id: LayerId,
         layer: &'a Layer,
+        /// Holds the selected block, so drawn taller.
+        tall: bool,
     },
     AddLayer(&'a ParamSnapshot),
     AddParam(&'a DeviceSnapshot),
@@ -75,23 +98,25 @@ impl Row<'_> {
             Self::Section(_) => SECTION_HEIGHT,
             Self::Device(_) => DEVICE_HEIGHT,
             Self::Set(_) => SET_HEIGHT,
+            Self::Layer { tall: true, .. } => TALL_LAYER_HEIGHT,
             Self::Layer { .. } => LAYER_HEIGHT,
             Self::NoEffects | Self::AddLayer(_) | Self::AddParam(_) => ADD_HEIGHT,
         }
     }
 }
 
-/// The rows for a node, in display order.
-fn rows(snapshot: &Snapshot) -> Vec<Row<'_>> {
+/// The rows for a node, in display order. `tall` is the layer holding the
+/// selected block.
+fn rows(snapshot: &Snapshot, tall: Option<LayerId>) -> Vec<Row<'_>> {
     let mut rows = Vec::new();
     let find = |device| snapshot.devices.iter().find(|d| d.device == device);
     rows.push(Row::Section("Global"));
     if let Some(channel) = find(DeviceRef::Channel) {
-        push_device(&mut rows, channel);
+        push_device(&mut rows, channel, tall);
     }
     rows.push(Row::Section("Instrument"));
     if let Some(instrument) = find(DeviceRef::Instrument) {
-        push_device(&mut rows, instrument);
+        push_device(&mut rows, instrument, tall);
     }
     rows.push(Row::Section("Effects"));
     let effects: Vec<_> = snapshot
@@ -103,12 +128,12 @@ fn rows(snapshot: &Snapshot) -> Vec<Row<'_>> {
         rows.push(Row::NoEffects);
     }
     for effect in effects {
-        push_device(&mut rows, effect);
+        push_device(&mut rows, effect, tall);
     }
     rows
 }
 
-fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot) {
+fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot, tall: Option<LayerId>) {
     rows.push(Row::Device(device));
     for param in device.params.iter().filter(|p| !p.layers.is_empty()) {
         rows.push(Row::Set(param));
@@ -119,11 +144,113 @@ fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot) {
                 index,
                 id: *id,
                 layer,
+                tall: tall == Some(*id),
             });
         }
         rows.push(Row::AddLayer(param));
     }
     rows.push(Row::AddParam(device));
+}
+
+/// Every layer in the project.
+fn all_layers(snapshot: &Snapshot) -> impl Iterator<Item = &(LayerId, Layer)> {
+    snapshot
+        .devices
+        .iter()
+        .flat_map(|d| &d.params)
+        .flat_map(|p| &p.layers)
+}
+
+/// A block and the layer holding it.
+fn find_block(snapshot: &Snapshot, id: BlockId) -> Option<(LayerId, &Block)> {
+    all_layers(snapshot).find_map(|(layer_id, layer)| {
+        layer
+            .blocks
+            .iter()
+            .find(|(block_id, _)| *block_id == id)
+            .map(|(_, block)| (*layer_id, block))
+    })
+}
+
+/// An id no block in the project uses yet.
+fn next_block_id_in(snapshot: &Snapshot) -> BlockId {
+    next_block_id(all_layers(snapshot).flat_map(|(_, l)| l.blocks.iter().map(|(id, _)| id)))
+}
+
+/// `blocks` with the block being dragged shown at its preview.
+fn previewed_blocks<'a>(
+    drag: Option<&BlockDrag>,
+    blocks: &'a [(BlockId, Block)],
+) -> Cow<'a, [(BlockId, Block)]> {
+    match drag {
+        Some(drag) if blocks.iter().any(|(id, _)| *id == drag.id) => Cow::Owned(
+            blocks
+                .iter()
+                .map(|(id, block)| {
+                    let block = if *id == drag.id { &drag.preview } else { block };
+                    (*id, block.clone())
+                })
+                .collect(),
+        ),
+        _ => Cow::Borrowed(blocks),
+    }
+}
+
+/// `layers` with the block being dragged shown at its preview.
+fn previewed_layers<'a>(
+    drag: Option<&BlockDrag>,
+    layers: &'a [(LayerId, Layer)],
+) -> Cow<'a, [(LayerId, Layer)]> {
+    match drag {
+        Some(drag)
+            if layers
+                .iter()
+                .any(|(_, l)| l.blocks.iter().any(|(id, _)| *id == drag.id)) =>
+        {
+            Cow::Owned(
+                layers
+                    .iter()
+                    .map(|(id, layer)| {
+                        let blocks = previewed_blocks(Some(drag), &layer.blocks).into_owned();
+                        (
+                            *id,
+                            Layer {
+                                blocks,
+                                ..layer.clone()
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        }
+        _ => Cow::Borrowed(layers),
+    }
+}
+
+/// What a drag changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DragKind {
+    /// Part of a block on its lane.
+    Block(Hit),
+    /// A setting in the settings bar.
+    Setting(Setting),
+}
+
+/// A block being dragged. The engine is untouched until the mouse is
+/// released, so a whole drag is one undo step.
+#[derive(Debug, Clone)]
+pub(crate) struct BlockDrag {
+    id: BlockId,
+    kind: DragKind,
+    /// Pointer position when the drag began.
+    origin: Point<Pixels>,
+    original: Block,
+    preview: Block,
+    /// Free space around the block on its lane.
+    room: Room,
+    /// Window y of the top of the block's drawing box, and its height.
+    box_top: Pixels,
+    box_height: f32,
 }
 
 /// An id no layer in the project uses yet.
@@ -149,7 +276,8 @@ impl ProjectView {
         let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
         let width = beat_to_x(f64::from(bars) * BEATS_PER_BAR);
         let position = self.session.position_beats();
-        let rows = rows(snapshot);
+        let selected = self.selected_block(snapshot);
+        let rows = rows(snapshot, selected.map(|(_, layer, _)| layer));
 
         let left = div()
             .w(px(LEFT_WIDTH))
@@ -185,6 +313,15 @@ impl ProjectView {
             .left(px(beat_to_x(position)))
             .w(px(1.))
             .bg(theme.accent);
+        let mut top = 0.;
+        let right_cells: Vec<AnyElement> = rows
+            .iter()
+            .map(|row| {
+                let cell = self.right_cell(row, top, color, theme, width, cx);
+                top += row.height();
+                cell
+            })
+            .collect();
         let lanes = div()
             .id("parameter-lanes")
             .flex_1()
@@ -200,8 +337,9 @@ impl ProjectView {
                     .w(px(width))
                     .flex()
                     .flex_col()
+                    .child(self.lanes_tracker(cx))
                     .children(grid_lines)
-                    .children(rows.iter().map(|row| right_cell(row, color, theme, width)))
+                    .children(right_cells)
                     .child(playhead),
             );
 
@@ -247,27 +385,343 @@ impl ProjectView {
                 ),
             );
 
-        div().flex_1().min_h_0().flex().flex_col().child(top).child(
-            div()
-                .id("parameter-body")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .child(
-                    // Grows to fill the page when there are few rows (so the
-                    // column and grid reach the bottom) and beyond it when there
-                    // are many. Percentage heights do not work inside a vertical
-                    // scroll, so this uses flex growth instead.
-                    div()
-                        .flex()
-                        .flex_grow()
-                        .flex_shrink_0()
-                        .child(left)
-                        .child(lanes),
-                ),
+        let settings = selected.map(|(id, _, block)| {
+            let shown = match &self.block_drag {
+                Some(drag) if drag.id == id => &drag.preview,
+                _ => block,
+            };
+            self.settings_bar(id, shown, theme, cx)
+        });
+
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(top)
+            .child(
+                div()
+                    .id("parameter-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        // Grows to fill the page when there are few rows (so the
+                        // column and grid reach the bottom) and beyond it when there
+                        // are many. Percentage heights do not work inside a vertical
+                        // scroll, so this uses flex growth instead.
+                        div()
+                            .flex()
+                            .flex_grow()
+                            .flex_shrink_0()
+                            .child(left)
+                            .child(lanes),
+                    ),
+            )
+            .children(settings)
+    }
+
+    /// The selected block, if it still exists: its id, layer and contents.
+    fn selected_block<'a>(&self, snapshot: &'a Snapshot) -> Option<(BlockId, LayerId, &'a Block)> {
+        let id = self.selected_block?;
+        find_block(snapshot, id).map(|(layer, block)| (id, layer, block))
+    }
+
+    /// Records where the lanes are drawn, and while a block is being dragged,
+    /// follows the mouse anywhere in the window until it is released.
+    fn lanes_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let bounds_cell = self.lanes_bounds.clone();
+        let dragging = self.block_drag.is_some();
+        let view = cx.entity().downgrade();
+        canvas(
+            move |bounds, _, _| bounds_cell.set(bounds),
+            move |_, (), window, _| {
+                if !dragging {
+                    return;
+                }
+                let moved = view.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = moved.update(cx, |this, cx| {
+                            this.drag_to(event.position, event.modifiers);
+                            cx.notify();
+                        });
+                    }
+                });
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = view.update(cx, |this, cx| {
+                            this.finish_drag();
+                            cx.notify();
+                        });
+                    }
+                });
+            },
         )
+        .absolute()
+        .size_full()
+    }
+
+    /// The snap to use with `modifiers` held: Alt flips snap and slide.
+    fn snap_for(&self, modifiers: Modifiers) -> Snap {
+        if modifiers.alt {
+            self.snap.inverted()
+        } else {
+            self.snap
+        }
+    }
+
+    /// A press on a layer lane whose row starts `top` pixels down the lanes
+    /// and is `height` tall.
+    fn lane_mouse_down(&mut self, layer: LayerId, top: f32, height: f32, event: &MouseDownEvent) {
+        let snapshot = self.session.snapshot();
+        let Some((_, lane)) = all_layers(snapshot).find(|(id, _)| *id == layer) else {
+            return;
+        };
+        let lanes = self.lanes_bounds.get();
+        let x = (event.position.x - lanes.origin.x) / px(1.);
+        let at = Ticks::from_beats_f64(f64::from(x / PIXELS_PER_BEAT));
+        let snap = self.snap_for(event.modifiers);
+        let box_top = lanes.origin.y + px(top + BLOCK_INSET);
+        let box_height = height - 2. * BLOCK_INSET;
+
+        let Some((id, block)) = lane
+            .blocks
+            .iter()
+            .find(|(_, b)| b.start <= at && at < b.end())
+            .cloned()
+        else {
+            self.selected_block = None;
+            if event.click_count >= 2
+                && let Some(block) = new_block(&lane.blocks, at, snap)
+            {
+                let id = next_block_id_in(snapshot);
+                self.session
+                    .apply(Command::Edit(Edit::AddBlock { layer, id, block }));
+                self.selected_block = Some(id);
+            }
+            return;
+        };
+
+        let local_x = x - beat_to_x(block.start.as_beats());
+        let local_y = (event.position.y - box_top) / px(1.);
+        let was_selected = self.selected_block == Some(id);
+        let hit = hit_test(
+            &block,
+            local_x,
+            local_y,
+            PIXELS_PER_BEAT,
+            box_height,
+            was_selected,
+        );
+        let room = room_around(&lane.blocks, Some(id), block.start);
+        self.selected_block = Some(id);
+        if event.click_count >= 2 && was_selected && !matches!(hit, Hit::Point(_)) {
+            let at = phase_at(&block, local_x, PIXELS_PER_BEAT);
+            let (shape, _) = add_point(&block.shape, at, y_to_value(local_y, box_height));
+            self.session.apply(Command::Edit(Edit::SetBlock {
+                id,
+                block: Block { shape, ..block },
+            }));
+            return;
+        }
+        self.block_drag = Some(BlockDrag {
+            id,
+            kind: DragKind::Block(hit),
+            origin: event.position,
+            preview: block.clone(),
+            original: block,
+            room,
+            box_top,
+            box_height,
+        });
+    }
+
+    /// A right-click on a lane: removes the point under the pointer from the
+    /// selected block.
+    fn lane_right_click(&mut self, top: f32, height: f32, event: &MouseDownEvent) {
+        let Some((id, _, block)) = self.selected_block(self.session.snapshot()) else {
+            return;
+        };
+        let lanes = self.lanes_bounds.get();
+        let x = (event.position.x - lanes.origin.x) / px(1.) - beat_to_x(block.start.as_beats());
+        let y = (event.position.y - lanes.origin.y) / px(1.) - top - BLOCK_INSET;
+        let removed = point_at(block, x, y, PIXELS_PER_BEAT, height - 2. * BLOCK_INSET)
+            .and_then(|index| remove_point(&block.shape, index));
+        if let Some(shape) = removed {
+            let block = Block {
+                shape,
+                ..block.clone()
+            };
+            self.session
+                .apply(Command::Edit(Edit::SetBlock { id, block }));
+        }
+    }
+
+    /// Begins dragging a setting in the settings bar.
+    fn start_scrub(&mut self, id: BlockId, setting: Setting, origin: Point<Pixels>) {
+        let Some((_, block)) = find_block(self.session.snapshot(), id) else {
+            return;
+        };
+        self.block_drag = Some(BlockDrag {
+            id,
+            kind: DragKind::Setting(setting),
+            origin,
+            original: block.clone(),
+            preview: block.clone(),
+            room: Room {
+                start: Ticks::ZERO,
+                end: None,
+            },
+            box_top: px(0.),
+            box_height: 0.,
+        });
+    }
+
+    /// Updates the preview of the block being dragged.
+    fn drag_to(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
+        let snap = self.snap_for(modifiers);
+        let Some(drag) = &mut self.block_drag else {
+            return;
+        };
+        let dx = (position.x - drag.origin.x) / px(1.);
+        let original = &drag.original;
+        drag.preview = match drag.kind {
+            DragKind::Block(Hit::Point(index)) => {
+                let cycle = original.cycle.unwrap_or(original.length).as_beats();
+                let at = original.shape.points.get(index).map_or(0., |p| p.at)
+                    + f64::from(dx / PIXELS_PER_BEAT) / cycle;
+                let value = y_to_value((position.y - drag.box_top) / px(1.), drag.box_height);
+                Block {
+                    shape: move_point(&original.shape, index, at, value),
+                    ..original.clone()
+                }
+            }
+            DragKind::Block(hit) => drag_block(original, hit, dx, PIXELS_PER_BEAT, snap, drag.room),
+            DragKind::Setting(setting) => scrub(original, setting, dx, snap),
+        };
+    }
+
+    /// Ends a drag, sending the change as one edit.
+    fn finish_drag(&mut self) {
+        if let Some(drag) = self.block_drag.take()
+            && drag.preview != drag.original
+        {
+            self.session.apply(Command::Edit(Edit::SetBlock {
+                id: drag.id,
+                block: drag.preview,
+            }));
+        }
+    }
+
+    /// Deletes the selected block (Delete or Backspace).
+    pub(crate) fn delete_selection(&mut self) {
+        if self.page != Page::Parameters || self.block_drag.is_some() {
+            return;
+        }
+        if let Some(id) = self.selected_block.take()
+            && find_block(self.session.snapshot(), id).is_some()
+        {
+            self.session.apply(Command::Edit(Edit::RemoveBlock { id }));
+        }
+    }
+
+    /// The selected block's settings: drag a value sideways to change it.
+    fn settings_bar(
+        &self,
+        id: BlockId,
+        block: &Block,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let hover = theme.hover;
+        let fields = Setting::ALL.map(|setting| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .text_color(theme.text_secondary)
+                        .child(setting.label()),
+                )
+                .child(
+                    div()
+                        .id(("block-setting", setting as usize))
+                        .min_w(px(58.))
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .bg(theme.control)
+                        .hover(move |s| s.bg(hover))
+                        .cursor_ew_resize()
+                        .font_family(MONO_FONT)
+                        .text_size(px(11.))
+                        .child(setting.format(block))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                                this.start_scrub(id, setting, event.position);
+                            }),
+                        ),
+                )
+        });
+        let inverted = block.invert;
+        let mut active = theme.accent;
+        active.a = 0.18;
+        let invert = div()
+            .id("block-invert")
+            .px(px(8.))
+            .py(px(1.))
+            .rounded(px(4.))
+            .bg(if inverted { active } else { theme.control })
+            .hover(move |s| s.bg(hover))
+            .text_color(if inverted {
+                theme.accent
+            } else {
+                theme.text_secondary
+            })
+            .child("Invert")
+            .on_click(cx.listener(move |this, _, _, _| {
+                if let Some((_, block)) = find_block(this.session.snapshot(), id) {
+                    let block = Block {
+                        invert: !block.invert,
+                        ..block.clone()
+                    };
+                    this.session
+                        .apply(Command::Edit(Edit::SetBlock { id, block }));
+                }
+            }));
+
+        div()
+            .h(px(SETTINGS_HEIGHT))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(18.))
+            .px(px(12.))
+            .bg(theme.sidebar)
+            .border_t_1()
+            .border_color(theme.edge)
+            .text_size(px(12.))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_tertiary)
+                    .child("BLOCK"),
+            )
+            .children(fields)
+            .child(invert)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme.text_tertiary)
+                    .child("Double-click to add a point · right-click to remove · Alt flips snap"),
+            )
     }
 
     fn left_cell(
@@ -331,6 +785,7 @@ impl ProjectView {
                 index,
                 id,
                 layer,
+                ..
             } => self
                 .layer_header(*param, *index, *id, layer, cell, theme, cx)
                 .into_any_element(),
@@ -617,91 +1072,191 @@ fn quiet_action(
         .child(label)
 }
 
-/// The timeline side of a row.
-fn right_cell(row: &Row<'_>, color: ContentColor, theme: &Theme, width: f32) -> AnyElement {
-    let cell = div()
-        .h(px(row.height()))
-        .flex_none()
-        .w(px(width))
-        .relative();
-    match row {
-        Row::Set(param) => {
-            let automation = Automation::compile_layers(param.base, &param.layers);
-            let (line, fill) = (color.detail, color.fill);
-            cell.bg(theme.window)
-                .border_b_1()
-                .border_color(theme.hairline)
-                .child(
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, (), window, _| {
-                            paint_curve(window, bounds, line, Some(fill), |beat| {
-                                automation.value_at(beat)
-                            });
-                        },
+impl ProjectView {
+    /// The timeline side of a row that starts `top` pixels down the lanes.
+    fn right_cell(
+        &self,
+        row: &Row<'_>,
+        top: f32,
+        color: ContentColor,
+        theme: &Theme,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let height = row.height();
+        let cell = div().h(px(height)).flex_none().w(px(width)).relative();
+        let drag = self.block_drag.as_ref();
+        match row {
+            Row::Set(param) => {
+                let layers = previewed_layers(drag, &param.layers);
+                let automation = Automation::compile_layers(param.base, &layers);
+                let (line, fill) = (color.detail, color.fill);
+                cell.bg(theme.window)
+                    .border_b_1()
+                    .border_color(theme.hairline)
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, (), window, _| {
+                                paint_curve(window, bounds, line, Some(fill), |beat| {
+                                    automation.value_at(beat)
+                                });
+                            },
+                        )
+                        .size_full(),
                     )
-                    .size_full(),
-                )
-                .into_any_element()
+                    .into_any_element()
+            }
+            Row::Layer { id, layer, .. } => {
+                let layer_id = *id;
+                let colors = if layer.enabled {
+                    color
+                } else {
+                    theme.muted_content
+                };
+                let blocks = previewed_blocks(drag, &layer.blocks);
+                cell.border_b_1()
+                    .border_color(theme.hairline)
+                    .children(blocks.iter().map(|(id, block)| {
+                        block_view(*id, block, colors, self.selected_block == Some(*id), theme)
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            this.lane_mouse_down(layer_id, top, height, event);
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            this.lane_right_click(top, height, event);
+                        }),
+                    )
+                    .into_any_element()
+            }
+            _ => cell.into_any_element(),
         }
-        Row::Layer { layer, .. } => {
-            let colors = if layer.enabled {
-                color
-            } else {
-                theme.muted_content
-            };
-            let blocks: Vec<CompiledBlock> = layer
-                .blocks
-                .iter()
-                .map(|(_, b)| CompiledBlock::compile(b))
-                .collect();
-            cell.border_b_1()
-                .border_color(theme.hairline)
-                .children(
-                    blocks
-                        .into_iter()
-                        .enumerate()
-                        .map(move |(i, block)| block_view(i, block, colors)),
-                )
-                .into_any_element()
-        }
-        _ => cell.into_any_element(),
     }
 }
 
-/// A block on a layer lane: its span, with the shape it draws.
-fn block_view(index: usize, block: CompiledBlock, colors: ContentColor) -> impl IntoElement {
-    let left = beat_to_x(block.start);
-    let width = beat_to_x(block.end - block.start);
-    let start = block.start;
+/// A block on a layer lane: its span and the shape it draws, with stretch
+/// zones at its edges and a loop handle in its top-right corner. Selected
+/// blocks show their points.
+fn block_view(
+    id: BlockId,
+    block: &Block,
+    colors: ContentColor,
+    selected: bool,
+    theme: &Theme,
+) -> impl IntoElement {
+    let left = beat_to_x(block.start.as_beats());
+    let width = beat_to_x(block.length.as_beats());
+    let compiled = CompiledBlock::compile(block);
+    let start = compiled.start;
+    // Where each repeat of the shape begins, after the first.
+    let cycle = compiled.cycle;
+    let repeats: Vec<f32> = (1..)
+        .map(|k| beat_to_x(f64::from(k) * cycle))
+        .take_while(|x| *x < width - 0.5)
+        .collect();
+    let points: Vec<(f32, f64)> = if selected {
+        point_positions(block, PIXELS_PER_BEAT)
+            .into_iter()
+            .map(|(index, x)| (x, block.shape.points[index].value))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let group = SharedString::from(format!("block-{}", id.0));
+    let edge = EDGE_ZONE.min(width / 4.);
+    let has_loop_handle = width >= 2. * LOOP_HANDLE;
+
     div()
-        .id(("block", index))
+        .id(("block", id.0))
+        .group(group.clone())
         .absolute()
         .left(px(left))
-        .top(px(3.))
-        .bottom(px(3.))
+        .top(px(BLOCK_MARGIN))
+        .bottom(px(BLOCK_MARGIN))
         .w(px(width))
         .rounded(px(4.))
         .bg(colors.fill)
         .border_1()
-        .border_color(colors.outline)
+        .border_color(if selected {
+            theme.accent
+        } else {
+            colors.outline
+        })
         .overflow_hidden()
         .child(
             canvas(
                 |_, _, _| {},
                 move |bounds, (), window, _| {
+                    for x in &repeats {
+                        let line = Bounds::new(
+                            point(bounds.origin.x + px(*x), bounds.origin.y),
+                            size(px(1.), bounds.size.height),
+                        );
+                        window.paint_quad(fill(line, colors.outline));
+                    }
                     paint_curve(window, bounds, colors.detail, None, |beat| {
                         let beat = start + beat;
-                        if block.contains(beat) {
-                            block.sample(beat).0
+                        if compiled.contains(beat) {
+                            compiled.sample(beat).0
                         } else {
                             f64::NAN
                         }
                     });
+                    let height = bounds.size.height / px(1.);
+                    for (x, value) in &points {
+                        let centre = point(
+                            bounds.origin.x + px(*x),
+                            bounds.origin.y + px(value_to_y(*value, height)),
+                        );
+                        let dot = Bounds::new(
+                            point(centre.x - px(POINT_DOT), centre.y - px(POINT_DOT)),
+                            size(px(2. * POINT_DOT), px(2. * POINT_DOT)),
+                        );
+                        window.paint_quad(fill(dot, colors.detail).corner_radii(px(POINT_DOT)));
+                    }
                 },
             )
             .size_full(),
         )
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .w(px(edge))
+                .cursor_ew_resize(),
+        )
+        .child(
+            div()
+                .absolute()
+                .right_0()
+                .top_0()
+                .bottom_0()
+                .w(px(edge))
+                .cursor_ew_resize(),
+        )
+        .when(has_loop_handle, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .size(px(LOOP_HANDLE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_ew_resize()
+                    .opacity(if selected { 1. } else { 0. })
+                    .group_hover(group, |s| s.opacity(1.))
+                    .child(icon(Icon::Loop, colors.detail, 10.)),
+            )
+        })
 }
 
 /// Draws `value(beat)` (0..=1, NaN for "nothing here") across `bounds`, with
@@ -714,11 +1269,11 @@ fn paint_curve(
     value: impl Fn(f64) -> f64,
 ) {
     let width = bounds.size.width / px(1.);
-    let height = bounds.size.height / px(1.) - 2. * CURVE_PADDING;
+    let height = bounds.size.height / px(1.);
     let to_point = |x: f32, v: f64| -> Point<Pixels> {
         point(
             bounds.origin.x + px(x),
-            bounds.origin.y + px(CURVE_PADDING + (1. - v as f32) * height),
+            bounds.origin.y + px(value_to_y(v, height)),
         )
     };
     let step = 2.;
@@ -787,7 +1342,7 @@ mod tests {
     fn an_untouched_node_lists_its_devices_only() {
         let snapshot = snapshot_with(vec![]);
         assert_eq!(
-            describe(&rows(&snapshot)),
+            describe(&rows(&snapshot, None)),
             [
                 "section Global",
                 "device Channel",
@@ -810,7 +1365,7 @@ mod tests {
             layer: Layer::named(name, BlendMode::Replace),
         };
         let snapshot = snapshot_with(vec![add(1, 0, "Bottom"), add(2, 1, "Top")]);
-        let described = describe(&rows(&snapshot));
+        let described = describe(&rows(&snapshot, None));
         assert_eq!(
             &described[1..6],
             [
@@ -827,6 +1382,73 @@ mod tests {
     #[test]
     fn layer_ids_start_at_one() {
         assert_eq!(next_layer_id(&snapshot_with(vec![])), LayerId(1));
+    }
+
+    fn layer_with_block() -> Vec<Edit> {
+        vec![
+            Edit::AddLayer {
+                param: VOLUME,
+                id: LayerId(1),
+                index: 0,
+                layer: Layer::named("Layer 1", BlendMode::Add),
+            },
+            Edit::AddBlock {
+                layer: LayerId(1),
+                id: BlockId(4),
+                block: Block::new(Ticks::ZERO, Ticks::from_beats(4), Shape::constant(0.5)),
+            },
+        ]
+    }
+
+    #[test]
+    fn blocks_are_found_with_their_layer() {
+        let snapshot = snapshot_with(layer_with_block());
+        let (layer, block) = find_block(&snapshot, BlockId(4)).unwrap();
+        assert_eq!((layer, block.length), (LayerId(1), Ticks::from_beats(4)));
+        assert!(find_block(&snapshot, BlockId(5)).is_none());
+        assert_eq!(next_block_id_in(&snapshot), BlockId(5));
+    }
+
+    #[test]
+    fn the_layer_with_the_selected_block_is_tall() {
+        let snapshot = snapshot_with(layer_with_block());
+        let heights: Vec<f32> = rows(&snapshot, Some(LayerId(1)))
+            .iter()
+            .filter(|r| matches!(r, Row::Layer { .. }))
+            .map(Row::height)
+            .collect();
+        assert_eq!(heights, [TALL_LAYER_HEIGHT]);
+    }
+
+    #[test]
+    fn a_drag_previews_only_its_own_block() {
+        let snapshot = snapshot_with(layer_with_block());
+        let layers = &snapshot.devices.last().unwrap().params[0].layers;
+        let original = layers[0].1.blocks[0].1.clone();
+        let mut preview = original.clone();
+        preview.start = Ticks::from_beats(2);
+        let drag = BlockDrag {
+            id: BlockId(4),
+            kind: DragKind::Block(Hit::Body),
+            origin: point(px(0.), px(0.)),
+            original,
+            preview,
+            room: Room {
+                start: Ticks::ZERO,
+                end: None,
+            },
+            box_top: px(0.),
+            box_height: 0.,
+        };
+        let shown = previewed_layers(Some(&drag), layers);
+        assert_eq!(shown[0].1.blocks[0].1.start, Ticks::from_beats(2));
+        let mut other = drag.clone();
+        other.id = BlockId(9);
+        assert!(matches!(
+            previewed_layers(Some(&other), layers),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(previewed_layers(None, layers), Cow::Borrowed(_)));
     }
 
     #[test]

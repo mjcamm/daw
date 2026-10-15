@@ -14,6 +14,8 @@ pub enum OpenMenu {
     AddParam(daw_engine::DeviceRef),
     /// A layer's blend mode.
     BlendMode(daw_engine::LayerId),
+    /// Snap or slide, and the snap grid.
+    Snap,
 }
 
 /// The floating panel. Place it where the menu should appear; close it with
