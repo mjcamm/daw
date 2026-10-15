@@ -54,20 +54,27 @@ It is an original design, not a clone or clean-room copy of any existing DAW. It
 
 ### 3.3 Signals: movement drawn once, used anywhere
 
-- A **Signal** is a shape over time living on its own signal lane. It produces no audio.
-- Signals **always run in song time**, like a radio station that is always broadcasting. A block that links to a signal hears it at the same song position; blocks never restart a signal.
-- Repetition lives on the signal itself (e.g. draw one bar, repeat as linked copies).
-- Signal **sources**:
-  - **Drawn** by hand as a fundamental signal itself
-  - **From MIDI note broadcast from a midi track**, e.g. a kick pattern producing a ducking shape. Known in advance, perfectly in sync.
-  - **From audio before effects**, analysed from the clip. Known in advance.
-  - **From audio after effects**, followed live during playback, and saves the data for UI display because effects are dynamic.
-- **Sidechaining is a Signal.** Cross-branch effects (e.g. kick ducking the bass) are handled by publishing a signal and linking to it, not by drawing routing cables across the tree.
 - A **Signal** is anything published so it can be pulled in anywhere in the project. There are two kinds:
-  - **Motion signals**: pure shape, with no units or target of their own. Each use sets where the bottom and top of the shape land on its target parameter.
+  - **Motion signals**: a shape over time, with no units or target of their own. They produce no audio. Each use sets where the bottom and top of the shape land on its target parameter.
   - **Audio signals**: a node's sound, pulled into sidechain inputs or into other nodes (e.g. sends to a shared reverb).
-- Pulling an audio signal into a layer turns it into motion by following its loudness.
-- Every signal shows a **"Used by"** list, and every linked block shows the signal's name and colour.
+- Signals **always run in song time**, like a radio station that is always broadcasting. Anything that links to a signal hears it at the same song position; nothing ever restarts a signal.
+- **Sidechaining is a Signal.** Cross-branch effects (e.g. kick ducking the bass) are handled by publishing a signal and linking to it, not by drawing routing cables across the tree.
+- Every signal shows a **"Used by"** list, and everything linked to a signal shows its name and colour.
+
+#### Motion signals
+
+- A motion signal lives on its own signal lane.
+- Repetition lives on the signal itself (e.g. draw one bar, repeat as linked copies).
+- Motion signal **sources**:
+  - **Drawn** by hand.
+  - **From MIDI notes** broadcast by a MIDI node, e.g. a kick pattern producing a ducking shape. Known in advance, perfectly in sync.
+  - **From audio before effects**, analysed from the clip. Known in advance.
+  - **From audio after effects**, followed live during playback. Effects are dynamic, so this shape cannot be known in advance; it is captured as it plays and saved so the UI can display it.
+
+#### Audio signals
+
+- An audio signal is a node's sound, published so other parts of the tree can pull it in.
+- Pulling an audio signal into a layer turns it into motion by following its loudness. This behaves like an "audio after effects" motion source: followed live, captured and saved for display.
 
 ### 3.4 The one rule
 
@@ -115,9 +122,9 @@ It is an original design, not a clone or clean-room copy of any existing DAW. It
 | Audio engine | **Rust**                                                                                          | Real-time safe, top-tier performance, compiler acts as a strong feedback loop for AI-assisted development |
 | UI framework | **GPUI**                                                                                          | Native GPU rendering, lowest latency, proven in production by Zed |
 | Heavy visuals | **Isolated rendering module**, drawn with GPUI first; a custom GPU renderer only if performance demands it | Keeps the hardest-to-port code behind its own interface, without fighting the UI framework early |
-| Plugin hosting | **VST3 first then CLAP**                                                                | CLAP is simple to host from Rust and automation-friendly; VST3 is essential for user reach |
+| Plugin hosting | **VST3 first, then CLAP**                                                                | VST3 is essential for user reach, and the plugins available for development and testing are VST3. CLAP follows later: it is simple to host from Rust and automation-friendly |
 | Generic plumbing | **Reuse existing open-source crates**                                                             | Don't rebuild what already exists (audio I/O, file decoding, plugin hosting, FFT, etc.) |
-| Licence | **Open source** (specific licence TBD)                                                            | Given away freely |
+| Licence | **Dual-licensed under MIT OR Apache-2.0**                                                         | Given away freely; users may choose either licence |
 
 **Architectural rules:**
 
@@ -153,5 +160,5 @@ To be resolved in the detailed spec:
 - How collapsed nodes summarise their contents.
 - Whether plugins run in separate processes to protect against crashes.
 - How the app stays robust when a plugin update changes its parameters.
-- Choice of open-source licence.
+- How live-followed signals (audio after effects, and audio signals pulled into layers) behave before they have been captured, when the audio feeding them changes, and during offline render/export.
 - Working name.
