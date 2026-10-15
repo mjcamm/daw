@@ -105,31 +105,37 @@ fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
         effect: Effect::new(EffectKind::Filter),
     }))?;
 
-    // The filter opens slowly at first, then quickly, over the whole loop.
+    // The filter rests low and opens slowly at first, then quickly, over the
+    // whole loop: from the centre line (no change) up by 0.6.
+    let filter_cutoff = ParamId {
+        device: DeviceRef::Effect(FILTER),
+        index: filter::CUTOFF,
+    };
+    engine.apply(Command::Edit(Edit::SetParam {
+        param: filter_cutoff,
+        value: 0.35,
+    }))?;
     let sweep = Block::new(
         Ticks::ZERO,
         Ticks::from_bars(BARS),
         Shape {
             points: vec![
-                ShapePoint::new(0.0, 0.35).with_segment(Segment::Curve(0.6)),
-                ShapePoint::new(1.0, 0.95),
+                ShapePoint::new(0.0, 0.5).with_segment(Segment::Curve(0.6)),
+                ShapePoint::new(1.0, 0.8),
             ],
         },
     );
-    let filter_cutoff = ParamId {
-        device: DeviceRef::Effect(FILTER),
-        index: filter::CUTOFF,
-    };
-    add_layer(engine, filter_cutoff, 1, BlendMode::Replace, sweep)?;
+    add_layer(engine, filter_cutoff, 1, BlendMode::Add, sweep)?;
 
-    // Each beat starts quiet and swells back: ducking, drawn once.
+    // Each beat starts quiet and swells back to the centre line (no
+    // change): ducking, drawn once.
     let mut pump = Block::new(
         Ticks::ZERO,
         Ticks::from_bars(BARS),
         Shape {
             points: vec![
-                ShapePoint::new(0.0, 0.15).with_segment(Segment::Curve(-0.5)),
-                ShapePoint::new(0.7, 1.0),
+                ShapePoint::new(0.0, 0.075).with_segment(Segment::Curve(-0.5)),
+                ShapePoint::new(0.7, 0.5),
             ],
         },
     );
@@ -159,7 +165,7 @@ fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
         device: DeviceRef::Instrument,
         index: instrument::CUTOFF,
     };
-    add_layer(engine, synth_cutoff, 3, BlendMode::Modulate, wobble)
+    add_layer(engine, synth_cutoff, 3, BlendMode::Add, wobble)
 }
 
 /// Adds a single-block layer, using one id for both the layer and the block.

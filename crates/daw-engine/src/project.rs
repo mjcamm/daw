@@ -734,7 +734,7 @@ mod tests {
             param,
             id: LayerId(id),
             index: 0,
-            layer: Layer::new(BlendMode::Replace),
+            layer: Layer::new(BlendMode::Add),
         }
     }
 

@@ -39,9 +39,18 @@ Shown at the bottom of the page while a block is selected: Depth, Fade In, Fade 
 
 Each parameter's result row has a small vertical slider just right of its name. It edits the parameter's default state, the value it rests at with no layers acting (`Edit::SetParam`). Moving it never records movement, in line with "moving a knob edits the default state" in `parameters-and-layers.md`. Drag up to raise; 200 px covers the full range, Shift makes it five times finer. Like block drags, it previews (value readout and result curve) and sends one edit on release.
 
-## Layer mix
+## Centre line and actual effect
 
-Each layer row on the Parameters page has a slim horizontal slider between its name and blend mode, with a percentage readout: how much of the layer reaches the result (see `parameters-and-layers.md`). Drag sideways, 150 px for the full range, Shift for five times finer; double-click resets to 100 %. Previews the result curve and value live; one undo step on release. The left column widened from 260 to 320 px to fit it.
+Every layer lane has a centre line (no effect): shapes above it push up, below it pull down (see `parameters-and-layers.md`). Inside each block, the bright line is the shape as drawn; a faint second line shows what the layer actually does, with depth, fades and mix applied: `0.5 + (x - 0.5) · weight · mix`, around the centre line.
+
+## Sliders
+
+One slider design everywhere (`crates/daw-ui/src/slider.rs`): a hairline track filled up to the value, with a round thumb. Drags are relative: 200 px for the full range, Shift for five times finer.
+
+- **Resting value:** a vertical slider beside each parameter's name on its result row.
+- **Layer mix:** a vertical slider on each layer row, between the name and the blend mode, with a percentage: how much of the layer reaches the result. Double-click resets to 100 %.
+- **Zoom:** the corner zoom sliders use the same slider on a small pill.
+- Row sliders are sized to the row (zoomed row height minus 10 px). All preview live and send one edit on release.
 
 ## Zoom
 

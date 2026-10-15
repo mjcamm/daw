@@ -17,8 +17,8 @@ use std::fmt;
 /// Identifies the file type, so other JSON files are rejected clearly.
 pub const FORMAT: &str = "daw-project";
 /// Bumped whenever the layout changes; older versions are converted on load.
-/// Version 2 added motion signals.
-pub const VERSION: u32 = 2;
+/// Version 2 added motion signals; version 3 centred the blend modes.
+pub const VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -201,6 +201,12 @@ impl ProjectFile {
         if header.version > VERSION {
             return Err(LoadError::UnsupportedVersion(header.version));
         }
+        if header.version < 3 {
+            let mut value: serde_json::Value =
+                serde_json::from_str(json).map_err(LoadError::Json)?;
+            crate::upgrade::centre_blend_modes(&mut value);
+            return serde_json::from_value(value).map_err(LoadError::Json);
+        }
         serde_json::from_str(json).map_err(LoadError::Json)
     }
 
@@ -318,7 +324,7 @@ mod tests {
     /// A project using every kind of content.
     fn rich_project() -> Project {
         let mut project = Project::default();
-        let mut layer = Layer::new(BlendMode::Modulate);
+        let mut layer = Layer::new(BlendMode::Add);
         layer.mix = 0.65;
         let mut block = Block::new(
             Ticks::from_beats(2),
@@ -449,7 +455,7 @@ mod tests {
         let json = ProjectFile::new(&rich_project(), None).to_json();
         assert!(json.contains("\"format\": \"daw-project\""));
         assert!(json.contains("\"name\": \"Night Drive\""));
-        assert!(json.contains("\"mode\": \"Modulate\""));
+        assert!(json.contains("\"mode\": \"Add\""));
     }
 
     fn file_json(change: impl FnOnce(&mut serde_json::Value)) -> String {
@@ -530,6 +536,32 @@ mod tests {
         });
         let (project, _) = load(&json).unwrap();
         assert!(project.signals.is_empty());
+    }
+
+    #[test]
+    fn older_files_load_with_their_blend_modes_centred() {
+        let json = file_json(|v| {
+            v["version"] = 2.into();
+            let layer = &mut v["nodes"][0]["instrument"]["params"][0]["layers"][0][1];
+            layer["mode"] = "Modulate".into();
+        });
+        let (project, _) = load(&json).unwrap();
+        // Modulate was already centred: it becomes Add with the same values
+        // (invert folded into the points).
+        let cutoff = |p: &Project| {
+            daw_automation::Automation::compile(&p.node.instrument[instrument::CUTOFF as usize])
+        };
+        let (loaded, expected) = (cutoff(&project), cutoff(&rich_project()));
+        for beat in [2.0, 2.1, 3.3, 5.9] {
+            assert!((loaded.value_at(beat) - expected.value_at(beat)).abs() < 1e-9);
+        }
+        assert!(
+            project.node.instrument[0].layers[0]
+                .1
+                .blocks
+                .iter()
+                .all(|(_, b)| !b.invert)
+        );
     }
 
     #[test]

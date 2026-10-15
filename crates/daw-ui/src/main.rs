@@ -11,6 +11,7 @@ mod menu;
 mod parameters;
 mod project;
 mod session;
+mod slider;
 mod text_input;
 mod theme;
 mod zoom;

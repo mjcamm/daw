@@ -7,7 +7,7 @@ use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
     AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
     EffectKind, Engine, EngineConfig, Layer, LayerId, LoopRange, MidiClip, MidiNote, NotesSource,
-    ParamId, Shape, Signal, SignalId, SignalSource, SignalUse, Ticks,
+    ParamId, Shape, Signal, SignalId, SignalLink, SignalSource, SignalUse, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, render};
 
@@ -106,7 +106,14 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
     );
     for (id, param) in [(1, VOLUME), (2, SYNTH_CUTOFF), (3, FILTER_CUTOFF)] {
         let mut layer = Layer::new(BlendMode::Multiply);
-        let block = Block::new(Ticks::ZERO, beats(8.0), Shape::constant(1.0)).linked(DUCK);
+        // The envelope lands on the bottom half of the lane: from a full
+        // duck up to the centre line (no change).
+        let mut block = Block::new(Ticks::ZERO, beats(8.0), Shape::constant(1.0));
+        block.link = Some(SignalLink {
+            signal: DUCK,
+            low: 0.0,
+            high: 0.5,
+        });
         layer.blocks.push((BlockId(id), block));
         apply(
             &mut engine,

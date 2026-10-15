@@ -18,6 +18,7 @@ mod history;
 mod project;
 mod schedule;
 mod transport;
+mod upgrade;
 
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{

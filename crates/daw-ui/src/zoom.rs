@@ -6,8 +6,9 @@
 //! Shared by every timeline page (Parameters now; Arrange and Signals
 //! later): the page holds a `Zoom`, draws `corner`, and forwards drags.
 
+use crate::slider;
 use crate::theme::Theme;
-use gpui::{Div, ElementId, Pixels, Point, Stateful, div, prelude::*, px};
+use gpui::{AnyElement, Div, ElementId, Pixels, Point, Stateful, div, prelude::*, px};
 
 const MIN_PIXELS_PER_BEAT: f32 = 2.;
 const MAX_PIXELS_PER_BEAT: f32 = 400.;
@@ -15,10 +16,11 @@ const MIN_ROW_HEIGHT: f32 = 28.;
 const MAX_ROW_HEIGHT: f32 = 400.;
 /// Length of a slider's travel.
 const SLIDER_LENGTH: f32 = 80.;
-/// Cross size of a slider, and its gap from the page edges.
-const SLIDER_THICKNESS: f32 = 14.;
+/// Gap between the sliders' pills and the page edges.
 const CORNER_GAP: f32 = 4.;
-const THUMB: f32 = 9.;
+/// Padding inside a slider's pill, and the pill's cross size.
+const PILL_PADDING: f32 = 1.;
+const PILL: f32 = slider::THICKNESS + 2. * PILL_PADDING + 2.;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
@@ -123,8 +125,9 @@ impl ZoomDrag {
     }
 }
 
-/// A short slim slider: a hairline track with a round thumb at `position`
-/// (`0..=1`; left or bottom is 0). Attach `on_mouse_down` to start a drag.
+/// A zoom slider: the app's standard slider (see `slider.rs`), `position`
+/// along its travel. Attach `on_mouse_down` to start a drag; place it with
+/// [`corner`].
 pub fn slider(
     id: impl Into<ElementId>,
     axis: Axis,
@@ -132,70 +135,38 @@ pub fn slider(
     active: bool,
     theme: &Theme,
 ) -> Stateful<Div> {
-    let along = position.clamp(0., 1.) * (SLIDER_LENGTH - THUMB);
-    let cross = (SLIDER_THICKNESS - THUMB) / 2.;
-    let thumb = div()
-        .absolute()
-        .size(px(THUMB))
-        .rounded(px(THUMB / 2.))
-        .bg(if active {
-            theme.accent
-        } else {
-            theme.text_secondary
-        });
-    let track = div().absolute().rounded(px(1.)).bg(theme.hairline);
-    let (track, thumb, base) = match axis {
-        Axis::Horizontal => (
-            track
-                .left(px(THUMB / 2.))
-                .right(px(THUMB / 2.))
-                .top(px(SLIDER_THICKNESS / 2. - 1.))
-                .h(px(2.)),
-            thumb.left(px(along)).top(px(cross)),
-            div()
-                .w(px(SLIDER_LENGTH))
-                .h(px(SLIDER_THICKNESS))
-                .cursor_ew_resize(),
-        ),
-        Axis::Vertical => (
-            track
-                .top(px(THUMB / 2.))
-                .bottom(px(THUMB / 2.))
-                .left(px(SLIDER_THICKNESS / 2. - 1.))
-                .w(px(2.)),
-            thumb.bottom(px(along)).left(px(cross)),
-            div()
-                .w(px(SLIDER_THICKNESS))
-                .h(px(SLIDER_LENGTH))
-                .cursor_ns_resize(),
-        ),
+    let orientation = match axis {
+        Axis::Horizontal => slider::Axis::Horizontal,
+        Axis::Vertical => slider::Axis::Vertical,
     };
-    base.id(id)
-        .relative()
-        .rounded(px(SLIDER_THICKNESS / 2.))
-        .bg(theme.sidebar)
-        .border_1()
-        .border_color(theme.hairline)
-        .child(track)
-        .child(thumb)
+    slider::slider(id, orientation, position, SLIDER_LENGTH, active, theme)
 }
 
 /// Places a vertical slider against the right edge and a horizontal slider
 /// along the bottom, meeting at the bottom-right corner of the nearest
-/// `relative()` parent.
-pub fn corner(vertical: impl IntoElement, horizontal: impl IntoElement) -> [Div; 2] {
-    let beside = CORNER_GAP * 2. + SLIDER_THICKNESS;
+/// `relative()` parent. Each sits on a small pill so it reads over content.
+pub fn corner(vertical: impl IntoElement, horizontal: impl IntoElement, theme: &Theme) -> [Div; 2] {
+    let pill = |child: AnyElement| {
+        div()
+            .p(px(PILL_PADDING))
+            .rounded(px(PILL / 2.))
+            .bg(theme.sidebar)
+            .border_1()
+            .border_color(theme.hairline)
+            .child(child)
+    };
+    let beside = CORNER_GAP * 2. + PILL;
     [
         div()
             .absolute()
             .right(px(CORNER_GAP))
             .bottom(px(beside))
-            .child(vertical),
+            .child(pill(vertical.into_any_element())),
         div()
             .absolute()
             .right(px(beside))
             .bottom(px(CORNER_GAP))
-            .child(horizontal),
+            .child(pill(horizontal.into_any_element())),
     ]
 }
 

@@ -49,7 +49,7 @@ fn busy_engine() -> (Engine, AudioProcessor) {
             effect: Effect::new(EffectKind::Filter),
         },
     );
-    let mut sweep = Layer::new(BlendMode::Replace);
+    let mut sweep = Layer::new(BlendMode::Add);
     sweep.blocks.push((
         BlockId(1),
         Block::new(Ticks::ZERO, Ticks::from_bars(2), Shape::ramp(0.3, 0.9)),

@@ -269,7 +269,14 @@ mod tests {
         let signals = signals_with(id, &ducking(), &kicks);
         let duck = |base: f64| {
             let mut layer = Layer::new(BlendMode::Multiply);
-            let block = Block::new(beats(0.0), beats(4.0), Shape::constant(1.0)).linked(id);
+            // The envelope's 0..1 lands on the bottom half of the lane: from
+            // a full duck up to the centre line (no change).
+            let mut block = Block::new(beats(0.0), beats(4.0), Shape::constant(1.0));
+            block.link = Some(SignalLink {
+                signal: id,
+                low: 0.0,
+                high: 0.5,
+            });
             layer.blocks.push((BlockId(1), block));
             Automation::compile_layers_with(base, &[(LayerId(1), layer)], &signals)
         };

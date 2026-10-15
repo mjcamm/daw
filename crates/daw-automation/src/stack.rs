@@ -5,16 +5,16 @@ use crate::signal::{CompiledSignal, Signals};
 use daw_protocol::{BlendMode, Block, Layer, LayerId, ParamState, ShapePoint};
 
 /// Combines the value from the layers below (`v`) with a block's shape value
-/// (`x`) at weight `w`. The result may leave `0..=1`; clamping happens once,
-/// after the whole stack.
+/// (`x`) at weight `w`. Shapes are centred: `x = 0.5` is the centre line and
+/// has no effect, so a layer moves the value both ways. The result may leave
+/// `0..=1`; clamping happens once, after the whole stack.
 #[inline]
 pub fn blend(mode: BlendMode, v: f64, x: f64, w: f64) -> f64 {
+    // -1 at the bottom of the lane, 0 on the centre line, +1 at the top.
+    let amount = (2.0 * x - 1.0) * w;
     match mode {
-        BlendMode::Replace => v + (x - v) * w,
-        BlendMode::Add => v + x * w,
-        BlendMode::Subtract => v - x * w,
-        BlendMode::Multiply => v * (1.0 + (x - 1.0) * w),
-        BlendMode::Modulate => v + (2.0 * x - 1.0) * w,
+        BlendMode::Add => v + amount,
+        BlendMode::Multiply => v * (1.0 + amount),
     }
 }
 
@@ -227,37 +227,44 @@ mod tests {
         Automation::compile_layers(base, &layers)
     }
 
+    /// A block's shape value and weight at `beat`.
+    fn sample(block: &Block, beat: f64) -> (f64, f64) {
+        CompiledBlock::compile(block).sample(beat)
+    }
+
+    const MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
+
     #[test]
-    fn blend_modes() {
-        let (v, x, w) = (0.5, 0.2, 0.5);
-        assert!(close(blend(BlendMode::Replace, v, x, w), 0.35));
-        assert!(close(blend(BlendMode::Add, v, x, w), 0.6));
-        assert!(close(blend(BlendMode::Subtract, v, x, w), 0.4));
-        assert!(close(blend(BlendMode::Multiply, v, x, w), 0.3));
-        assert!(close(blend(BlendMode::Modulate, v, x, w), 0.2));
+    fn add_pushes_up_above_the_centre_and_down_below_it() {
+        assert!(close(blend(BlendMode::Add, 0.5, 0.75, 1.0), 1.0));
+        assert!(close(blend(BlendMode::Add, 0.5, 0.25, 1.0), 0.0));
+        assert!(close(blend(BlendMode::Add, 0.5, 1.0, 0.25), 0.75));
+        assert!(
+            close(blend(BlendMode::Add, 0.2, 0.0, 1.0), -0.8),
+            "unclamped"
+        );
     }
 
     #[test]
-    fn zero_weight_changes_nothing_in_every_mode() {
-        for mode in [
-            BlendMode::Replace,
-            BlendMode::Add,
-            BlendMode::Subtract,
-            BlendMode::Multiply,
-            BlendMode::Modulate,
-        ] {
-            assert_eq!(blend(mode, 0.42, 0.9, 0.0), 0.42, "{mode:?}");
+    fn multiply_scales_up_above_the_centre_and_down_below_it() {
+        assert!(close(blend(BlendMode::Multiply, 0.8, 0.0, 1.0), 0.0));
+        assert!(close(blend(BlendMode::Multiply, 0.8, 0.25, 1.0), 0.4));
+        assert!(close(blend(BlendMode::Multiply, 0.4, 1.0, 1.0), 0.8));
+        assert!(close(blend(BlendMode::Multiply, 0.8, 0.0, 0.5), 0.4));
+    }
+
+    #[test]
+    fn the_centre_line_has_no_effect_in_every_mode() {
+        for mode in MODES {
+            assert_eq!(blend(mode, 0.42, 0.5, 1.0), 0.42, "{mode:?}");
         }
     }
 
     #[test]
-    fn full_replace_takes_the_shape_value() {
-        assert_eq!(blend(BlendMode::Replace, 0.42, 0.9, 1.0), 0.9);
-    }
-
-    #[test]
-    fn modulate_is_neutral_at_the_centre_of_the_shape() {
-        assert_eq!(blend(BlendMode::Modulate, 0.42, 0.5, 1.0), 0.42);
+    fn zero_weight_changes_nothing_in_every_mode() {
+        for mode in MODES {
+            assert_eq!(blend(mode, 0.42, 0.9, 0.0), 0.42, "{mode:?}");
+        }
     }
 
     #[test]
@@ -271,54 +278,49 @@ mod tests {
         let a = automation(
             0.3,
             vec![layer(
-                BlendMode::Replace,
-                vec![block(1.0, 1.0, Shape::constant(0.9))],
+                BlendMode::Add,
+                vec![block(1.0, 1.0, Shape::constant(0.75))],
             )],
         );
         assert_eq!(a.value_at(0.5), 0.3);
-        assert!(close(a.value_at(1.0), 0.9));
-        assert!(close(a.value_at(1.99), 0.9));
+        assert!(close(a.value_at(1.0), 0.8));
+        assert!(close(a.value_at(1.99), 0.8));
         assert_eq!(a.value_at(2.0), 0.3);
     }
 
     #[test]
     fn layers_apply_bottom_to_top() {
         // A rising ramp, then a wobble on top: a rising wobble.
-        let ramp = layer(
-            BlendMode::Replace,
-            vec![block(0.0, 4.0, Shape::ramp(0.0, 0.8))],
-        );
+        let ramp = layer(BlendMode::Add, vec![block(0.0, 4.0, Shape::ramp(0.5, 0.9))]);
         let mut wobble_block = block(0.0, 4.0, Shape::ramp(0.0, 1.0));
         wobble_block.cycle = Some(beats(1.0));
         wobble_block.depth = 0.1;
-        let wobble = layer(BlendMode::Modulate, vec![wobble_block]);
-        let a = automation(0.5, vec![ramp, wobble]);
-        // At each beat start the wobble is at its lowest (-0.1).
-        assert!(close(a.value_at(2.0), 0.4 - 0.1));
-        // Halfway through a beat the wobble is neutral.
-        assert!(close(a.value_at(2.5), 0.5));
+        let wobble = layer(BlendMode::Add, vec![wobble_block]);
+        let a = automation(0.2, vec![ramp, wobble]);
+        // At beat 2 the ramp has pushed up 0.4; each beat starts with the
+        // wobble at its lowest (-0.1).
+        assert!(close(a.value_at(2.0), 0.2 + 0.4 - 0.1));
+        // Halfway through a beat the wobble is on the centre line.
+        assert!(close(a.value_at(2.5), 0.2 + 0.5));
     }
 
     #[test]
     fn order_matters() {
-        let replace = layer(
-            BlendMode::Replace,
-            vec![block(0.0, 1.0, Shape::constant(0.2))],
+        let add = layer(BlendMode::Add, vec![block(0.0, 1.0, Shape::constant(0.75))]);
+        let halve = layer(
+            BlendMode::Multiply,
+            vec![block(0.0, 1.0, Shape::constant(0.25))],
         );
-        let add = layer(BlendMode::Add, vec![block(0.0, 1.0, Shape::constant(0.3))]);
-        let up = automation(0.0, vec![replace.clone(), add.clone()]);
-        let down = automation(0.0, vec![add, replace]);
-        assert!(close(up.value_at(0.5), 0.5));
-        assert!(close(down.value_at(0.5), 0.2));
+        let up = automation(0.4, vec![add.clone(), halve.clone()]);
+        let down = automation(0.4, vec![halve, add]);
+        assert!(close(up.value_at(0.5), 0.45));
+        assert!(close(down.value_at(0.5), 0.7));
     }
 
     #[test]
     fn clamps_once_after_the_whole_stack() {
         let push = layer(BlendMode::Add, vec![block(0.0, 1.0, Shape::constant(1.0))]);
-        let pull = layer(
-            BlendMode::Subtract,
-            vec![block(0.0, 1.0, Shape::constant(0.6))],
-        );
+        let pull = layer(BlendMode::Add, vec![block(0.0, 1.0, Shape::constant(0.2))]);
         // 0.8 + 1.0 = 1.8 (not clamped yet), then - 0.6 = 1.2, clamped to 1.
         assert_eq!(automation(0.8, vec![push.clone()]).value_at(0.5), 1.0);
         let pulled = automation(0.8, vec![push, pull.clone(), pull]);
@@ -327,60 +329,54 @@ mod tests {
 
     #[test]
     fn disabled_layers_are_skipped() {
-        let mut off = layer(
-            BlendMode::Replace,
-            vec![block(0.0, 1.0, Shape::constant(1.0))],
-        );
+        let mut off = layer(BlendMode::Add, vec![block(0.0, 1.0, Shape::constant(1.0))]);
         off.1.enabled = false;
         assert_eq!(automation(0.2, vec![off]).value_at(0.5), 0.2);
     }
 
     #[test]
-    fn multiply_ducks_proportionally() {
-        // An inverted ramp: full duck at the start, recovering over the block.
-        let mut duck = block(0.0, 1.0, Shape::ramp(0.0, 1.0));
-        duck.depth = 1.0;
+    fn multiply_ducks_by_drawing_below_the_centre() {
+        // Full duck at the start, back to the centre line over the block.
+        let duck = block(0.0, 1.0, Shape::ramp(0.0, 0.5));
         let a = automation(0.8, vec![layer(BlendMode::Multiply, vec![duck])]);
         assert_eq!(a.value_at(0.0), 0.0);
         assert!(close(a.value_at(0.5), 0.4));
     }
 
     #[test]
+    fn mix_scales_how_much_of_the_layer_reaches_the_result() {
+        let mut half = layer(BlendMode::Add, vec![block(0.0, 1.0, Shape::constant(1.0))]);
+        half.1.mix = 0.5;
+        assert!(close(
+            automation(0.2, vec![half.clone()]).value_at(0.5),
+            0.7
+        ));
+        half.1.mix = 0.0;
+        assert_eq!(automation(0.2, vec![half]).value_at(0.5), 0.2);
+    }
+
+    #[test]
     fn short_cycles_repeat_the_shape() {
         let mut b = block(2.0, 4.0, Shape::ramp(0.0, 1.0));
         b.cycle = Some(beats(1.0));
-        let a = automation(0.0, vec![layer(BlendMode::Replace, vec![b])]);
         for beat in [2.0, 3.0, 4.0, 5.0] {
-            assert!(close(a.value_at(beat), 0.0), "{beat}");
-            assert!(close(a.value_at(beat + 0.5), 0.5), "{beat}");
+            assert!(close(sample(&b, beat).0, 0.0), "{beat}");
+            assert!(close(sample(&b, beat + 0.5).0, 0.5), "{beat}");
         }
     }
 
     #[test]
     fn stretching_a_block_without_a_cycle_stretches_the_shape() {
-        let short = automation(
-            0.0,
-            vec![layer(
-                BlendMode::Replace,
-                vec![block(0.0, 1.0, Shape::ramp(0.0, 1.0))],
-            )],
-        );
-        let long = automation(
-            0.0,
-            vec![layer(
-                BlendMode::Replace,
-                vec![block(0.0, 4.0, Shape::ramp(0.0, 1.0))],
-            )],
-        );
-        assert!(close(short.value_at(0.5), long.value_at(2.0)));
+        let short = block(0.0, 1.0, Shape::ramp(0.0, 1.0));
+        let long = block(0.0, 4.0, Shape::ramp(0.0, 1.0));
+        assert!(close(sample(&short, 0.5).0, sample(&long, 2.0).0));
     }
 
     #[test]
     fn invert_flips_the_shape() {
         let mut b = block(0.0, 1.0, Shape::ramp(0.0, 1.0));
         b.invert = true;
-        let a = automation(0.0, vec![layer(BlendMode::Replace, vec![b])]);
-        assert!(close(a.value_at(0.25), 0.75));
+        assert!(close(sample(&b, 0.25).0, 0.75));
     }
 
     #[test]
@@ -388,11 +384,9 @@ mod tests {
         let mut b = block(0.0, 4.0, Shape::ramp(0.0, 1.0));
         b.cycle = Some(beats(1.0));
         b.nudge = beats(0.25);
-        let a = automation(0.0, vec![layer(BlendMode::Replace, vec![b.clone()])]);
-        assert!(close(a.value_at(1.0), 0.25));
+        assert!(close(sample(&b, 1.0).0, 0.25));
         b.nudge = beats(-0.25);
-        let a = automation(0.0, vec![layer(BlendMode::Replace, vec![b])]);
-        assert!(close(a.value_at(1.0), 0.75));
+        assert!(close(sample(&b, 1.0).0, 0.75));
     }
 
     #[test]
@@ -400,51 +394,31 @@ mod tests {
         let mut b = block(0.0, 4.0, Shape::constant(1.0));
         b.fade_in = beats(1.0);
         b.fade_out = beats(2.0);
-        let a = automation(0.0, vec![layer(BlendMode::Replace, vec![b])]);
-        assert_eq!(a.value_at(0.0), 0.0);
-        assert!(close(a.value_at(0.5), 0.5));
-        assert!(close(a.value_at(1.5), 1.0));
-        assert!(close(a.value_at(3.0), 0.5));
-        assert!(close(a.value_at(4.0 - 1e-9), 0.0));
-    }
-
-    #[test]
-    fn mix_scales_how_much_of_the_layer_reaches_the_result() {
-        let mut half = layer(
-            BlendMode::Replace,
-            vec![block(0.0, 1.0, Shape::constant(1.0))],
-        );
-        half.1.mix = 0.5;
-        assert!(close(
-            automation(0.2, vec![half.clone()]).value_at(0.5),
-            0.6
-        ));
-        half.1.mix = 0.0;
-        assert_eq!(automation(0.2, vec![half]).value_at(0.5), 0.2);
+        assert_eq!(sample(&b, 0.0).1, 0.0);
+        assert!(close(sample(&b, 0.5).1, 0.5));
+        assert!(close(sample(&b, 1.5).1, 1.0));
+        assert!(close(sample(&b, 3.0).1, 0.5));
+        assert!(close(sample(&b, 4.0 - 1e-9).1, 0.0));
     }
 
     #[test]
     fn depth_scales_the_effect() {
         let mut b = block(0.0, 1.0, Shape::constant(1.0));
         b.depth = 0.25;
-        let a = automation(0.0, vec![layer(BlendMode::Replace, vec![b])]);
+        assert!(close(sample(&b, 0.5).1, 0.25));
+        let a = automation(0.0, vec![layer(BlendMode::Add, vec![b])]);
         assert!(close(a.value_at(0.5), 0.25));
     }
 
     #[test]
     fn finds_the_right_block_among_many() {
-        let blocks = (0..100)
-            .map(|i| {
-                block(
-                    f64::from(i) * 2.0,
-                    1.0,
-                    Shape::constant(f64::from(i) / 100.0),
-                )
-            })
+        let blocks: Vec<Block> = (0..100)
+            .map(|i| block(f64::from(i) * 2.0, 1.0, Shape::constant(0.5)))
             .collect();
-        let a = automation(0.0, vec![layer(BlendMode::Replace, blocks)]);
-        assert!(close(a.value_at(50.5), 0.25));
-        assert_eq!(a.value_at(51.5), 0.0, "gap between blocks");
+        let (_, l) = layer(BlendMode::Add, blocks);
+        let compiled = CompiledLayer::compile(&l);
+        assert_eq!(compiled.block_at(50.5).map(|b| b.start), Some(50.0));
+        assert!(compiled.block_at(51.5).is_none(), "gap between blocks");
     }
 
     #[test]

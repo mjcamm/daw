@@ -84,19 +84,16 @@ pub struct ParamState {
     pub layers: Vec<(LayerId, Layer)>,
 }
 
-/// How a layer combines with the layers below it.
+/// How a layer combines with the layers below it. Shapes are centred: the
+/// middle of the lane (`x = 0.5`) has no effect, the top is +1 and the
+/// bottom is -1, scaled by the block's weight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum BlendMode {
-    /// Move towards the block's value: `v + (x - v)·w`.
-    Replace,
-    /// Push up: `v + x·w`.
+    /// Push up or pull down by up to the full range: `v + (2x - 1)·w`.
     Add,
-    /// Pull down: `v - x·w`.
-    Subtract,
-    /// Scale towards zero: `v · (1 + (x - 1)·w)`.
+    /// Scale: zero at the bottom, unchanged at the centre, doubled at the
+    /// top: `v · (1 + (2x - 1)·w)`. Ducking is a shape drawn below the centre.
     Multiply,
-    /// Move around the current value: `v + (2x - 1)·w`.
-    Modulate,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

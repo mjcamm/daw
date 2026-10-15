@@ -22,6 +22,7 @@ use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
 use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget};
+use crate::slider;
 use crate::theme::{ContentColor, MONO_FONT, Theme};
 use crate::zoom::{self, Axis, Zoom, ZoomDrag, keep_anchor};
 use daw_automation::{Automation, CompiledBlock};
@@ -52,21 +53,12 @@ const BLOCK_INSET: f32 = BLOCK_MARGIN + 1.;
 /// Radius of a drawn shape point.
 const POINT_DOT: f32 = 3.;
 
-const BLEND_MODES: [BlendMode; 5] = [
-    BlendMode::Replace,
-    BlendMode::Add,
-    BlendMode::Subtract,
-    BlendMode::Multiply,
-    BlendMode::Modulate,
-];
+const BLEND_MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
 
 fn mode_label(mode: BlendMode) -> &'static str {
     match mode {
-        BlendMode::Replace => "Replace",
         BlendMode::Add => "Add",
-        BlendMode::Subtract => "Subtract",
         BlendMode::Multiply => "Multiply",
-        BlendMode::Modulate => "Modulate",
     }
 }
 
@@ -260,24 +252,9 @@ pub(crate) struct BaseDrag {
 #[derive(Debug, Clone)]
 pub(crate) struct MixDrag {
     layer: LayerId,
-    origin_x: Pixels,
+    origin_y: Pixels,
     original: f64,
     preview: f64,
-}
-
-const MIX_SLIDER_WIDTH: f32 = 52.;
-/// Pixels of drag across the full mix range, and with Shift held.
-const MIX_DRAG_RANGE: f32 = 150.;
-const MIX_DRAG_RANGE_FINE: f32 = 750.;
-
-/// A mix after dragging `dx` pixels from `original` (right raises it).
-fn dragged_mix(original: f64, dx: f32, fine: bool) -> f64 {
-    let range = if fine {
-        MIX_DRAG_RANGE_FINE
-    } else {
-        MIX_DRAG_RANGE
-    };
-    (original + f64::from(dx / range)).clamp(0., 1.)
 }
 
 /// `layers` with the mix being dragged shown at its preview.
@@ -309,21 +286,9 @@ fn previewed_mix<'a>(
     }
 }
 
-/// Height of the resting-value slider.
-const BASE_SLIDER_HEIGHT: f32 = 30.;
-/// Pixels of drag across the full range, and with Shift held.
-const BASE_DRAG_RANGE: f32 = 200.;
-const BASE_DRAG_RANGE_FINE: f32 = 1000.;
-
-/// A resting value after dragging `dy` pixels down from `original` (up
-/// raises it).
-fn dragged_base(original: f64, dy: f32, fine: bool) -> f64 {
-    let range = if fine {
-        BASE_DRAG_RANGE_FINE
-    } else {
-        BASE_DRAG_RANGE
-    };
-    (original - f64::from(dy / range)).clamp(0., 1.)
+/// Length of a row's vertical slider: most of the row's height.
+fn row_slider_length(row_height: f32) -> f32 {
+    (row_height - 10.).max(16.)
 }
 
 /// Closest spacing of grid lines, in pixels.
@@ -334,7 +299,7 @@ const MIN_GRID_SPACING: f32 = 6.;
 fn grid_bar_step(pixels_per_beat: f32) -> u32 {
     let bar = pixels_per_beat * BEATS_PER_BAR as f32;
     let mut step = 1;
-    while bar * step as f32 * 1.0 < MIN_GRID_SPACING {
+    while bar * (step as f32) < MIN_GRID_SPACING {
         step *= 2;
     }
     step
@@ -487,6 +452,7 @@ impl ProjectView {
         let [vertical, horizontal] = zoom::corner(
             self.zoom_slider(Axis::Vertical, theme, cx),
             self.zoom_slider(Axis::Horizontal, theme, cx),
+            theme,
         );
         let settings = selected.map(|(id, _, block)| {
             let shown = match &self.block_drag {
@@ -744,13 +710,13 @@ impl ProjectView {
             return;
         }
         if let Some(drag) = &mut self.base_drag {
-            let dy = (position.y - drag.origin_y) / px(1.);
-            drag.preview = dragged_base(drag.original, dy, modifiers.shift);
+            let up = (drag.origin_y - position.y) / px(1.);
+            drag.preview = slider::dragged(drag.original, up, modifiers.shift);
             return;
         }
         if let Some(drag) = &mut self.mix_drag {
-            let dx = (position.x - drag.origin_x) / px(1.);
-            drag.preview = dragged_mix(drag.original, dx, modifiers.shift);
+            let up = (drag.origin_y - position.y) / px(1.);
+            drag.preview = slider::dragged(drag.original, up, modifiers.shift);
             return;
         }
         let snap = self.snap_for(modifiers);
@@ -814,7 +780,7 @@ impl ProjectView {
         }
     }
 
-    /// A small vertical slider for a parameter's resting value (its default
+    /// A vertical slider for a parameter's resting value (its default
     /// state). Drag up or down; hold Shift for fine control.
     fn base_slider(
         &self,
@@ -825,64 +791,31 @@ impl ProjectView {
     ) -> impl IntoElement {
         let param_id = param.id;
         let original = param.base;
-        let filled = base as f32 * BASE_SLIDER_HEIGHT;
         let dragging = self.base_drag.as_ref().is_some_and(|d| d.param == param_id);
-        let thumb = if dragging {
-            theme.accent
-        } else {
-            theme.text_secondary
-        };
-        div()
-            .id(SharedString::from(format!(
-                "base-slider-{:?}-{}",
-                param_id.device, param_id.index
-            )))
-            .w(px(12.))
-            .h(px(BASE_SLIDER_HEIGHT))
-            .flex_none()
-            .relative()
-            .cursor_ns_resize()
-            .child(
-                // The track, filled up to the value.
-                div()
-                    .absolute()
-                    .left(px(5.))
-                    .w(px(2.))
-                    .top_0()
-                    .bottom_0()
-                    .rounded(px(1.))
-                    .bg(theme.control)
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .w_full()
-                            .h(px(filled))
-                            .rounded(px(1.))
-                            .bg(thumb),
-                    ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(px(1.))
-                    .w(px(10.))
-                    .h(px(3.))
-                    .top(px(BASE_SLIDER_HEIGHT - filled - 1.5))
-                    .rounded(px(1.5))
-                    .bg(thumb),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                    this.base_drag = Some(BaseDrag {
-                        param: param_id,
-                        origin_y: event.position.y,
-                        original,
-                        preview: original,
-                    });
-                }),
-            )
+        let id = SharedString::from(format!(
+            "base-slider-{:?}-{}",
+            param_id.device, param_id.index
+        ));
+        let length = row_slider_length(self.parameters_zoom.row_height);
+        slider::slider(
+            id,
+            slider::Axis::Vertical,
+            base as f32,
+            length,
+            dragging,
+            theme,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                this.base_drag = Some(BaseDrag {
+                    param: param_id,
+                    origin_y: event.position.y,
+                    original,
+                    preview: original,
+                });
+            }),
+        )
     }
 
     /// A layer's mix as shown: the slider's preview while it is dragged.
@@ -893,8 +826,8 @@ impl ProjectView {
         }
     }
 
-    /// A slim horizontal slider for how much of a layer reaches the result,
-    /// with its percentage. Drag sideways (Shift for fine); double-click for
+    /// A vertical slider for how much of a layer reaches the result, with
+    /// its percentage. Drag up or down (Shift for fine); double-click for
     /// full.
     fn mix_slider(
         &self,
@@ -905,77 +838,48 @@ impl ProjectView {
     ) -> impl IntoElement {
         let original = mix;
         let mix = self.mix_of(layer, mix);
-        let filled = mix as f32 * MIX_SLIDER_WIDTH;
         let dragging = self.mix_drag.as_ref().is_some_and(|d| d.layer == layer);
-        let thumb = if dragging {
-            theme.accent
-        } else {
-            theme.text_secondary
-        };
-        let slider = div()
-            .id(("layer-mix", layer.0))
-            .w(px(MIX_SLIDER_WIDTH))
-            .h(px(12.))
-            .flex_none()
-            .relative()
-            .cursor_ew_resize()
-            .child(
-                // The track, filled up to the mix.
-                div()
-                    .absolute()
-                    .top(px(5.))
-                    .h(px(2.))
-                    .left_0()
-                    .right_0()
-                    .rounded(px(1.))
-                    .bg(theme.control)
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .h_full()
-                            .w(px(filled))
-                            .rounded(px(1.))
-                            .bg(thumb),
-                    ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(1.))
-                    .h(px(10.))
-                    .w(px(3.))
-                    .left(px(filled - 1.5))
-                    .rounded(px(1.5))
-                    .bg(thumb),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                    if event.click_count >= 2 {
-                        this.mix_drag = None;
-                        this.session.apply(Command::Edit(Edit::SetLayerMix {
-                            id: layer,
-                            mix: 1.0,
-                        }));
-                        return;
-                    }
-                    this.mix_drag = Some(MixDrag {
-                        layer,
-                        origin_x: event.position.x,
-                        original,
-                        preview: original,
-                    });
-                }),
-            );
-        div().flex().items_center().gap(px(4.)).child(slider).child(
-            div()
-                .w(px(28.))
-                .font_family(MONO_FONT)
-                .text_size(px(10.))
-                .text_color(theme.text_tertiary)
-                .child(format!("{:.0}%", mix * 100.)),
+        let length = row_slider_length(self.parameters_zoom.row_height);
+        let control = slider::slider(
+            ("layer-mix", layer.0),
+            slider::Axis::Vertical,
+            mix as f32,
+            length,
+            dragging,
+            theme,
         )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                if event.click_count >= 2 {
+                    this.mix_drag = None;
+                    this.session.apply(Command::Edit(Edit::SetLayerMix {
+                        id: layer,
+                        mix: 1.0,
+                    }));
+                    return;
+                }
+                this.mix_drag = Some(MixDrag {
+                    layer,
+                    origin_y: event.position.y,
+                    original,
+                    preview: original,
+                });
+            }),
+        );
+        div()
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .child(control)
+            .child(
+                div()
+                    .w(px(28.))
+                    .font_family(MONO_FONT)
+                    .text_size(px(10.))
+                    .text_color(theme.text_tertiary)
+                    .child(format!("{:.0}%", mix * 100.)),
+            )
     }
 
     /// Deletes the selected block (Delete or Backspace).
@@ -1408,7 +1312,7 @@ impl ProjectView {
             param,
             id,
             index,
-            layer: Layer::named(name, BlendMode::Replace),
+            layer: Layer::named(name, BlendMode::Add),
         }));
     }
 }
@@ -1495,14 +1399,27 @@ impl ProjectView {
                     theme.muted_content
                 };
                 let blocks = previewed_blocks(drag, &layer.blocks);
+                let mix = self.mix_of(layer_id, layer.mix);
+                // The centre line: no effect.
+                let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
                 cell.border_b_1()
                     .border_color(theme.hairline)
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(centre - 0.5))
+                            .h(px(1.))
+                            .bg(theme.hairline),
+                    )
                     .children(blocks.iter().map(|(id, block)| {
                         block_view(
                             *id,
                             block,
                             colors,
                             self.selected_block == Some(*id),
+                            mix,
                             zoom,
                             theme,
                         )
@@ -1534,6 +1451,7 @@ fn block_view(
     block: &Block,
     colors: ContentColor,
     selected: bool,
+    mix: f64,
     zoom: Zoom,
     theme: &Theme,
 ) -> impl IntoElement {
@@ -1588,6 +1506,29 @@ fn block_view(
                         );
                         window.paint_quad(fill(line, colors.outline));
                     }
+                    let height = bounds.size.height / px(1.);
+                    let centre = Bounds::new(
+                        point(
+                            bounds.origin.x,
+                            bounds.origin.y + px(value_to_y(0.5, height) - 0.5),
+                        ),
+                        size(bounds.size.width, px(1.)),
+                    );
+                    window.paint_quad(fill(centre, colors.outline));
+                    // Faint: what the layer actually does, with depth, fades
+                    // and mix applied, around the centre line.
+                    let mut faint = colors.detail;
+                    faint.a *= 0.4;
+                    paint_curve(window, bounds, ppb, faint, None, |beat| {
+                        let beat = start + beat;
+                        if compiled.contains(beat) {
+                            let (x, w) = compiled.sample(beat);
+                            0.5 + (x - 0.5) * w * mix
+                        } else {
+                            f64::NAN
+                        }
+                    });
+                    // The shape as drawn.
                     paint_curve(window, bounds, ppb, colors.detail, None, |beat| {
                         let beat = start + beat;
                         if compiled.contains(beat) {
@@ -1752,7 +1693,7 @@ mod tests {
             param: VOLUME,
             id: LayerId(id),
             index,
-            layer: Layer::named(name, BlendMode::Replace),
+            layer: Layer::named(name, BlendMode::Add),
         };
         let snapshot = snapshot_with(vec![add(1, 0, "Bottom"), add(2, 1, "Top")]);
         let described = describe(&rows(&snapshot));
@@ -1849,29 +1790,12 @@ mod tests {
     }
 
     #[test]
-    fn dragging_up_raises_the_resting_value() {
-        assert!((dragged_base(0.5, -100., false) - 1.0).abs() < 1e-6);
-        assert!((dragged_base(0.5, 20., false) - 0.4).abs() < 1e-6);
-        assert!((dragged_base(0.5, 100., true) - 0.4).abs() < 1e-6);
-        assert_eq!(dragged_base(0.9, -500., false), 1.);
-        assert_eq!(dragged_base(0.1, 500., false), 0.);
-    }
-
-    #[test]
-    fn dragging_right_raises_the_mix() {
-        assert!((dragged_mix(0.5, 75., false) - 1.0).abs() < 1e-6);
-        assert!((dragged_mix(0.5, -15., false) - 0.4).abs() < 1e-6);
-        assert!((dragged_mix(0.5, 75., true) - 0.6).abs() < 1e-6);
-        assert_eq!(dragged_mix(0.1, -500., false), 0.);
-    }
-
-    #[test]
     fn a_mix_drag_previews_only_its_own_layer() {
         let snapshot = snapshot_with(layer_with_block());
         let layers = &snapshot.devices.last().unwrap().params[0].layers;
         let drag = MixDrag {
             layer: LayerId(1),
-            origin_x: px(0.),
+            origin_y: px(0.),
             original: 1.0,
             preview: 0.3,
         };
@@ -1889,7 +1813,7 @@ mod tests {
 
     #[test]
     fn block_contents_compile_for_drawing() {
-        let mut layer = Layer::named("Layer 1", BlendMode::Replace);
+        let mut layer = Layer::named("Layer 1", BlendMode::Add);
         layer.blocks.push((
             daw_engine::BlockId(1),
             daw_engine::Block::new(Ticks::ZERO, Ticks::from_beats(4), Shape::ramp(0., 1.)),

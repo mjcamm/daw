@@ -119,13 +119,14 @@ fn brightness(samples: &[f32]) -> f32 {
 #[test]
 fn volume_follows_a_drawn_rise() {
     let (mut engine, mut processor) = held_note();
-    // Multiply by a rising ramp: silent at the start, full at the end.
+    // Multiply by a rising ramp: silent at the start, unchanged (the centre
+    // line) at the end.
     add_layer(
         &mut engine,
         VOLUME,
         1,
         BlendMode::Multiply,
-        block(0.0, 4.0, Shape::ramp(0.0, 1.0)),
+        block(0.0, 4.0, Shape::ramp(0.0, 0.5)),
     );
     let rendered = play(&mut engine, &mut processor, 4.0);
     let levels: Vec<f32> = (0..4)
@@ -140,12 +141,12 @@ fn volume_follows_a_drawn_rise() {
 #[test]
 fn gaps_snap_back_to_the_default_state() {
     let (mut engine, mut processor) = held_note();
-    // Silence beats 1..2 only.
+    // Silence beats 1..2 only: multiply by zero.
     add_layer(
         &mut engine,
         VOLUME,
         1,
-        BlendMode::Replace,
+        BlendMode::Multiply,
         block(1.0, 1.0, Shape::constant(0.0)),
     );
     let rendered = play(&mut engine, &mut processor, 3.0);
@@ -164,7 +165,7 @@ fn a_layer_on_the_synth_cutoff_brightens_the_sound() {
         &mut engine,
         SYNTH_CUTOFF,
         1,
-        BlendMode::Replace,
+        BlendMode::Add,
         block(2.0, 2.0, Shape::constant(0.9)),
     );
     let rendered = play(&mut engine, &mut processor, 4.0);
@@ -177,13 +178,14 @@ fn a_layer_on_the_synth_cutoff_brightens_the_sound() {
 fn a_layer_on_the_filter_effect_cuts_the_sound() {
     let (mut engine, mut processor) = held_note();
     add_filter(&mut engine);
-    // Pull the filter cutoff down to about 80 Hz, below the note.
+    // Pull the filter cutoff down from fully open to about 80 Hz, below the
+    // note.
     add_layer(
         &mut engine,
         FILTER_CUTOFF,
         1,
-        BlendMode::Replace,
-        block(2.0, 2.0, Shape::constant(0.2)),
+        BlendMode::Add,
+        block(2.0, 2.0, Shape::constant(0.1)),
     );
     let rendered = play(&mut engine, &mut processor, 4.0);
     let open = rms(&window(&rendered, 1.0, 2.0));
@@ -225,7 +227,8 @@ fn moving_the_filter_mode_knob_changes_the_sound() {
 #[test]
 fn a_repeating_multiply_layer_ducks_every_beat() {
     let (mut engine, mut processor) = held_note();
-    let mut duck = block(0.0, 4.0, Shape::ramp(0.0, 1.0));
+    // From silence up to the centre line (no change), every beat.
+    let mut duck = block(0.0, 4.0, Shape::ramp(0.0, 0.5));
     duck.cycle = Some(beats(1.0));
     add_layer(&mut engine, VOLUME, 1, BlendMode::Multiply, duck);
     let rendered = play(&mut engine, &mut processor, 4.0);
@@ -242,21 +245,21 @@ fn a_repeating_multiply_layer_ducks_every_beat() {
 
 #[test]
 fn layers_stack_bottom_to_top() {
-    // Replace pulls the volume right down, then Add on top brings it back up.
+    // Multiply pulls the volume right down, then Add on top brings it back.
     let render_with = |add_on_top: bool| {
         let (mut engine, mut processor) = held_note();
         add_layer(
             &mut engine,
             VOLUME,
             1,
-            BlendMode::Replace,
-            block(0.0, 2.0, Shape::constant(0.1)),
+            BlendMode::Multiply,
+            block(0.0, 2.0, Shape::constant(0.05)),
         );
         if add_on_top {
             let mut layer = Layer::new(BlendMode::Add);
             layer
                 .blocks
-                .push((BlockId(2), block(0.0, 2.0, Shape::constant(0.7))));
+                .push((BlockId(2), block(0.0, 2.0, Shape::constant(0.85))));
             apply(
                 &mut engine,
                 Edit::AddLayer {
@@ -283,7 +286,7 @@ fn disabling_or_undoing_a_layer_restores_the_original_sound_exactly() {
             &mut engine,
             SYNTH_CUTOFF,
             1,
-            BlendMode::Modulate,
+            BlendMode::Add,
             block(0.0, 2.0, Shape::ramp(0.0, 1.0)),
         );
         if let Some(edit) = change {
@@ -301,7 +304,7 @@ fn disabling_or_undoing_a_layer_restores_the_original_sound_exactly() {
     );
     let disabled = Edit::SetLayerOptions {
         id: LayerId(1),
-        mode: BlendMode::Modulate,
+        mode: BlendMode::Add,
         enabled: false,
     };
     assert!(with_layer(Some(disabled), false) == original);
@@ -342,22 +345,23 @@ fn snapshot_shows_the_value_at_the_playhead() {
         &mut engine,
         SYNTH_CUTOFF,
         1,
-        BlendMode::Replace,
+        BlendMode::Add,
         block(1.0, 2.0, Shape::ramp(0.0, 1.0)),
     );
     engine
         .apply(Command::Locate {
-            position: beats(2.0),
+            position: beats(2.5),
         })
         .unwrap();
     render(&mut engine, &mut processor, 1, &[1]);
     let snapshot = engine.snapshot();
     let cutoff = &snapshot.devices[0].params[instrument::CUTOFF as usize];
     assert_eq!(cutoff.name, "Cutoff");
-    assert!((cutoff.value - 0.5).abs() < 1e-9, "{}", cutoff.value);
+    // Three quarters of the way up the ramp: a quarter of the range above
+    // the centre line, so a push of +0.5.
+    let pushed = (cutoff.base + 0.5).min(1.0);
+    assert!((cutoff.value - pushed).abs() < 1e-9, "{}", cutoff.value);
     assert_eq!(cutoff.layers.len(), 1);
-    // The default state is untouched by the layer.
-    assert!((cutoff.base - 0.5).abs() > 0.01);
 }
 
 /// Automation on every kind of device at once, with repeating shapes, curves,
@@ -385,9 +389,15 @@ fn render_automated_pattern(blocks: &[usize], frames: usize) -> Rendered {
     );
     add_filter(&mut engine);
 
-    let mut sweep = block(0.0, 8.0, Shape::ramp(0.3, 0.95));
+    // A sweep from 0.3 to 0.95, pushed from the filter's resting value:
+    // `(target - rest + 1) / 2` on the centred lane. (Recorded before blend
+    // modes were centred, as a Replace layer from 0.3 to 0.95: the same
+    // sound.)
+    let rest = FILTER_PARAMS[filter::CUTOFF as usize].default_normalized();
+    let towards = |target: f64| (target - rest + 1.0) / 2.0;
+    let mut sweep = block(0.0, 8.0, Shape::ramp(towards(0.3), towards(0.95)));
     sweep.fade_in = beats(0.5);
-    add_layer(&mut engine, FILTER_CUTOFF, 1, BlendMode::Replace, sweep);
+    add_layer(&mut engine, FILTER_CUTOFF, 1, BlendMode::Add, sweep);
 
     let mut wobble = block(
         2.0,
@@ -403,9 +413,10 @@ fn render_automated_pattern(blocks: &[usize], frames: usize) -> Rendered {
     wobble.cycle = Some(beats(1.0 / 3.0));
     wobble.depth = 0.3;
     wobble.fade_out = beats(1.0);
-    add_layer(&mut engine, SYNTH_CUTOFF, 2, BlendMode::Modulate, wobble);
+    add_layer(&mut engine, SYNTH_CUTOFF, 2, BlendMode::Add, wobble);
 
-    let mut duck = block(0.0, 8.0, Shape::ramp(0.2, 1.0));
+    // Multiply from x0.2 back to x1 (the centre line) every beat.
+    let mut duck = block(0.0, 8.0, Shape::ramp(0.1, 0.5));
     duck.cycle = Some(beats(1.0));
     add_layer(&mut engine, VOLUME, 3, BlendMode::Multiply, duck);
 
@@ -461,7 +472,7 @@ fn constant_layer_editing_during_playback_stays_realtime_safe() {
                 index: filter::CUTOFF,
             },
             i,
-            BlendMode::Modulate,
+            BlendMode::Add,
             block((i % 8) as f64, 1.0, Shape::ramp(0.0, 1.0)),
         );
         if i % 2 == 0 {

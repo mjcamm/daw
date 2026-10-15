@@ -23,15 +23,16 @@
 
 ### Blend modes
 
-The block produces a shape value `x` in `0..=1` and a weight `w` (its depth, scaled by its edge fades). `v` is the value from the layers below.
+Layers are **centred** (changed in Phase 3 at the user's request, so a layer can pull down as well as push up). Every layer lane has a centre line: on it the layer has no effect, the top of the lane is +1 and the bottom is -1.
+
+The block produces a shape value `x` in `0..=1` (`0.5` is the centre line) and a weight `w` (its depth, scaled by its edge fades and the layer's mix). `v` is the value from the layers below. `a = (2x - 1)·w` is the layer's amount, from -1 to +1.
 
 | Mode | Result | Typical use |
 |---|---|---|
-| Replace | `v + (x - v)·w` | Take over: a drawn curve, a hard setting |
-| Add | `v + x·w` | Push up: a riser |
-| Subtract | `v - x·w` | Pull down: a dip |
-| Multiply | `v · (1 + (x - 1)·w)` | Scale towards zero: ducking |
-| Modulate | `v + (2x - 1)·w` | Move around the current value: a wobble |
+| Add | `v + a` | Push up or pull down by up to the full range: risers, dips, wobbles |
+| Multiply | `v · (1 + a)` | Scale: zero at the bottom, unchanged at the centre, doubled at the top. Ducking is a shape drawn below the centre |
+
+New layers default to Add. Earlier versions had Replace, Add, Subtract, Multiply and Modulate; files from before version 3 convert on load (`crates/daw-engine/src/upgrade.rs`). Each old mode is a straight-line remap of the shape values, so the conversion is exact, except Replace, which is exact only when nothing below it is active. The demo song converted bit-for-bit.
 
 ## Blocks
 

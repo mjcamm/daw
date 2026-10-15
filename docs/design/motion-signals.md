@@ -30,7 +30,7 @@ Each matching note restarts an **envelope**: a shape (points over `0..=1`) playe
 - **Filter:** a pitch range, so one drum note (the kick) can drive the signal.
 - **After the envelope ends** (or before the first note), the signal is in a gap. A new note cuts the previous envelope short. **(confirm)**
 - **Source node:** the project's only node for now. When the node tree arrives (Phase 5), the source gains a node reference; files without one keep meaning "the first node".
-- A ducking signal is an envelope rising from 0 to 1, linked into a **Multiply** layer: fully ducked at the kick, recovering over the envelope.
+- A ducking signal is an envelope rising from 0 to 1, linked into a **Multiply** layer with the link range 0 to 0.5 (the bottom half of the centred lane): fully ducked at the kick, back to the centre line (no change) over the envelope.
 
 Known in advance from the notes, so it is perfectly in sync and identical live and offline.
 
