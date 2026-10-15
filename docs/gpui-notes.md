@@ -97,3 +97,9 @@ Application::new()
 - Vertical page scroll around a horizontally scrolling area: an outer `.overflow_y_scroll()` holding a row of [fixed left column][`.overflow_x_scroll()` lanes].
 - Show a control only while its row is hovered: name the row `.group("row-1")`, then on the control `.opacity(0.).group_hover("row-1", |s| s.opacity(1.))`.
 - Curves: `PathBuilder::stroke(px(1.5))` for lines, `PathBuilder::fill()` for the area under them, painted in a `canvas` sized to the row.
+
+## Drag and drop
+
+- The dragged value is any `Clone + 'static` type. On the handle: `.on_drag(value, |value, grab_offset, window, cx| cx.new(|_| preview))`, where the preview is a view (the value can be its own view by implementing `Render`).
+- On targets: `.drag_over::<T>(|style, value, window, cx| style.bg(..))` to highlight while hovering, and `.on_drop(cx.listener(|this, value: &T, window, cx| ...))`. Both are filtered by type, so different drag kinds don't interfere.
+- `.cursor_move()` on the handle shows a move cursor.
