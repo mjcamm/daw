@@ -90,6 +90,7 @@ Application::new()
 ## Clicks, menus and dialogs
 
 - Double-click: `ClickEvent::click_count() >= 2` in `on_click`.
+- **Menu triggers must toggle:** pressing the trigger of an open menu fires the menu's `on_mouse_down_out` (capture phase, on mouse down) before the trigger's `on_click` (mouse up), so a naive toggle closes then reopens. Record which menu the press dismissed, clear that record in a root `capture_any_mouse_down` (capture listeners run root first), and have the trigger leave a just-dismissed menu closed (`ProjectView::toggle_menu`, `dismiss_menu`).
 - Popup menus: `deferred(anchored().offset(..).child(menu))`, but `anchored` is laid out like any absolute element: at the top-left of its parent, covering the trigger. Wrap it in `div().absolute().top(relative(1.)).left_0()` inside a `.relative()` container holding the trigger, so it hangs below (`menu::float` does this). `deferred` paints it above everything; on the menu use `.occlude()` (blocks clicks through) and `.on_mouse_down_out(...)` to close it.
 - Native folder picker: `cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(..) })` returns a receiver; await it in `cx.spawn(async move |this, cx| { ... this.update(cx, |view, cx| ...) })` and `.detach()` the task.
 - Window title: `window.set_window_title(..)`. Only call it when the title changes; render runs every frame.

@@ -37,6 +37,9 @@ pub struct AppView {
     recent: RecentProjects,
     preferences: StoredPreferences,
     file_menu_open: bool,
+    /// The current press closed the File menu by landing outside it (see
+    /// `ProjectView::toggle_menu`).
+    file_menu_dismissed: bool,
     preferences_open: bool,
     _screen_events: Subscription,
     _appearance: Subscription,
@@ -59,6 +62,7 @@ impl AppView {
             recent,
             preferences,
             file_menu_open: false,
+            file_menu_dismissed: false,
             preferences_open: false,
             _screen_events: events,
             _appearance: appearance,
@@ -173,7 +177,9 @@ impl AppView {
             .hover(move |s| s.bg(hover))
             .child("File")
             .on_click(cx.listener(|this, _, _, cx| {
-                this.file_menu_open = !this.file_menu_open;
+                if !this.file_menu_dismissed {
+                    this.file_menu_open = !this.file_menu_open;
+                }
                 cx.notify();
             }));
         let dropdown = open.then(|| {
@@ -181,6 +187,7 @@ impl AppView {
                 menu::panel(theme)
                     .min_w(px(220.))
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.file_menu_dismissed = this.file_menu_open;
                         this.file_menu_open = false;
                         cx.notify();
                     }))
@@ -360,6 +367,8 @@ impl Render for AppView {
             .text_color(theme.text)
             .font_family(UI_FONT)
             .text_size(px(12.))
+            // Runs before the File menu's press-outside handler.
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.file_menu_dismissed = false))
             .on_action(cx.listener(|this, _: &Quit, _, cx| this.quit(cx)))
             .on_action(cx.listener(|this, _: &OpenPreferences, _, cx| this.open_preferences(cx)))
             .child(self.render_menu_bar(&theme, cx))

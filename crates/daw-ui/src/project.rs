@@ -72,6 +72,10 @@ pub struct ProjectView {
     /// song positions.
     pub(crate) ruler_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) open_menu: Option<OpenMenu>,
+    /// The menu the current press closed by landing outside it, so that
+    /// pressing the menu's own trigger closes it rather than reopening it.
+    /// Cleared at the start of every press.
+    dismissed_menu: Option<OpenMenu>,
     /// Whether the node is selected; the Parameters page shows the selected
     /// node.
     pub(crate) node_selected: bool,
@@ -113,6 +117,7 @@ impl ProjectView {
             saved_loop,
             ruler_bounds: Rc::default(),
             open_menu: None,
+            dismissed_menu: None,
             node_selected: false,
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
@@ -279,6 +284,8 @@ impl Render for ProjectView {
             .flex()
             .flex_col()
             .child(self.drag_tracker(cx))
+            // Runs before any menu's press-outside handler.
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.dismissed_menu = None))
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &TogglePlay, _, _| this.toggle_play()))
@@ -299,6 +306,25 @@ impl Render for ProjectView {
 }
 
 impl ProjectView {
+    /// Opens `menu`, or closes it if it is open. A press on the trigger of
+    /// an open menu first closes it as a press outside the menu; that press
+    /// leaves it closed.
+    pub(crate) fn toggle_menu(&mut self, menu: OpenMenu) {
+        if self.dismissed_menu == Some(menu) {
+            return;
+        }
+        self.open_menu = if self.open_menu == Some(menu) {
+            None
+        } else {
+            Some(menu)
+        };
+    }
+
+    /// Closes the open menu because a press landed outside it.
+    pub(crate) fn dismiss_menu(&mut self) {
+        self.dismissed_menu = self.open_menu.take();
+    }
+
     /// Whether anything is being dragged (a block, slider, scrollbar...).
     fn dragging(&self) -> bool {
         self.block_drag.is_some()

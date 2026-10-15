@@ -35,10 +35,7 @@ impl ProjectView {
                     if event.click_count() >= 2 {
                         this.start_rename(RenameTarget::Song, window, cx);
                     } else {
-                        this.open_menu = match this.open_menu {
-                            Some(OpenMenu::Song) => None,
-                            _ => Some(OpenMenu::Song),
-                        };
+                        this.toggle_menu(OpenMenu::Song);
                     }
                 }))
                 .into_any_element(),
@@ -204,12 +201,7 @@ impl ProjectView {
                     .child(snap.label()),
             )
             .child(icon(Icon::ChevronDown, theme.text_tertiary, 11.))
-            .on_click(cx.listener(|this, _, _, _| {
-                this.open_menu = match this.open_menu {
-                    Some(OpenMenu::Snap) => None,
-                    _ => Some(OpenMenu::Snap),
-                };
-            }));
+            .on_click(cx.listener(|this, _, _, _| this.toggle_menu(OpenMenu::Snap)));
         div()
             .relative()
             .flex()
@@ -271,7 +263,7 @@ impl ProjectView {
         menu::float(
             menu::panel(theme)
                 .min_w(px(160.))
-                .on_mouse_down_out(cx.listener(|this, _, _, _| this.open_menu = None))
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
                 .child(mode)
                 .child(menu::separator(theme))
                 .children(grids),
@@ -308,7 +300,7 @@ impl ProjectView {
         menu::float(
             menu::panel(theme)
                 .min_w(px(220.))
-                .on_mouse_down_out(cx.listener(|this, _, _, _| this.open_menu = None))
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
                 .child(
                     menu::item(theme, "menu-save", "Save", SAVE_SHORTCUT)
                         .on_click(cx.listener(|this, _, _, _| this.save())),

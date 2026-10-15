@@ -1098,7 +1098,7 @@ impl ProjectView {
                     theme,
                 )
                 .on_click(cx.listener(move |this, _, _, _| {
-                    this.open_menu = Some(OpenMenu::AddParam(device_ref));
+                    this.toggle_menu(OpenMenu::AddParam(device_ref));
                 }));
                 div()
                     .relative()
@@ -1176,7 +1176,7 @@ impl ProjectView {
                     .child(mode_label(mode))
                     .child(icon(Icon::ChevronDown, theme.text_tertiary, 11.))
                     .on_click(cx.listener(move |this, _, _, _| {
-                        this.open_menu = Some(OpenMenu::BlendMode(id));
+                        this.toggle_menu(OpenMenu::BlendMode(id));
                     })),
             )
             .when(mode_open, |d| {
@@ -1274,7 +1274,7 @@ impl ProjectView {
         menu::float(
             menu::panel(theme)
                 .min_w(px(150.))
-                .on_mouse_down_out(cx.listener(|this, _, _, _| this.open_menu = None))
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
                 .children(items),
         )
     }
@@ -1307,7 +1307,7 @@ impl ProjectView {
         let empty = available.is_empty();
         menu::float(
             menu::panel(theme)
-                .on_mouse_down_out(cx.listener(|this, _, _, _| this.open_menu = None))
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
                 .children(available)
                 .when(empty, |d| {
                     d.child(
