@@ -4,57 +4,49 @@
 
 ## Where we are
 
-Phases 0–2 of `build-plan.md` are done (foundations, headless engine, parameters and layers in the engine). **Phase 3 (core-loop UI) is in progress** (block editing built, waiting for the user to try it). **Phase 4 (motion signals): engine side done**, UI not started (see `docs/design/motion-signals.md`).
+- **Phases 0–2 done:** foundations, headless engine, parameters and layers.
+- **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
+- **Phase 4 (motion signals): engine done** and tested (`docs/design/motion-signals.md`, `crates/daw-engine/tests/signals.rs`). UI not started.
 
-Working in the app (`cargo run -p daw-ui`):
+## In the app (`cargo run -p daw-ui`)
 
-- **Menu bar** (built, **not yet tried**) across the top on every screen: File → Preferences… (Ctrl+,) and Quit (Ctrl+Q; saves an open project's changes first). Preferences is a modal with one setting, Appearance: System / Light / Dark, applied live and remembered in `preferences.json` beside `recent.json` (`daw_host::preferences`).
-- **Launch page:** new project (asks for a name, creates `Documents/DAW Projects/<name>/project.json`), Open… (folder picker), recent projects list.
-- **New songs** start with one Synth node plus the demo's bass and arpeggio clips at 124 BPM, looping 4 bars, no layers, empty undo history.
-- **Header:** song name (click for menu: Save, Rename, Back to projects; double-click to rename), "Edited/Saved" status, tabs (Arrange · Parameters · Signals · Mixer), snap control (magnet chip: Snap/Slide and grid 1 bar … 1/64), transport (to start, play/stop, loop, position).
-- **Arrange page:** node row (colour, name with double-click rename, stereo meter, M/S), timeline with clips, notes, loop band, playhead; click ruler to locate. Clicking the node row selects it; clicking empty space below deselects.
-- **Parameters page** (tab greyed out until a node is selected): sections Global (Channel), Instrument (Synth), Effects (listed only, no adding here). "+ Add Parameter" picks a parameter to create a layer set; each set shows its live value and result curve; layers list top-of-stack first (Photoshop order), with grip to drag-reorder, name (double-click rename), blend mode menu, eye toggle, × delete. "+ Add Layer" adds at the bottom of the stack.
-- **Resting-value slider** (built, **not yet tried**): a small vertical slider right of each parameter's name on its result row sets the parameter's default state (`SetParam`, same as moving a knob). Drag up/down, 200 px for the full range, Shift for fine (1000 px). Previews the result curve and value live; one undo step on release.
-- **Centred layers** (built, **not yet tried**): every layer lane has a centre line; above pushes up, below pulls down. Two blend modes: Add (default) and Multiply (bottom = zero, centre = unchanged, top = doubled). Replace, Subtract and Modulate are gone; old files convert on load (file version 3). A faint second line in each block shows the layer's actual effect with depth, fades and mix applied.
-- **Layer mix** (built, **not yet tried**): a vertical slider on each layer row (between name and blend mode, with %) sets how much of the layer reaches the result, like opacity. Double-click resets to 100 %. All sliders (resting value, mix, zoom) share one design: hairline track, fill, round thumb (`slider.rs`). Left column is 320 px wide.
-- **Scrollbars and zoom** (built, **not yet tried**) on Arrange and Parameters: slim always-visible scrollbars along the bottom and right, zoom sliders at their ends (horizontal zoom at the right end, vertical zoom at the bottom). Wheel scrolls up/down only, Shift+wheel sideways. Horizontal zoom holds the playhead still. Per page; `frame.rs`, `scroll.rs`, `zoom.rs`.
-- **Block editing** on layer lanes (built, **not yet tried by the user**; see `docs/design/block-editing.md`): double-click for a new block, drag to move, drag edges to widen/narrow the window (contents stay put in song time), corner handle to repeat, points on the selected block (drag, double-click to add, right-click to remove), settings bar (depth, fades, repeat, nudge, invert), Delete to remove. Each drag is one undo step.
-- **Shortcuts:** space play/stop, Ctrl/Cmd+S save, Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z redo, Delete/Backspace deletes the selected block, Alt while dragging flips snap/slide. Autosave backup every 30 s (`project.autosave.json`), removed on save. No crash-recovery prompt yet.
+- **Menu bar:** File → Preferences… (Ctrl+,: Appearance System/Light/Dark, saved to `preferences.json`) and Quit (Ctrl+Q, saves first).
+- **Launch page:** new project (`Documents/DAW Projects/<name>/project.json`), Open…, recent projects. New songs start with one Synth node and the demo notes.
+- **Header:** song name menu (Save, Rename, Back to projects), page tabs, snap control, transport.
+- **Arrange:** node row (colour, name, meter, M/S) and clips on the timeline; click the ruler to locate; click the node to select it (this enables Parameters).
+- **Parameters:** per device, "+ Add Parameter" makes a result row with its layers. Layers: drag to reorder, rename, blend mode (Add or Multiply, both centred), mix, show/hide, delete. Block editing on the lanes, settings bar, resting-value slider.
+- **Both timeline pages:** scrollbars with zoom sliders at their ends; wheel scrolls vertically, Shift+wheel sideways.
+- **Shortcuts:** Space play/stop, Ctrl+S save, Ctrl+Z / Ctrl+Shift+Z undo/redo, Delete removes the selected block, Alt flips snap while dragging. Autosave every 30 s (`project.autosave.json`, removed on save).
+
+## Model changes worth knowing
+
+- **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; `crates/daw-engine/src/upgrade.rs` converts older files exactly (Replace only when nothing below it acts).
+- **Layer mix** scales every block's weight on a layer.
+- **Signals** (file version 2): drawn or from MIDI notes; a block links with `Block.link` and reads the signal in song time, mapped into its low..high range.
 
 ## Waiting on the user
 
-1. **Height fix** on the Parameters page (flex growth instead of `min_h_full`) is pushed but not yet confirmed by the user on screen.
-2. **Try block editing, the resting-value slider and zoom.** Open points: points slide freely (no snap); snap and zoom settings are not saved with the project. The Signals page gets the same frame (`frame.rs`) when it is built.
-3. **Milestone gate placement:** `build-plan.md` puts "does shaping movement feel great?" after Phase 4; this file had it at the end of Phase 3. Ask which, then make the two agree.
-
-## Motion signals in the engine (built 2026-10-15, user away)
-
-- Signals are drawn (a lane of blocks) or from MIDI notes (an envelope restarted by each note in a pitch range). Blocks link with `Block.link = Some(SignalLink { signal, low, high })` and read the signal in song time.
-- Edits: `AddSignal`, `RemoveSignal` (refused while used), `RenameSignal`, `SetSignalColor`, `SetNotesSource`, `AddSignalBlock`; `SetBlock`/`RemoveBlock` also work on signal blocks.
-- `Snapshot.signals` carries each signal with its "Used by" list. File format is version 2 (version 1 still loads).
-- Decisions to confirm with the user are marked **(confirm)** in the design doc: a signal gap means no effect; a notes envelope is silent after it ends; removing a used signal is refused.
+1. **Three signal decisions** marked **(confirm)** in `motion-signals.md`: a signal gap means no effect; a notes envelope is silent once it ends; a signal in use cannot be removed.
+2. **Signals UI layout** (questions asked, unanswered): Signals page in the same timeline frame with one row per signal; "+ Add Signal" (Drawn / From notes); drawn signals edited like blocks; notes settings in a bottom bar; a "N uses" list that jumps to the Parameters page; linking from the block settings bar (signal dropdown plus low/high).
+3. **Dark mode** look check.
+4. **Milestone gate placement:** `build-plan.md` has it after Phase 4; earlier notes had it after Phase 3.
 
 ## Next up
 
-1. The user tries block editing, the resting-value slider, layer mix and zoom; iterate on feel.
-2. Confirm the **(confirm)** decisions in `docs/design/motion-signals.md`.
-3. Phase 4 UI, after asking the user about layout: the Signals page (signal lanes on a shared timeline, drawing, notes-source settings, "Used by"), and linking a block to a signal from the Parameters page (with its range).
-4. The milestone gate ("does shaping movement feel great?").
+Phase 4 UI once the layout is agreed: the Signals page, then linking blocks to signals on the Parameters page. Then the milestone gate ("does shaping movement feel great?").
 
 ## How the user likes to work
 
-- **Ask about layout before building each UI element** (they answer in plain numbered text; the multiple-choice question tool was rejected once). Mockups in `docs/ui-ideas/` are look-and-feel only.
-- **Not "bootstrappy":** calm, dense, native pro-app look per `docs/design/look-and-feel.md`; quiet controls, hairlines, colour only for content and the one accent.
-- Icons from Lucide (pinned `lucide-static@0.460.0`), not hand-drawn.
-- No GitHub Actions on push (manual cross-platform workflow only on request). Run `./scripts/check.sh` before every commit; commit and push when work is done. **Keep this file and `docs/design/` updated as work progresses** (the user asked for this explicitly).
-- Call out when the user's ears or eyes are needed ("Listen now" / "Try it").
-- The user often has the app open: on Windows the build then fails with "failed to remove file ... daw.exe". The code still compiled; ask them to close it.
+- **Ask about layout before building each UI element.** They answer in plain numbered text (the multiple-choice tool was rejected once). Offer a recommendation.
+- Calm, dense, native pro-app look (`docs/design/look-and-feel.md`), not "bootstrappy". Lucide icons (pinned `lucide-static@0.460.0`).
+- Run `./scripts/check.sh`, then commit and push when work is done. No GitHub Actions on push.
+- **Keep this file and `docs/design/` current** as work lands: decisions and pointers, not narration.
+- Say when their eyes or ears are needed ("Try it", "Listen now").
+- On Windows, a running app blocks rebuilding `daw.exe` ("failed to remove file"). `check.sh` still works; ask them to close the app to run it.
 
-## Known gaps and notes
+## Known gaps
 
-- One node only; the node tree is Phase 5. Mute/solo/meter are per node already.
-- No way to add effects in the UI yet (planned: from the track header, Logic-style). The engine supports a Filter effect.
+- One node only (node tree is Phase 5). No adding effects in the UI yet (engine has a Filter).
 - Parameters update every 32 samples (gains ramp, others step); revisit if anything sounds zippery.
-- Live playback runs the audio thread at real-time priority (cpal `realtime` feature); `daw-player play` prints callback timing stats.
 - Reference WAVs in `crates/daw-engine/tests/references/` total about 4 MB; keep new ones short.
 - `docs/gpui-notes.md` holds hard-won GPUI knowledge; add to it.
