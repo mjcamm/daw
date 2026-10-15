@@ -210,7 +210,14 @@ impl AppView {
             .border_b_1()
             .border_color(theme.hairline)
             .text_size(px(12.))
-            .child(div().flex().flex_col().child(file).children(dropdown))
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(file)
+                    .children(dropdown),
+            )
     }
 
     /// The preferences modal: a centred panel over a dimmed page.

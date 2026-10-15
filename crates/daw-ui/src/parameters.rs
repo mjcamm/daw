@@ -1101,6 +1101,7 @@ impl ProjectView {
                     this.open_menu = Some(OpenMenu::AddParam(device_ref));
                 }));
                 div()
+                    .relative()
                     .flex()
                     .flex_col()
                     .child(button)
@@ -1155,6 +1156,7 @@ impl ProjectView {
         let mode_open = self.open_menu == Some(OpenMenu::BlendMode(id));
         let hover = theme.hover;
         let mode_chip = div()
+            .relative()
             .flex()
             .flex_col()
             .child(

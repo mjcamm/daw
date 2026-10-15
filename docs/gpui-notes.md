@@ -90,7 +90,7 @@ Application::new()
 ## Clicks, menus and dialogs
 
 - Double-click: `ClickEvent::click_count() >= 2` in `on_click`.
-- Popup menus: `deferred(anchored().offset(point(px(0.), px(4.))).child(menu))` placed where the menu should appear. `deferred` paints it above everything; on the menu use `.occlude()` (blocks clicks through) and `.on_mouse_down_out(...)` to close it.
+- Popup menus: `deferred(anchored().offset(..).child(menu))`, but `anchored` is laid out like any absolute element: at the top-left of its parent, covering the trigger. Wrap it in `div().absolute().top(relative(1.)).left_0()` inside a `.relative()` container holding the trigger, so it hangs below (`menu::float` does this). `deferred` paints it above everything; on the menu use `.occlude()` (blocks clicks through) and `.on_mouse_down_out(...)` to close it.
 - Native folder picker: `cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(..) })` returns a receiver; await it in `cx.spawn(async move |this, cx| { ... this.update(cx, |view, cx| ...) })` and `.detach()` the task.
 - Window title: `window.set_window_title(..)`. Only call it when the title changes; render runs every frame.
 

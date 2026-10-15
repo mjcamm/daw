@@ -45,6 +45,7 @@ impl ProjectView {
         };
 
         let song = div()
+            .relative()
             .flex()
             .flex_col()
             .min_w(px(140.))
@@ -210,6 +211,7 @@ impl ProjectView {
                 };
             }));
         div()
+            .relative()
             .flex()
             .flex_col()
             .child(chip)

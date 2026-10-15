@@ -3,6 +3,7 @@
 use crate::theme::Theme;
 use gpui::{
     Div, ElementId, Hsla, IntoElement, Stateful, anchored, deferred, div, point, prelude::*, px,
+    relative,
 };
 
 /// Which popup menu is open; only one at a time.
@@ -34,9 +35,17 @@ pub fn panel(theme: &Theme) -> Div {
         .text_size(px(13.))
 }
 
-/// Floats `panel` just below where it is placed in the layout.
+/// Floats `panel` just below the element that opens it. Place it as a
+/// child of that element (or of a container holding it), which must be
+/// `.relative()`: the panel hangs from its bottom-left corner. (An
+/// `anchored` element on its own is laid out like any absolute element, at
+/// the top of its parent, so it would cover the trigger.)
 pub fn float(panel: Div) -> impl IntoElement {
-    deferred(anchored().offset(point(px(0.), px(4.))).child(panel)).with_priority(1)
+    div()
+        .absolute()
+        .top(relative(1.))
+        .left_0()
+        .child(deferred(anchored().offset(point(px(0.), px(4.))).child(panel)).with_priority(1))
 }
 
 /// A menu row with a label and an optional hint on the right.
