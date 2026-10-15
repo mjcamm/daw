@@ -6,7 +6,7 @@
 
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
-- **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to), not yet tried by the user. Next: the Parameters layer pick list, then "Publish as signal" on Arrange.
+- **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to); driven and checked by Claude via `scripts/ui-drive.ps1`, not yet tried by the user. Next: the Parameters layer pick list, then "Publish as signal" on Arrange.
 
 ## In the app (`cargo run -p daw-ui`)
 

@@ -1470,7 +1470,7 @@ impl ProjectView {
                                     bounds,
                                     zoom.pixels_per_beat,
                                     line,
-                                    Some(area),
+                                    Some((area, 0.)),
                                     |beat| automation.value_at(beat),
                                 );
                             },
@@ -1765,13 +1765,14 @@ fn block_view(
 }
 
 /// Draws `value(beat)` (0..=1, NaN for "nothing here") across `bounds`, with
-/// beat 0 at the left edge. Optionally fills under the line.
+/// beat 0 at the left edge. Optionally fills between the line and a
+/// baseline value (0 is the bottom, 0.5 the centre line).
 pub(crate) fn paint_curve(
     window: &mut Window,
     bounds: Bounds<Pixels>,
     pixels_per_beat: f32,
     line: Hsla,
-    fill: Option<Hsla>,
+    fill: Option<(Hsla, f64)>,
     value: impl Fn(f64) -> f64,
 ) {
     let width = bounds.size.width / px(1.);
@@ -1793,8 +1794,8 @@ pub(crate) fn paint_curve(
     let (Some(first), Some(last)) = (points.first(), points.last()) else {
         return;
     };
-    if let Some(fill) = fill {
-        let bottom = bounds.origin.y + bounds.size.height;
+    if let Some((fill, baseline)) = fill {
+        let bottom = bounds.origin.y + px(value_to_y(baseline, height));
         let mut area = PathBuilder::fill();
         area.move_to(point(first.x, bottom));
         points.iter().for_each(|p| area.line_to(*p));

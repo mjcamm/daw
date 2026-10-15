@@ -554,7 +554,7 @@ fn notes_lane(
                     bounds,
                     zoom.pixels_per_beat,
                     colors.detail,
-                    Some(colors.fill),
+                    Some((colors.fill, 0.5)),
                     |beat| compiled.sample(beat).0,
                 );
             },

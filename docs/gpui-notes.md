@@ -95,6 +95,21 @@ Application::new()
 - Native folder picker: `cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(..) })` returns a receiver; await it in `cx.spawn(async move |this, cx| { ... this.update(cx, |view, cx| ...) })` and `.detach()` the task.
 - Window title: `window.set_window_title(..)`. Only call it when the title changes; render runs every frame.
 
+## Trying the app from an agent (Windows)
+
+`scripts/ui-drive.ps1` drives the running `daw.exe` window with plain Win32 calls, so an agent can look at and use the app without computer-use tools. Coordinates are relative to the window's client area (1280x800 by default, DPI-aware).
+
+```powershell
+scripts/ui-drive.ps1 shot out.png        # screenshot the window (then Read the PNG)
+scripts/ui-drive.ps1 click 365 51        # also: dclick, rclick, move
+scripts/ui-drive.ps1 drag "440,148" "540,148"
+scripts/ui-drive.ps1 type "Name{ENTER}"  # SendKeys syntax: ^z is Ctrl+Z, ^q quits (saves first)
+scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
+```
+
+- Launch with `Start-Process target\debug\daw.exe`; quit with `type "^q"` so it saves and frees the exe for the next build.
+- Test in a throwaway project, not the user's own songs. Remember that every `^z` really undoes.
+
 ## Gotchas
 
 - On Windows, building fails with "failed to remove file ... daw.exe" while the app is running. Close it first.
