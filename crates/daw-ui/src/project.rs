@@ -2,10 +2,11 @@
 
 use crate::block_edit::Snap;
 use crate::menu::OpenMenu;
-use crate::parameters::BlockDrag;
+use crate::parameters::{BaseDrag, BlockDrag, DEFAULT_ZOOM};
 use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
+use crate::zoom::{Zoom, ZoomDrag};
 use daw_engine::{BlockId, Command, Edit, LayerId, LoopRange};
 use gpui::{
     Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, ScrollHandle,
@@ -84,6 +85,13 @@ pub struct ProjectView {
     /// A block being dragged, shown as a preview until the mouse is
     /// released; then it becomes one edit.
     pub(crate) block_drag: Option<BlockDrag>,
+    /// A parameter's resting value being dragged with its slider; sent as
+    /// one edit on release.
+    pub(crate) base_drag: Option<BaseDrag>,
+    /// The Parameters page's zoom (each page keeps its own).
+    pub(crate) parameters_zoom: Zoom,
+    /// A zoom slider being dragged.
+    pub(crate) zoom_drag: Option<ZoomDrag>,
     pub(crate) rename: Option<Rename>,
     pub(crate) save_error: Option<String>,
     window_title: String,
@@ -109,6 +117,9 @@ impl ProjectView {
             snap: Snap::default(),
             selected_block: None,
             block_drag: None,
+            base_drag: None,
+            parameters_zoom: DEFAULT_ZOOM,
+            zoom_drag: None,
             rename: None,
             save_error: None,
             window_title: String::new(),

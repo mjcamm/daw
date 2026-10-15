@@ -1,0 +1,258 @@
+//! Zoom for timeline pages: horizontal (pixels per beat) and vertical (row
+//! height), each set by a short slim slider in the page's bottom-right
+//! corner. The sliders work on a log scale, so every bit of travel zooms by
+//! the same proportion across a wide range. Each page keeps its own `Zoom`.
+//!
+//! Shared by every timeline page (Parameters now; Arrange and Signals
+//! later): the page holds a `Zoom`, draws `corner`, and forwards drags.
+
+use crate::theme::Theme;
+use gpui::{Div, ElementId, Pixels, Point, Stateful, div, prelude::*, px};
+
+const MIN_PIXELS_PER_BEAT: f32 = 2.;
+const MAX_PIXELS_PER_BEAT: f32 = 400.;
+const MIN_ROW_HEIGHT: f32 = 28.;
+const MAX_ROW_HEIGHT: f32 = 400.;
+/// Length of a slider's travel.
+const SLIDER_LENGTH: f32 = 80.;
+/// Cross size of a slider, and its gap from the page edges.
+const SLIDER_THICKNESS: f32 = 14.;
+const CORNER_GAP: f32 = 4.;
+const THUMB: f32 = 9.;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    /// Time: pixels per beat.
+    Horizontal,
+    /// Row height.
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Zoom {
+    pub pixels_per_beat: f32,
+    pub row_height: f32,
+}
+
+impl Zoom {
+    pub const fn new(pixels_per_beat: f32, row_height: f32) -> Self {
+        Self {
+            pixels_per_beat,
+            row_height,
+        }
+    }
+
+    fn range(axis: Axis) -> (f32, f32) {
+        match axis {
+            Axis::Horizontal => (MIN_PIXELS_PER_BEAT, MAX_PIXELS_PER_BEAT),
+            Axis::Vertical => (MIN_ROW_HEIGHT, MAX_ROW_HEIGHT),
+        }
+    }
+
+    fn get(self, axis: Axis) -> f32 {
+        match axis {
+            Axis::Horizontal => self.pixels_per_beat,
+            Axis::Vertical => self.row_height,
+        }
+    }
+
+    /// Where the slider for `axis` sits, `0..=1` (0 is zoomed out).
+    pub fn position(self, axis: Axis) -> f32 {
+        let (min, max) = Self::range(axis);
+        ((self.get(axis) / min).ln() / (max / min).ln()).clamp(0., 1.)
+    }
+
+    /// This zoom with the slider for `axis` at `position`.
+    pub fn with_position(self, axis: Axis, position: f32) -> Self {
+        let (min, max) = Self::range(axis);
+        let value = min * (max / min).powf(position.clamp(0., 1.));
+        match axis {
+            Axis::Horizontal => Self {
+                pixels_per_beat: value,
+                ..self
+            },
+            Axis::Vertical => Self {
+                row_height: value.round(),
+                ..self
+            },
+        }
+    }
+
+    /// This zoom after dragging the `axis` slider by `delta` pixels from
+    /// where it was (right or up zooms in).
+    pub fn dragged(self, axis: Axis, delta: Point<f32>) -> Self {
+        let travel = match axis {
+            Axis::Horizontal => delta.x,
+            Axis::Vertical => -delta.y,
+        };
+        self.with_position(axis, self.position(axis) + travel / SLIDER_LENGTH)
+    }
+
+    pub fn beat_to_x(self, beats: f64) -> f32 {
+        beats as f32 * self.pixels_per_beat
+    }
+
+    pub fn x_to_beats(self, x: f32) -> f64 {
+        f64::from(x / self.pixels_per_beat)
+    }
+}
+
+/// The new scroll distance (how far the view is scrolled right, in pixels)
+/// that keeps the beat `anchor` pixels into the view in place when the
+/// horizontal zoom changes.
+pub fn keep_anchor(scrolled: f32, anchor: f32, old_ppb: f32, new_ppb: f32) -> f32 {
+    ((scrolled + anchor) * new_ppb / old_ppb - anchor).max(0.)
+}
+
+/// A zoom slider being dragged.
+#[derive(Debug, Clone, Copy)]
+pub struct ZoomDrag {
+    pub axis: Axis,
+    pub origin: Point<Pixels>,
+    pub original: Zoom,
+}
+
+impl ZoomDrag {
+    /// The zoom with the pointer at `position`.
+    pub fn zoom_at(&self, position: Point<Pixels>) -> Zoom {
+        let delta = Point {
+            x: (position.x - self.origin.x) / px(1.),
+            y: (position.y - self.origin.y) / px(1.),
+        };
+        self.original.dragged(self.axis, delta)
+    }
+}
+
+/// A short slim slider: a hairline track with a round thumb at `position`
+/// (`0..=1`; left or bottom is 0). Attach `on_mouse_down` to start a drag.
+pub fn slider(
+    id: impl Into<ElementId>,
+    axis: Axis,
+    position: f32,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let along = position.clamp(0., 1.) * (SLIDER_LENGTH - THUMB);
+    let cross = (SLIDER_THICKNESS - THUMB) / 2.;
+    let thumb = div()
+        .absolute()
+        .size(px(THUMB))
+        .rounded(px(THUMB / 2.))
+        .bg(if active {
+            theme.accent
+        } else {
+            theme.text_secondary
+        });
+    let track = div().absolute().rounded(px(1.)).bg(theme.hairline);
+    let (track, thumb, base) = match axis {
+        Axis::Horizontal => (
+            track
+                .left(px(THUMB / 2.))
+                .right(px(THUMB / 2.))
+                .top(px(SLIDER_THICKNESS / 2. - 1.))
+                .h(px(2.)),
+            thumb.left(px(along)).top(px(cross)),
+            div()
+                .w(px(SLIDER_LENGTH))
+                .h(px(SLIDER_THICKNESS))
+                .cursor_ew_resize(),
+        ),
+        Axis::Vertical => (
+            track
+                .top(px(THUMB / 2.))
+                .bottom(px(THUMB / 2.))
+                .left(px(SLIDER_THICKNESS / 2. - 1.))
+                .w(px(2.)),
+            thumb.bottom(px(along)).left(px(cross)),
+            div()
+                .w(px(SLIDER_THICKNESS))
+                .h(px(SLIDER_LENGTH))
+                .cursor_ns_resize(),
+        ),
+    };
+    base.id(id)
+        .relative()
+        .rounded(px(SLIDER_THICKNESS / 2.))
+        .bg(theme.sidebar)
+        .border_1()
+        .border_color(theme.hairline)
+        .child(track)
+        .child(thumb)
+}
+
+/// Places a vertical slider against the right edge and a horizontal slider
+/// along the bottom, meeting at the bottom-right corner of the nearest
+/// `relative()` parent.
+pub fn corner(vertical: impl IntoElement, horizontal: impl IntoElement) -> [Div; 2] {
+    let beside = CORNER_GAP * 2. + SLIDER_THICKNESS;
+    [
+        div()
+            .absolute()
+            .right(px(CORNER_GAP))
+            .bottom(px(beside))
+            .child(vertical),
+        div()
+            .absolute()
+            .right(px(beside))
+            .bottom(px(CORNER_GAP))
+            .child(horizontal),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slider_positions_span_the_range_on_a_log_scale() {
+        let zoom = Zoom::new(24., 40.);
+        let out = zoom.with_position(Axis::Horizontal, 0.);
+        let in_ = zoom.with_position(Axis::Horizontal, 1.);
+        assert_eq!(out.pixels_per_beat, MIN_PIXELS_PER_BEAT);
+        assert!((in_.pixels_per_beat - MAX_PIXELS_PER_BEAT).abs() < 1e-3);
+        let middle = zoom.with_position(Axis::Horizontal, 0.5).pixels_per_beat;
+        let geometric = (MIN_PIXELS_PER_BEAT * MAX_PIXELS_PER_BEAT).sqrt();
+        assert!((middle - geometric).abs() < 1e-3);
+        assert_eq!(out.row_height, 40., "the other axis is untouched");
+    }
+
+    #[test]
+    fn positions_round_trip() {
+        let zoom = Zoom::new(24., 40.);
+        let p = zoom.position(Axis::Horizontal);
+        let back = zoom.with_position(Axis::Horizontal, p).pixels_per_beat;
+        assert!((back - 24.).abs() < 1e-3);
+        let rows = zoom.with_position(Axis::Vertical, zoom.position(Axis::Vertical));
+        assert_eq!(rows.row_height, 40.);
+    }
+
+    #[test]
+    fn dragging_right_or_up_zooms_in() {
+        let zoom = Zoom::new(24., 40.);
+        let wider = zoom.dragged(Axis::Horizontal, Point { x: 10., y: 0. });
+        assert!(wider.pixels_per_beat > 24.);
+        let taller = zoom.dragged(Axis::Vertical, Point { x: 0., y: -10. });
+        assert!(taller.row_height > 40.);
+        let shorter = zoom.dragged(Axis::Vertical, Point { x: 0., y: 500. });
+        assert_eq!(shorter.row_height, MIN_ROW_HEIGHT);
+    }
+
+    #[test]
+    fn zooming_keeps_the_anchor_on_the_same_beat() {
+        // 300 px scrolled at 24 px/beat with the anchor 200 px in: beat 20.8.
+        let scrolled = keep_anchor(300., 200., 24., 48.);
+        assert!(((scrolled + 200.) / 48. - 500. / 24.).abs() < 1e-4);
+        assert_eq!(
+            keep_anchor(0., 200., 24., 12.),
+            0.,
+            "never before the start"
+        );
+    }
+
+    #[test]
+    fn beats_and_pixels_convert_at_the_zoom() {
+        let zoom = Zoom::new(10., 40.);
+        assert_eq!(zoom.beat_to_x(2.5), 25.);
+        assert_eq!(zoom.x_to_beats(25.), 2.5);
+    }
+}

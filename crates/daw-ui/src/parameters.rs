@@ -19,10 +19,11 @@ use crate::block_edit::{
     scrub, value_to_y, y_to_value,
 };
 use crate::icons::{Icon, icon};
-use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, beat_to_x, timeline_bars};
+use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
 use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget};
 use crate::theme::{ContentColor, MONO_FONT, Theme};
+use crate::zoom::{self, Axis, Zoom, ZoomDrag, keep_anchor};
 use daw_automation::{Automation, CompiledBlock};
 use daw_engine::{
     BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId,
@@ -39,10 +40,8 @@ const LEFT_WIDTH: f32 = 260.;
 const RULER_HEIGHT: f32 = 28.;
 const SECTION_HEIGHT: f32 = 30.;
 const DEVICE_HEIGHT: f32 = 30.;
-const SET_HEIGHT: f32 = 48.;
-const LAYER_HEIGHT: f32 = 40.;
-/// The layer holding the selected block grows, to give room for its points.
-const TALL_LAYER_HEIGHT: f32 = 96.;
+/// Starting zoom: result rows and layer rows are all one lane height.
+pub(crate) const DEFAULT_ZOOM: Zoom = Zoom::new(PIXELS_PER_BEAT, 40.);
 const ADD_HEIGHT: f32 = 26.;
 const SETTINGS_HEIGHT: f32 = 34.;
 /// Gap between a lane's edges and its blocks.
@@ -85,38 +84,34 @@ enum Row<'a> {
         index: usize,
         id: LayerId,
         layer: &'a Layer,
-        /// Holds the selected block, so drawn taller.
-        tall: bool,
     },
     AddLayer(&'a ParamSnapshot),
     AddParam(&'a DeviceSnapshot),
 }
 
 impl Row<'_> {
-    fn height(&self) -> f32 {
+    /// The row's height with lanes `lane` pixels tall.
+    fn height(&self, lane: f32) -> f32 {
         match self {
             Self::Section(_) => SECTION_HEIGHT,
             Self::Device(_) => DEVICE_HEIGHT,
-            Self::Set(_) => SET_HEIGHT,
-            Self::Layer { tall: true, .. } => TALL_LAYER_HEIGHT,
-            Self::Layer { .. } => LAYER_HEIGHT,
+            Self::Set(_) | Self::Layer { .. } => lane,
             Self::NoEffects | Self::AddLayer(_) | Self::AddParam(_) => ADD_HEIGHT,
         }
     }
 }
 
-/// The rows for a node, in display order. `tall` is the layer holding the
-/// selected block.
-fn rows(snapshot: &Snapshot, tall: Option<LayerId>) -> Vec<Row<'_>> {
+/// The rows for a node, in display order.
+fn rows(snapshot: &Snapshot) -> Vec<Row<'_>> {
     let mut rows = Vec::new();
     let find = |device| snapshot.devices.iter().find(|d| d.device == device);
     rows.push(Row::Section("Global"));
     if let Some(channel) = find(DeviceRef::Channel) {
-        push_device(&mut rows, channel, tall);
+        push_device(&mut rows, channel);
     }
     rows.push(Row::Section("Instrument"));
     if let Some(instrument) = find(DeviceRef::Instrument) {
-        push_device(&mut rows, instrument, tall);
+        push_device(&mut rows, instrument);
     }
     rows.push(Row::Section("Effects"));
     let effects: Vec<_> = snapshot
@@ -128,12 +123,12 @@ fn rows(snapshot: &Snapshot, tall: Option<LayerId>) -> Vec<Row<'_>> {
         rows.push(Row::NoEffects);
     }
     for effect in effects {
-        push_device(&mut rows, effect, tall);
+        push_device(&mut rows, effect);
     }
     rows
 }
 
-fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot, tall: Option<LayerId>) {
+fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot) {
     rows.push(Row::Device(device));
     for param in device.params.iter().filter(|p| !p.layers.is_empty()) {
         rows.push(Row::Set(param));
@@ -144,7 +139,6 @@ fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot, tall: Op
                 index,
                 id: *id,
                 layer,
-                tall: tall == Some(*id),
             });
         }
         rows.push(Row::AddLayer(param));
@@ -253,6 +247,46 @@ pub(crate) struct BlockDrag {
     box_height: f32,
 }
 
+/// A parameter's resting value being dragged with its slider.
+#[derive(Debug, Clone)]
+pub(crate) struct BaseDrag {
+    param: ParamId,
+    origin_y: Pixels,
+    original: f64,
+    preview: f64,
+}
+
+/// Height of the resting-value slider.
+const BASE_SLIDER_HEIGHT: f32 = 30.;
+/// Pixels of drag across the full range, and with Shift held.
+const BASE_DRAG_RANGE: f32 = 200.;
+const BASE_DRAG_RANGE_FINE: f32 = 1000.;
+
+/// A resting value after dragging `dy` pixels down from `original` (up
+/// raises it).
+fn dragged_base(original: f64, dy: f32, fine: bool) -> f64 {
+    let range = if fine {
+        BASE_DRAG_RANGE_FINE
+    } else {
+        BASE_DRAG_RANGE
+    };
+    (original - f64::from(dy / range)).clamp(0., 1.)
+}
+
+/// Closest spacing of grid lines, in pixels.
+const MIN_GRID_SPACING: f32 = 6.;
+
+/// Show a bar line every this many bars, so bar lines stay at least
+/// `MIN_GRID_SPACING` apart.
+fn grid_bar_step(pixels_per_beat: f32) -> u32 {
+    let bar = pixels_per_beat * BEATS_PER_BAR as f32;
+    let mut step = 1;
+    while bar * step as f32 * 1.0 < MIN_GRID_SPACING {
+        step *= 2;
+    }
+    step
+}
+
 /// An id no layer in the project uses yet.
 fn next_layer_id(snapshot: &Snapshot) -> LayerId {
     let highest = snapshot
@@ -274,10 +308,11 @@ impl ProjectView {
         let snapshot = self.session.snapshot();
         let color = theme.content(snapshot.node.color);
         let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
-        let width = beat_to_x(f64::from(bars) * BEATS_PER_BAR);
+        let zoom = self.parameters_zoom;
+        let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
         let position = self.session.position_beats();
         let selected = self.selected_block(snapshot);
-        let rows = rows(snapshot, selected.map(|(_, layer, _)| layer));
+        let rows = rows(snapshot);
 
         let left = div()
             .w(px(LEFT_WIDTH))
@@ -293,24 +328,35 @@ impl ProjectView {
                     .map(|(i, row)| self.left_cell(i, row, position, theme, cx)),
             );
 
-        let grid_lines = (0..bars * 4).map(|beat| {
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(px(beat_to_x(f64::from(beat))))
-                .w(px(1.))
-                .bg(if beat % 4 == 0 {
-                    theme.hairline
+        // Beat lines only when there is room; bar lines thinned out likewise.
+        let bar_step = grid_bar_step(zoom.pixels_per_beat);
+        let show_beats = zoom.pixels_per_beat >= MIN_GRID_SPACING;
+        let grid_lines = (0..bars * 4)
+            .filter(move |beat| {
+                if beat % 4 == 0 {
+                    (beat / 4) % bar_step == 0
                 } else {
-                    theme.grid
-                })
-        });
+                    show_beats
+                }
+            })
+            .map(|beat| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(zoom.beat_to_x(f64::from(beat))))
+                    .w(px(1.))
+                    .bg(if beat % 4 == 0 {
+                        theme.hairline
+                    } else {
+                        theme.grid
+                    })
+            });
         let playhead = div()
             .absolute()
             .top_0()
             .bottom_0()
-            .left(px(beat_to_x(position)))
+            .left(px(zoom.beat_to_x(position)))
             .w(px(1.))
             .bg(theme.accent);
         let mut top = 0.;
@@ -318,7 +364,7 @@ impl ProjectView {
             .iter()
             .map(|row| {
                 let cell = self.right_cell(row, top, color, theme, width, cx);
-                top += row.height();
+                top += row.height(zoom.row_height);
                 cell
             })
             .collect();
@@ -381,10 +427,14 @@ impl ProjectView {
                         .relative()
                         .left(scroll_x)
                         .w(px(width))
-                        .child(self.render_ruler(theme, bars, cx)),
+                        .child(self.render_ruler(theme, bars, zoom.pixels_per_beat, cx)),
                 ),
             );
 
+        let [vertical, horizontal] = zoom::corner(
+            self.zoom_slider(Axis::Vertical, theme, cx),
+            self.zoom_slider(Axis::Horizontal, theme, cx),
+        );
         let settings = selected.map(|(id, _, block)| {
             let shown = match &self.block_drag {
                 Some(drag) if drag.id == id => &drag.preview,
@@ -400,25 +450,37 @@ impl ProjectView {
             .flex_col()
             .child(top)
             .child(
+                // The zoom sliders float in the bottom-right corner, over the
+                // scrolling rows.
                 div()
-                    .id("parameter-body")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
+                    .relative()
                     .child(
-                        // Grows to fill the page when there are few rows (so the
-                        // column and grid reach the bottom) and beyond it when there
-                        // are many. Percentage heights do not work inside a vertical
-                        // scroll, so this uses flex growth instead.
                         div()
+                            .id("parameter-body")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
                             .flex()
-                            .flex_grow()
-                            .flex_shrink_0()
-                            .child(left)
-                            .child(lanes),
-                    ),
+                            .flex_col()
+                            .child(
+                                // Grows to fill the page when there are few rows (so
+                                // the column and grid reach the bottom) and beyond it
+                                // when there are many. Percentage heights do not work
+                                // inside a vertical scroll, so this uses flex growth.
+                                div()
+                                    .flex()
+                                    .flex_grow()
+                                    .flex_shrink_0()
+                                    .child(left)
+                                    .child(lanes),
+                            ),
+                    )
+                    .child(vertical)
+                    .child(horizontal),
             )
             .children(settings)
     }
@@ -433,7 +495,8 @@ impl ProjectView {
     /// follows the mouse anywhere in the window until it is released.
     fn lanes_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let bounds_cell = self.lanes_bounds.clone();
-        let dragging = self.block_drag.is_some();
+        let dragging =
+            self.block_drag.is_some() || self.base_drag.is_some() || self.zoom_drag.is_some();
         let view = cx.entity().downgrade();
         canvas(
             move |bounds, _, _| bounds_cell.set(bounds),
@@ -464,6 +527,49 @@ impl ProjectView {
         .size_full()
     }
 
+    /// A zoom slider for this page.
+    fn zoom_slider(
+        &self,
+        axis: Axis,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let active = self.zoom_drag.is_some_and(|d| d.axis == axis);
+        let id = match axis {
+            Axis::Horizontal => "zoom-horizontal",
+            Axis::Vertical => "zoom-vertical",
+        };
+        zoom::slider(id, axis, self.parameters_zoom.position(axis), active, theme).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                this.zoom_drag = Some(ZoomDrag {
+                    axis,
+                    origin: event.position,
+                    original: this.parameters_zoom,
+                });
+            }),
+        )
+    }
+
+    /// Follows a zoom slider drag; false if none is in progress. Horizontal
+    /// zoom keeps the middle of the view on the same beat.
+    fn drag_zoom(&mut self, position: Point<Pixels>) -> bool {
+        let Some(drag) = self.zoom_drag else {
+            return false;
+        };
+        let zoom = drag.zoom_at(position);
+        let old = self.parameters_zoom.pixels_per_beat;
+        if zoom.pixels_per_beat != old {
+            let offset = self.parameters_scroll.offset();
+            let view = self.parameters_scroll.bounds().size.width / px(1.);
+            let scrolled = keep_anchor(-offset.x / px(1.), view / 2., old, zoom.pixels_per_beat);
+            self.parameters_scroll
+                .set_offset(point(px(-scrolled), offset.y));
+        }
+        self.parameters_zoom = zoom;
+        true
+    }
+
     /// The snap to use with `modifiers` held: Alt flips snap and slide.
     fn snap_for(&self, modifiers: Modifiers) -> Snap {
         if modifiers.alt {
@@ -482,7 +588,9 @@ impl ProjectView {
         };
         let lanes = self.lanes_bounds.get();
         let x = (event.position.x - lanes.origin.x) / px(1.);
-        let at = Ticks::from_beats_f64(f64::from(x / PIXELS_PER_BEAT));
+        let zoom = self.parameters_zoom;
+        let ppb = zoom.pixels_per_beat;
+        let at = Ticks::from_beats_f64(zoom.x_to_beats(x));
         let snap = self.snap_for(event.modifiers);
         let box_top = lanes.origin.y + px(top + BLOCK_INSET);
         let box_height = height - 2. * BLOCK_INSET;
@@ -505,21 +613,14 @@ impl ProjectView {
             return;
         };
 
-        let local_x = x - beat_to_x(block.start.as_beats());
+        let local_x = x - zoom.beat_to_x(block.start.as_beats());
         let local_y = (event.position.y - box_top) / px(1.);
         let was_selected = self.selected_block == Some(id);
-        let hit = hit_test(
-            &block,
-            local_x,
-            local_y,
-            PIXELS_PER_BEAT,
-            box_height,
-            was_selected,
-        );
+        let hit = hit_test(&block, local_x, local_y, ppb, box_height, was_selected);
         let room = room_around(&lane.blocks, Some(id), block.start);
         self.selected_block = Some(id);
         if event.click_count >= 2 && was_selected && !matches!(hit, Hit::Point(_)) {
-            let at = phase_at(&block, local_x, PIXELS_PER_BEAT);
+            let at = phase_at(&block, local_x, ppb);
             let (shape, _) = add_point(&block.shape, at, y_to_value(local_y, box_height));
             self.session.apply(Command::Edit(Edit::SetBlock {
                 id,
@@ -546,9 +647,11 @@ impl ProjectView {
             return;
         };
         let lanes = self.lanes_bounds.get();
-        let x = (event.position.x - lanes.origin.x) / px(1.) - beat_to_x(block.start.as_beats());
+        let zoom = self.parameters_zoom;
+        let x =
+            (event.position.x - lanes.origin.x) / px(1.) - zoom.beat_to_x(block.start.as_beats());
         let y = (event.position.y - lanes.origin.y) / px(1.) - top - BLOCK_INSET;
-        let removed = point_at(block, x, y, PIXELS_PER_BEAT, height - 2. * BLOCK_INSET)
+        let removed = point_at(block, x, y, zoom.pixels_per_beat, height - 2. * BLOCK_INSET)
             .and_then(|index| remove_point(&block.shape, index));
         if let Some(shape) = removed {
             let block = Block {
@@ -580,9 +683,18 @@ impl ProjectView {
         });
     }
 
-    /// Updates the preview of the block being dragged.
+    /// Updates the preview of whatever is being dragged.
     fn drag_to(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
+        if self.drag_zoom(position) {
+            return;
+        }
+        if let Some(drag) = &mut self.base_drag {
+            let dy = (position.y - drag.origin_y) / px(1.);
+            drag.preview = dragged_base(drag.original, dy, modifiers.shift);
+            return;
+        }
         let snap = self.snap_for(modifiers);
+        let ppb = self.parameters_zoom.pixels_per_beat;
         let Some(drag) = &mut self.block_drag else {
             return;
         };
@@ -592,20 +704,29 @@ impl ProjectView {
             DragKind::Block(Hit::Point(index)) => {
                 let cycle = original.cycle.unwrap_or(original.length).as_beats();
                 let at = original.shape.points.get(index).map_or(0., |p| p.at)
-                    + f64::from(dx / PIXELS_PER_BEAT) / cycle;
+                    + f64::from(dx / ppb) / cycle;
                 let value = y_to_value((position.y - drag.box_top) / px(1.), drag.box_height);
                 Block {
                     shape: move_point(&original.shape, index, at, value),
                     ..original.clone()
                 }
             }
-            DragKind::Block(hit) => drag_block(original, hit, dx, PIXELS_PER_BEAT, snap, drag.room),
+            DragKind::Block(hit) => drag_block(original, hit, dx, ppb, snap, drag.room),
             DragKind::Setting(setting) => scrub(original, setting, dx, snap),
         };
     }
 
     /// Ends a drag, sending the change as one edit.
     fn finish_drag(&mut self) {
+        self.zoom_drag = None;
+        if let Some(drag) = self.base_drag.take()
+            && drag.preview != drag.original
+        {
+            self.session.apply(Command::Edit(Edit::SetParam {
+                param: drag.param,
+                value: drag.preview,
+            }));
+        }
         if let Some(drag) = self.block_drag.take()
             && drag.preview != drag.original
         {
@@ -614,6 +735,86 @@ impl ProjectView {
                 block: drag.preview,
             }));
         }
+    }
+
+    /// A parameter's resting value as shown: the slider's preview while it
+    /// is being dragged.
+    fn base_of(&self, param: &ParamSnapshot) -> f64 {
+        match &self.base_drag {
+            Some(drag) if drag.param == param.id => drag.preview,
+            _ => param.base,
+        }
+    }
+
+    /// A small vertical slider for a parameter's resting value (its default
+    /// state). Drag up or down; hold Shift for fine control.
+    fn base_slider(
+        &self,
+        param: &ParamSnapshot,
+        base: f64,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let param_id = param.id;
+        let original = param.base;
+        let filled = base as f32 * BASE_SLIDER_HEIGHT;
+        let dragging = self.base_drag.as_ref().is_some_and(|d| d.param == param_id);
+        let thumb = if dragging {
+            theme.accent
+        } else {
+            theme.text_secondary
+        };
+        div()
+            .id(SharedString::from(format!(
+                "base-slider-{:?}-{}",
+                param_id.device, param_id.index
+            )))
+            .w(px(12.))
+            .h(px(BASE_SLIDER_HEIGHT))
+            .flex_none()
+            .relative()
+            .cursor_ns_resize()
+            .child(
+                // The track, filled up to the value.
+                div()
+                    .absolute()
+                    .left(px(5.))
+                    .w(px(2.))
+                    .top_0()
+                    .bottom_0()
+                    .rounded(px(1.))
+                    .bg(theme.control)
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .w_full()
+                            .h(px(filled))
+                            .rounded(px(1.))
+                            .bg(thumb),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(1.))
+                    .w(px(10.))
+                    .h(px(3.))
+                    .top(px(BASE_SLIDER_HEIGHT - filled - 1.5))
+                    .rounded(px(1.5))
+                    .bg(thumb),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                    this.base_drag = Some(BaseDrag {
+                        param: param_id,
+                        origin_y: event.position.y,
+                        original,
+                        preview: original,
+                    });
+                }),
+            )
     }
 
     /// Deletes the selected block (Delete or Backspace).
@@ -732,7 +933,11 @@ impl ProjectView {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let cell = div().h(px(row.height())).flex_none().flex().items_center();
+        let cell = div()
+            .h(px(row.height(self.parameters_zoom.row_height)))
+            .flex_none()
+            .flex()
+            .items_center();
         match row {
             Row::Section(label) => cell
                 .px(px(12.))
@@ -759,18 +964,20 @@ impl ProjectView {
                 .child("No effects on this node")
                 .into_any_element(),
             Row::Set(param) => {
-                let value =
-                    Automation::compile_layers(param.base, &param.layers).value_at(position);
+                let base = self.base_of(param);
+                let value = Automation::compile_layers(base, &param.layers).value_at(position);
                 cell.pl(px(16.))
                     .pr(px(12.))
                     .gap(px(8.))
                     .child(
                         div()
-                            .flex_1()
+                            .min_w_0()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(param.name.clone()),
                     )
+                    .child(self.base_slider(param, base, theme, cx))
+                    .child(div().flex_1())
                     .child(
                         div()
                             .font_family(MONO_FONT)
@@ -1083,13 +1290,14 @@ impl ProjectView {
         width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let height = row.height();
+        let zoom = self.parameters_zoom;
+        let height = row.height(zoom.row_height);
         let cell = div().h(px(height)).flex_none().w(px(width)).relative();
         let drag = self.block_drag.as_ref();
         match row {
             Row::Set(param) => {
                 let layers = previewed_layers(drag, &param.layers);
-                let automation = Automation::compile_layers(param.base, &layers);
+                let automation = Automation::compile_layers(self.base_of(param), &layers);
                 let (line, fill) = (color.detail, color.fill);
                 cell.bg(theme.window)
                     .border_b_1()
@@ -1098,9 +1306,14 @@ impl ProjectView {
                         canvas(
                             |_, _, _| {},
                             move |bounds, (), window, _| {
-                                paint_curve(window, bounds, line, Some(fill), |beat| {
-                                    automation.value_at(beat)
-                                });
+                                paint_curve(
+                                    window,
+                                    bounds,
+                                    zoom.pixels_per_beat,
+                                    line,
+                                    Some(fill),
+                                    |beat| automation.value_at(beat),
+                                );
                             },
                         )
                         .size_full(),
@@ -1118,7 +1331,14 @@ impl ProjectView {
                 cell.border_b_1()
                     .border_color(theme.hairline)
                     .children(blocks.iter().map(|(id, block)| {
-                        block_view(*id, block, colors, self.selected_block == Some(*id), theme)
+                        block_view(
+                            *id,
+                            block,
+                            colors,
+                            self.selected_block == Some(*id),
+                            zoom,
+                            theme,
+                        )
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -1147,20 +1367,22 @@ fn block_view(
     block: &Block,
     colors: ContentColor,
     selected: bool,
+    zoom: Zoom,
     theme: &Theme,
 ) -> impl IntoElement {
-    let left = beat_to_x(block.start.as_beats());
-    let width = beat_to_x(block.length.as_beats());
+    let ppb = zoom.pixels_per_beat;
+    let left = zoom.beat_to_x(block.start.as_beats());
+    let width = zoom.beat_to_x(block.length.as_beats());
     let compiled = CompiledBlock::compile(block);
     let start = compiled.start;
     // Where each repeat of the shape begins, after the first.
     let cycle = compiled.cycle;
     let repeats: Vec<f32> = (1..)
-        .map(|k| beat_to_x(f64::from(k) * cycle))
+        .map(|k| zoom.beat_to_x(f64::from(k) * cycle))
         .take_while(|x| *x < width - 0.5)
         .collect();
     let points: Vec<(f32, f64)> = if selected {
-        point_positions(block, PIXELS_PER_BEAT)
+        point_positions(block, ppb)
             .into_iter()
             .map(|(index, x)| (x, block.shape.points[index].value))
             .collect()
@@ -1199,7 +1421,7 @@ fn block_view(
                         );
                         window.paint_quad(fill(line, colors.outline));
                     }
-                    paint_curve(window, bounds, colors.detail, None, |beat| {
+                    paint_curve(window, bounds, ppb, colors.detail, None, |beat| {
                         let beat = start + beat;
                         if compiled.contains(beat) {
                             compiled.sample(beat).0
@@ -1264,6 +1486,7 @@ fn block_view(
 fn paint_curve(
     window: &mut Window,
     bounds: Bounds<Pixels>,
+    pixels_per_beat: f32,
     line: Hsla,
     fill: Option<Hsla>,
     value: impl Fn(f64) -> f64,
@@ -1280,7 +1503,7 @@ fn paint_curve(
     let points: Vec<Point<Pixels>> = (0..=((width / step) as usize))
         .filter_map(|i| {
             let x = i as f32 * step;
-            let v = value(f64::from(x / PIXELS_PER_BEAT));
+            let v = value(f64::from(x / pixels_per_beat));
             (!v.is_nan()).then(|| to_point(x, v.clamp(0., 1.)))
         })
         .collect();
@@ -1342,7 +1565,7 @@ mod tests {
     fn an_untouched_node_lists_its_devices_only() {
         let snapshot = snapshot_with(vec![]);
         assert_eq!(
-            describe(&rows(&snapshot, None)),
+            describe(&rows(&snapshot)),
             [
                 "section Global",
                 "device Channel",
@@ -1365,7 +1588,7 @@ mod tests {
             layer: Layer::named(name, BlendMode::Replace),
         };
         let snapshot = snapshot_with(vec![add(1, 0, "Bottom"), add(2, 1, "Top")]);
-        let described = describe(&rows(&snapshot, None));
+        let described = describe(&rows(&snapshot));
         assert_eq!(
             &described[1..6],
             [
@@ -1410,14 +1633,21 @@ mod tests {
     }
 
     #[test]
-    fn the_layer_with_the_selected_block_is_tall() {
+    fn result_rows_and_layer_rows_share_the_lane_height() {
         let snapshot = snapshot_with(layer_with_block());
-        let heights: Vec<f32> = rows(&snapshot, Some(LayerId(1)))
+        let heights: Vec<f32> = rows(&snapshot)
             .iter()
-            .filter(|r| matches!(r, Row::Layer { .. }))
-            .map(Row::height)
+            .filter(|r| matches!(r, Row::Set(_) | Row::Layer { .. }))
+            .map(|r| r.height(55.))
             .collect();
-        assert_eq!(heights, [TALL_LAYER_HEIGHT]);
+        assert_eq!(heights, [55., 55.]);
+    }
+
+    #[test]
+    fn grid_lines_thin_out_when_zoomed_out() {
+        assert_eq!(grid_bar_step(24.), 1);
+        assert_eq!(grid_bar_step(1.), 2);
+        assert_eq!(grid_bar_step(0.25), 8);
     }
 
     #[test]
@@ -1449,6 +1679,15 @@ mod tests {
             Cow::Borrowed(_)
         ));
         assert!(matches!(previewed_layers(None, layers), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn dragging_up_raises_the_resting_value() {
+        assert!((dragged_base(0.5, -100., false) - 1.0).abs() < 1e-6);
+        assert!((dragged_base(0.5, 20., false) - 0.4).abs() < 1e-6);
+        assert!((dragged_base(0.5, 100., true) - 0.4).abs() < 1e-6);
+        assert_eq!(dragged_base(0.9, -500., false), 1.);
+        assert_eq!(dragged_base(0.1, 500., false), 0.);
     }
 
     #[test]

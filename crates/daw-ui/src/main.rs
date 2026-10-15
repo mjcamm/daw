@@ -13,6 +13,7 @@ mod project;
 mod session;
 mod text_input;
 mod theme;
+mod zoom;
 
 use app::AppView;
 use gpui::{

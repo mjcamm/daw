@@ -24,11 +24,23 @@ pub fn beat_to_x(beats: f64) -> f32 {
     beats as f32 * PIXELS_PER_BEAT
 }
 
-/// The song position under a horizontal offset, snapped to sixteenths and
-/// never before the start.
-pub fn x_to_snapped_position(x: f32) -> Ticks {
-    let beats = f64::from(x / PIXELS_PER_BEAT).max(0.0);
+/// The song position under a horizontal offset at `pixels_per_beat`,
+/// snapped to sixteenths and never before the start.
+pub fn x_to_snapped_position(x: f32, pixels_per_beat: f32) -> Ticks {
+    let beats = f64::from(x / pixels_per_beat).max(0.0);
     Ticks::from_beats_f64((beats * 4.0).round() / 4.0)
+}
+
+/// Label every this many bars on a ruler, so labels stay readable when
+/// zoomed out.
+pub fn ruler_label_step(pixels_per_beat: f32) -> u32 {
+    const MIN_LABEL_SPACING: f32 = 28.;
+    let bar = pixels_per_beat * BEATS_PER_BAR as f32;
+    let mut step = 1;
+    while bar * (step as f32) < MIN_LABEL_SPACING {
+        step *= 2;
+    }
+    step
 }
 
 /// Whole bars to show: everything that exists, plus room after it.
@@ -120,12 +132,20 @@ mod tests {
 
     #[test]
     fn clicks_snap_to_sixteenths() {
-        assert_eq!(x_to_snapped_position(0.0), Ticks::ZERO);
+        assert_eq!(x_to_snapped_position(0.0, 24.), Ticks::ZERO);
         assert_eq!(
-            x_to_snapped_position(PIXELS_PER_BEAT * 1.3),
+            x_to_snapped_position(24. * 1.3, 24.),
             Ticks::from_beats_f64(1.25)
         );
-        assert_eq!(x_to_snapped_position(-50.0), Ticks::ZERO);
+        assert_eq!(x_to_snapped_position(-50.0, 24.), Ticks::ZERO);
+        assert_eq!(x_to_snapped_position(26., 10.), Ticks::from_beats_f64(2.5));
+    }
+
+    #[test]
+    fn ruler_labels_thin_out_when_zoomed_out() {
+        assert_eq!(ruler_label_step(24.), 1);
+        assert_eq!(ruler_label_step(4.), 2);
+        assert_eq!(ruler_label_step(2.), 4);
     }
 
     #[test]

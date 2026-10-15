@@ -1,7 +1,8 @@
 //! The Arrange page: the node list on the left, the timeline beside it.
 
 use crate::layout::{
-    BEATS_PER_BAR, beat_to_x, meter_height, note_rows, timeline_bars, x_to_snapped_position,
+    BEATS_PER_BAR, PIXELS_PER_BEAT, beat_to_x, meter_height, note_rows, ruler_label_step,
+    timeline_bars, x_to_snapped_position,
 };
 use crate::project::{ProjectView, RenameTarget};
 use crate::theme::{ContentColor, Theme};
@@ -191,7 +192,7 @@ impl ProjectView {
                     .w(px(width))
                     .h_full()
                     .children(grid_lines)
-                    .child(self.render_ruler(theme, bars, cx))
+                    .child(self.render_ruler(theme, bars, PIXELS_PER_BEAT, cx))
                     .child(lane)
                     .child(playhead),
             )
@@ -201,6 +202,7 @@ impl ProjectView {
         &self,
         theme: &Theme,
         bars: u32,
+        pixels_per_beat: f32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let bounds_cell = self.ruler_bounds.clone();
@@ -208,8 +210,8 @@ impl ProjectView {
         loop_fill.a = 0.2;
 
         let loop_band = self.session.snapshot().loop_range.map(|range| {
-            let start = beat_to_x(range.start.as_beats());
-            let end = beat_to_x(range.end.as_beats());
+            let start = range.start.as_beats() as f32 * pixels_per_beat;
+            let end = range.end.as_beats() as f32 * pixels_per_beat;
             div()
                 .absolute()
                 .top(px(2.))
@@ -220,10 +222,11 @@ impl ProjectView {
                 .bg(loop_fill)
         });
 
-        let labels = (0..bars).map(|bar| {
+        let step = ruler_label_step(pixels_per_beat);
+        let labels = (0..bars).step_by(step as usize).map(|bar| {
             div()
                 .absolute()
-                .left(px(beat_to_x(f64::from(bar) * BEATS_PER_BAR) + 4.))
+                .left(px(bar as f32 * BEATS_PER_BAR as f32 * pixels_per_beat + 4.))
                 .bottom(px(4.))
                 .text_size(px(10.))
                 .text_color(theme.text_tertiary)
@@ -250,11 +253,11 @@ impl ProjectView {
             .children(labels)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                cx.listener(move |this, event: &MouseDownEvent, _, _| {
                     let origin = this.ruler_bounds.get().origin.x;
                     let x = (event.position.x - origin) / px(1.);
                     this.session.apply(Command::Locate {
-                        position: x_to_snapped_position(x),
+                        position: x_to_snapped_position(x, pixels_per_beat),
                     });
                 }),
             )

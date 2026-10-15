@@ -7,7 +7,7 @@
 | Gesture | Result |
 |---|---|
 | Double-click empty space | New block: one bar, flat line at 0.5, starting on the snap grid, shortened to fit before the next block |
-| Click a block | Selects it: accent outline, points shown, its lane grows to 96 px, settings bar appears |
+| Click a block | Selects it: accent outline, points shown, settings bar appears |
 | Drag the body | Moves the block, snapped, never overlapping its neighbours |
 | Drag an edge | Moves that edge **without moving the contents**: the block is a window onto song time (see below) |
 | Drag the corner handle (top right, shown on hover) | Repeats the shape: the cycle is fixed at the current length and the block extends |
@@ -34,6 +34,19 @@ The user asked for edges to leave the contents fixed and give more room to work,
 ## Settings bar
 
 Shown at the bottom of the page while a block is selected: Depth, Fade In, Fade Out, Repeat (cycle length; "Off" when the shape spans the block), Nudge, and an Invert toggle. Values change by dragging them sideways: depth in 1 % steps, times in grid steps.
+
+## Resting value
+
+Each parameter's result row has a small vertical slider just right of its name. It edits the parameter's default state, the value it rests at with no layers acting (`Edit::SetParam`). Moving it never records movement, in line with "moving a knob edits the default state" in `parameters-and-layers.md`. Drag up to raise; 200 px covers the full range, Shift makes it five times finer. Like block drags, it previews (value readout and result curve) and sends one edit on release.
+
+## Zoom
+
+Every timeline page gets two short slim sliders in its bottom-right corner (`crates/daw-ui/src/zoom.rs`, built to be reused on Arrange and Signals): one standing against the right edge for **vertical zoom** (row height) and one along the bottom for **horizontal zoom** (pixels per beat). Each page keeps its own zoom.
+
+- Wide, log-scale ranges, so it works as a zoom tool: rows 28 to 400 px, timeline 2 to 400 px per beat. Drag right or up to zoom in.
+- On the Parameters page, result rows and layer rows are always the same height, set by vertical zoom (default 40 px). Selecting a block no longer grows its lane; zoom in for room to edit points.
+- Horizontal zoom keeps the middle of the view on the same beat. Grid lines and ruler labels thin out when zoomed far out.
+- Zoom is view state, not saved in the project and not undoable.
 
 ## Undo
 
