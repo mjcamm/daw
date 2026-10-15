@@ -312,7 +312,7 @@ impl ProjectView {
                 .into_any_element(),
             Row::AddLayer(param) => {
                 let (param_id, count) = (param.id, param.layers.len());
-                quiet_action(cell.pl(px(32.)), ("add-layer", index), "Layer", theme)
+                quiet_action(cell.pl(px(32.)), ("add-layer", index), "Add Layer", theme)
                     .on_click(cx.listener(move |this, _, _, _| {
                         let name = format!("Layer {}", count + 1);
                         this.add_layer(param_id, count, &name);
@@ -322,10 +322,15 @@ impl ProjectView {
             Row::AddParam(device) => {
                 let open = self.open_menu == Some(OpenMenu::AddParam(device.device));
                 let device_ref = device.device;
-                let button = quiet_action(cell.pl(px(16.)), ("add-param", index), "Add", theme)
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        this.open_menu = Some(OpenMenu::AddParam(device_ref));
-                    }));
+                let button = quiet_action(
+                    cell.pl(px(16.)),
+                    ("add-param", index),
+                    "Add Parameter",
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _, _, _| {
+                    this.open_menu = Some(OpenMenu::AddParam(device_ref));
+                }));
                 div()
                     .flex()
                     .flex_col()
