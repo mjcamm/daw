@@ -189,12 +189,14 @@ impl ProjectView {
             .id("parameter-lanes")
             .flex_1()
             .min_w_0()
+            // A row, so the content stretches to the full height.
+            .flex()
             .overflow_x_scroll()
             .track_scroll(&self.parameters_scroll)
             .child(
                 div()
                     .relative()
-                    .min_h_full()
+                    .flex_shrink_0()
                     .w(px(width))
                     .flex()
                     .flex_col()
@@ -251,10 +253,19 @@ impl ProjectView {
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .flex()
+                .flex_col()
                 .child(
-                    // At least a full page tall, so the column and grid reach the
-                    // bottom however few rows there are.
-                    div().flex().min_h_full().child(left).child(lanes),
+                    // Grows to fill the page when there are few rows (so the
+                    // column and grid reach the bottom) and beyond it when there
+                    // are many. Percentage heights do not work inside a vertical
+                    // scroll, so this uses flex growth instead.
+                    div()
+                        .flex()
+                        .flex_grow()
+                        .flex_shrink_0()
+                        .child(left)
+                        .child(lanes),
                 ),
         )
     }
@@ -368,7 +379,6 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (mode, enabled) = (layer.mode, layer.enabled);
-        let group = format!("layer-{}", id.0);
         let name: AnyElement = match self.rename_input(RenameTarget::Layer(id)) {
             Some(input) => div()
                 .flex_1()
@@ -446,8 +456,6 @@ impl ProjectView {
             ));
 
         let delete = small_button(("layer-delete", id.0), theme)
-            .opacity(0.)
-            .group_hover(group.clone(), |s| s.opacity(1.))
             .on_click(cx.listener(move |this, _, _, _| {
                 this.session.apply(Command::Edit(Edit::RemoveLayer { id }));
             }))
@@ -469,7 +477,6 @@ impl ProjectView {
         drop_highlight.a = 0.18;
 
         cell.id(("layer-row", id.0))
-            .group(group)
             .pl(px(18.))
             .pr(px(8.))
             .gap(px(6.))

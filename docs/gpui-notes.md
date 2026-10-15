@@ -94,7 +94,8 @@ Application::new()
 ## Scrolling and hover reveal
 
 - Keeping two areas in step horizontally (e.g. a ruler above scrolling lanes): give the scrolling element `.track_scroll(&handle)` with a `ScrollHandle` kept in the view, and draw the other inside an `.overflow_hidden()` box shifted by `.relative().left(handle.offset().x)` (the offset is negative when scrolled). The view redraws every frame, so they stay together.
-- Vertical page scroll around a horizontally scrolling area: an outer `.overflow_y_scroll()` holding a row of [fixed left column][`.overflow_x_scroll()` lanes].
+- Vertical page scroll around a horizontally scrolling area: an outer `.overflow_y_scroll().flex().flex_col()` holding a row of [fixed left column][`.overflow_x_scroll()` lanes].
+- **Filling the height inside a vertical scroll:** percentage heights (`min_h_full`, `h_full`) do not resolve inside `overflow_y_scroll`. Make the scroll element `.flex().flex_col()` and give its child `.flex_grow().flex_shrink_0()`: it fills the page when short and grows past it when long. Inside a horizontal scroll, make the scroll element `.flex()` so its child stretches to full height, with `.flex_shrink_0()` on a fixed-width child.
 - Show a control only while its row is hovered: name the row `.group("row-1")`, then on the control `.opacity(0.).group_hover("row-1", |s| s.opacity(1.))`.
 - Curves: `PathBuilder::stroke(px(1.5))` for lines, `PathBuilder::fill()` for the area under them, painted in a `canvas` sized to the row.
 
