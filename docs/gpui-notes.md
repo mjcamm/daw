@@ -69,6 +69,13 @@ Application::new()
 - GPUI has no text field widget. `crates/daw-ui/src/text_input.rs` is ours, adapted from `examples/input.rs`: cursor, selection, IME, clipboard, Enter/Escape events. Create with `cx.new(|cx| TextInput::new(text, placeholder, cx))`, focus with `window.focus(&input.read(cx).focus_handle(cx))` (needs the `Focusable` trait in scope), and listen with `cx.subscribe_in`.
 - `gpui-component` (a widget library) is built on a republished GPUI fork (`gpui-pre`), not crates.io `gpui`, so its types don't mix with ours.
 
+## Menu bar and modals
+
+- This app draws its own menu bar (a strip of `menu::item` dropdowns in `app.rs`) rather than `cx.set_menus`, so it looks the same on every platform.
+- Global actions: `cx.on_action(|_: &Quit, cx| ...)` runs when no element on the focus path handles the action. Element `.on_action` handlers stop propagation by default, so the root view's handler wins when it is on the path.
+- Modal: an absolutely positioned, `.occlude()`d full-size scrim as the root's last child, with the panel inside it also `.occlude()`d. Clicks on the panel never reach the scrim, so the scrim's `on_click` can close the modal.
+- Re-theming at runtime: set the `Theme` global, then `window.refresh()` so every view redraws.
+
 ## Events between views
 
 - A view that emits: `impl EventEmitter<MyEvent> for MyView {}`, then `cx.emit(MyEvent::X)`.

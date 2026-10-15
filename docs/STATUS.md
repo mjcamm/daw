@@ -8,6 +8,7 @@ Phases 0–2 of `build-plan.md` are done (foundations, headless engine, paramete
 
 Working in the app (`cargo run -p daw-ui`):
 
+- **Menu bar** (built, **not yet tried**) across the top on every screen: File → Preferences… (Ctrl+,) and Quit (Ctrl+Q; saves an open project's changes first). Preferences is a modal with one setting, Appearance: System / Light / Dark, applied live and remembered in `preferences.json` beside `recent.json` (`daw_host::preferences`).
 - **Launch page:** new project (asks for a name, creates `Documents/DAW Projects/<name>/project.json`), Open… (folder picker), recent projects list.
 - **New songs** start with one Synth node plus the demo's bass and arpeggio clips at 124 BPM, looping 4 bars, no layers, empty undo history.
 - **Header:** song name (click for menu: Save, Rename, Back to projects; double-click to rename), "Edited/Saved" status, tabs (Arrange · Parameters · Signals · Mixer), snap control (magnet chip: Snap/Slide and grid 1 bar … 1/64), transport (to start, play/stop, loop, position).

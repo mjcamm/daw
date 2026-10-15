@@ -18,7 +18,7 @@ mod text_input;
 mod theme;
 mod zoom;
 
-use app::AppView;
+use app::{AppView, OpenPreferences, Quit};
 use gpui::{
     App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
     px, size,
@@ -39,6 +39,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-s", Save, project),
         KeyBinding::new("secondary-z", Undo, not_typing),
         KeyBinding::new("secondary-shift-z", Redo, not_typing),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-,", OpenPreferences, None),
         KeyBinding::new("delete", DeleteSelection, not_typing),
         KeyBinding::new("backspace", DeleteSelection, not_typing),
     ]
@@ -50,6 +52,7 @@ fn main() {
         .run(|cx: &mut App| {
             cx.bind_keys(text_input::key_bindings());
             cx.bind_keys(key_bindings());
+            app::register_global_actions(cx);
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

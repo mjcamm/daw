@@ -1,6 +1,7 @@
 //! Theme tokens from `docs/design/look-and-feel.md`. Views never hard-code a
 //! colour; they read one of these.
 
+use daw_host::preferences::Appearance;
 use gpui::{App, Global, Hsla, Rgba, WindowAppearance, rgb, rgba};
 
 /// One content colour (for nodes, clips, signals) as it appears in a theme.
@@ -36,6 +37,8 @@ pub struct Theme {
     pub active: Hsla,
     pub warning: Hsla,
     pub on_warning: Hsla,
+    /// Dims the page behind a modal.
+    pub scrim: Hsla,
     pub meter_low: Hsla,
     pub meter_high: Hsla,
     pub palette: [ContentColor; 9],
@@ -81,6 +84,16 @@ fn bright(color: u32) -> ContentColor {
 }
 
 impl Theme {
+    /// The theme for a preference: light, dark, or following the window's
+    /// (the system's) appearance.
+    pub fn for_preference(preference: Appearance, window: WindowAppearance) -> Self {
+        match preference {
+            Appearance::System => Self::for_appearance(window),
+            Appearance::Light => Self::light(),
+            Appearance::Dark => Self::dark(),
+        }
+    }
+
     pub fn for_appearance(appearance: WindowAppearance) -> Self {
         match appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
@@ -109,6 +122,7 @@ impl Theme {
             active: hsla(rgb(0x30D158)),
             warning: hsla(rgb(0xFF9F0A)),
             on_warning: hsla(rgb(0x000000)),
+            scrim: hsla(rgba(0x0000_0080)),
             meter_low: hsla(rgb(0x30D158)),
             meter_high: hsla(rgb(0xFF453A)),
             palette: DARK_PALETTE.map(bright),
@@ -141,6 +155,7 @@ impl Theme {
             active: hsla(rgb(0x34C759)),
             warning: hsla(rgb(0xFF9500)),
             on_warning: hsla(rgb(0xFFFFFF)),
+            scrim: hsla(rgba(0x0000_0040)),
             meter_low: hsla(rgb(0x34C759)),
             meter_high: hsla(rgb(0xFF3B30)),
             palette: LIGHT_PALETTE.map(|(fill, deep)| ContentColor {

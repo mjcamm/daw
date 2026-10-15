@@ -5,6 +5,7 @@
 //! processor. The returned [`AudioOutput`] plays until dropped.
 
 pub mod demo;
+pub mod preferences;
 pub mod projects;
 mod stats;
 

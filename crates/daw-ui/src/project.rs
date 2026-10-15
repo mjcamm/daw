@@ -162,6 +162,15 @@ impl ProjectView {
             .map(|e| format!("Could not save: {e}"));
     }
 
+    /// Saves if there are unsaved changes. False if saving failed (the
+    /// reason shows in the project's banner).
+    pub(crate) fn save_if_edited(&mut self) -> bool {
+        if self.session.is_edited() {
+            self.save();
+        }
+        self.save_error.is_none()
+    }
+
     /// Saves any changes, then asks to go back to the launch page.
     pub(crate) fn close(&mut self, cx: &mut Context<Self>) {
         if self.session.is_edited() {
