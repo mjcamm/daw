@@ -23,6 +23,9 @@ Also: Delete removes the selected notes (before clips or nodes); up and down mov
 ## Feel
 
 - **Moving:** press a note and drag. Nothing moves until the pointer has travelled 3 px, so a click only selects. The grabbed note's start lands on the grid (or slides), and its pitch is the row under the pointer.
-- **Resizing:** the outer 4 px at each end of a note (at most a third of a short note) show a sideways cursor and resize that end; the cursor stays sideways for the whole drag.
+- **Resizing:** each end has a resize zone with a sideways cursor (held for the whole drag), so long, zoomed-in and tiny notes all feel reliable (user, 2026-10-16):
+  - *Inside* the note it grows with the note's width on screen, 15% of it, between 4 and 10 px, and never more than a quarter of the note, so the middle always moves it.
+  - *Outside* the note it hangs up to 5 px into free space on its row, never past half the gap to the next note, so neighbours share a gap fairly. Before the clip start there is nothing to hang into.
+  - The rules are `note_edit::edge_inside`, `edge_outside`, `edge_zones` and `hit`; the drawn cursor zones use the same numbers.
 - **Hearing notes:** adding a note, moving notes to a new pitch, nudging pitch and clicking a key play the note for about 0.3 s through the node's instruments (`Command::PreviewNote`, not part of the song or undo).
 - **Undo:** each gesture is one `Edit::SetClip`.

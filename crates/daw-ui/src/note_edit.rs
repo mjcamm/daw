@@ -25,24 +25,99 @@ fn end(note: &MidiNote) -> Ticks {
     note.start + note.length
 }
 
+/// The resize zone inside each end of a note, in pixels: it grows with the
+/// note's width on screen (so long or zoomed-in notes are easy to catch),
+/// but never takes more than a quarter of the note, so the middle always
+/// moves it.
+pub fn edge_inside(width: f64) -> f64 {
+    (width * 0.15).clamp(EDGE_MIN, EDGE_MAX).min(width / 4.)
+}
+
+/// How far an end's resize zone hangs outside the note, in pixels, with
+/// `gap` pixels free beyond it on its row: up to `OVERHANG`, and never past
+/// half the gap, so two notes close together share it fairly.
+pub fn edge_outside(gap: f64) -> f64 {
+    (gap / 2.).clamp(0., OVERHANG)
+}
+
+pub const EDGE_MIN: f64 = 4.;
+pub const EDGE_MAX: f64 = 10.;
+pub const OVERHANG: f64 = 5.;
+
+/// A note's resize zones at `pixels_per_beat`: (inside each end, outside
+/// its start, outside its end), from the free space on its row.
+pub fn edge_zones(notes: &[MidiNote], index: usize, pixels_per_beat: f64) -> (f64, f64, f64) {
+    let n = &notes[index];
+    let (start, stop) = (n.start, end(n));
+    let row = notes
+        .iter()
+        .enumerate()
+        .filter(|(i, m)| *i != index && m.pitch == n.pitch);
+    let before = row
+        .clone()
+        .filter(|(_, m)| end(m) <= start)
+        .map(|(_, m)| end(m))
+        .max()
+        .unwrap_or(Ticks::ZERO);
+    let after = row
+        .filter(|(_, m)| m.start >= stop)
+        .map(|(_, m)| m.start)
+        .min();
+    let px = |t: Ticks| t.as_beats() * pixels_per_beat;
+    let width = px(stop - start);
+    // Nothing after: the zone hangs out in full. Before the clip start
+    // there is nowhere to go.
+    let gap_after = after.map_or(f64::INFINITY, |a| px(a - stop));
+    (
+        edge_inside(width),
+        edge_outside(px(start - before)),
+        edge_outside(gap_after),
+    )
+}
+
 /// The topmost note at `beat` (relative to the clip) and `pitch`, and which
-/// part: within `edge` beats of either end is that end (the end wins on
-/// short notes). Later notes are drawn on top, so they win.
-pub fn hit(notes: &[MidiNote], beat: f64, pitch: u8, edge: f64) -> Option<(usize, Part)> {
-    notes.iter().enumerate().rev().find_map(|(i, n)| {
-        let (start, stop) = (n.start.as_beats(), end(n).as_beats());
-        if n.pitch != pitch || beat < start || beat >= stop {
+/// part, at `pixels_per_beat`: inside a note, its ends' zones resize it
+/// (`edge_inside`); just outside a note, in free space, its ends' zones
+/// hang out to resize it too (`edge_outside`). Later notes are drawn on
+/// top, so they win.
+pub fn hit(
+    notes: &[MidiNote],
+    beat: f64,
+    pitch: u8,
+    pixels_per_beat: f64,
+) -> Option<(usize, Part)> {
+    let x = beat * pixels_per_beat;
+    let px = |t: Ticks| t.as_beats() * pixels_per_beat;
+    let inside = notes.iter().enumerate().rev().find_map(|(i, n)| {
+        let (start, stop) = (px(n.start), px(end(n)));
+        if n.pitch != pitch || x < start || x >= stop {
             return None;
         }
-        let edge = edge.min((stop - start) / 3.);
-        let part = if stop - beat <= edge {
+        let edge = edge_inside(stop - start);
+        let part = if stop - x <= edge {
             Part::End
-        } else if beat - start <= edge {
+        } else if x - start <= edge {
             Part::Start
         } else {
             Part::Body
         };
         Some((i, part))
+    });
+    inside.or_else(|| {
+        notes.iter().enumerate().rev().find_map(|(i, n)| {
+            if n.pitch != pitch {
+                return None;
+            }
+            let (_, before, after) = edge_zones(notes, i, pixels_per_beat);
+            let (start, stop) = (px(n.start), px(end(n)));
+            if x >= stop && x < stop + after {
+                Some((i, Part::End))
+            } else if x < start && x >= start - before {
+                Some((i, Part::Start))
+            } else {
+                None
+            }
+        })
     })
 }
 
@@ -241,17 +316,46 @@ mod tests {
 
     #[test]
     fn hits_find_the_part_under_the_pointer() {
+        // 100 px per beat.
         let notes = [note(0., 2., 60), note(1., 1., 60)];
-        assert_eq!(hit(&notes, 0.5, 60, 0.1), Some((0, Part::Body)));
+        assert_eq!(hit(&notes, 0.5, 60, 100.), Some((0, Part::Body)));
         assert_eq!(
-            hit(&notes, 1.5, 60, 0.1),
+            hit(&notes, 1.5, 60, 100.),
             Some((1, Part::Body)),
             "the later note is on top"
         );
-        assert_eq!(hit(&notes, 0.05, 60, 0.1), Some((0, Part::Start)));
-        assert_eq!(hit(&notes, 1.95, 60, 0.1), Some((1, Part::End)));
-        assert_eq!(hit(&notes, 0.5, 61, 0.1), None);
-        assert_eq!(hit(&notes, 2.5, 60, 0.1), None);
+        assert_eq!(hit(&notes, 0.05, 60, 100.), Some((0, Part::Start)));
+        assert_eq!(hit(&notes, 1.95, 60, 100.), Some((1, Part::End)));
+        assert_eq!(hit(&notes, 0.5, 61, 100.), None);
+        assert_eq!(hit(&notes, 2.5, 60, 100.), None);
+    }
+
+    #[test]
+    fn resize_zones_grow_with_the_note_but_leave_its_middle() {
+        assert_eq!(edge_inside(20.), 4., "at least 4 px");
+        assert_eq!(edge_inside(40.), 6.);
+        assert_eq!(edge_inside(400.), 10., "at most 10 px");
+        assert_eq!(edge_inside(8.), 2., "a tiny note keeps half for moving");
+    }
+
+    #[test]
+    fn resize_zones_hang_into_free_space() {
+        // 100 px per beat; a short note, then a gap of 4 px, then another.
+        let notes = [note(1., 0.08, 60), note(1.12, 0.5, 60), note(3., 1., 60)];
+        let (_, before, after) = edge_zones(&notes, 0, 100.);
+        assert_eq!(before, 5., "free space before: the full overhang");
+        assert!((after - 2.).abs() < 0.1, "half the 4 px gap");
+        let (_, _, after) = edge_zones(&notes, 2, 100.);
+        assert_eq!(after, 5., "nothing after");
+        // Just past the first note's end resizes it; past the shared gap's
+        // middle belongs to the next note's start.
+        assert_eq!(hit(&notes, 1.09, 60, 100.), Some((0, Part::End)));
+        assert_eq!(hit(&notes, 1.11, 60, 100.), Some((1, Part::Start)));
+        assert_eq!(hit(&notes, 4.04, 60, 100.), Some((2, Part::End)));
+        assert_eq!(hit(&notes, 4.06, 60, 100.), None, "beyond the overhang");
+        // A note right at the clip start has nothing before it to hang into.
+        let first = [note(0., 1., 60)];
+        assert_eq!(edge_zones(&first, 0, 100.).1, 0.);
     }
 
     #[test]

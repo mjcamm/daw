@@ -37,9 +37,6 @@ const VELOCITY_HEIGHT: f32 = 56.;
 /// The piano roll's zoom when first opened (the clip's fit then sets the
 /// time zoom): 12 px keys, ranging 6 to 40.
 pub const DEFAULT_ZOOM: Zoom = Zoom::new(48., 12.).with_rows(6., 40.);
-/// Within this many pixels of a note's end, a press resizes it (at most a
-/// third of the note, so short notes can still be moved).
-const EDGE: f32 = 4.;
 /// A press on a note moves or resizes it only once the pointer has
 /// travelled this far, so a click never nudges it.
 const DEAD_ZONE: f32 = 3.;
@@ -267,9 +264,8 @@ impl ProjectView {
         };
         let zoom = self.notes_view.zoom;
         let (beat, pitch) = editor.at(event.position, zoom);
-        let edge = f64::from(EDGE / zoom.pixels_per_beat);
         let notes = clip.notes.clone();
-        let hit = note_edit::hit(&notes, beat, pitch, edge);
+        let hit = note_edit::hit(&notes, beat, pitch, f64::from(zoom.pixels_per_beat));
         let (node, tool) = (editor.node, editor.tool);
         let selection = editor.selection.clone();
         let snap = self.note_snap(event.modifiers.alt);
@@ -819,16 +815,19 @@ impl ProjectView {
         let edges = editor.tool == Tool::Select;
         let notes = shown_notes.iter().enumerate().map(|(i, n)| {
             let selected = selection.contains(&i);
-            let w = (n.length.as_beats() as f32 * ppb - 1.).max(3.);
-            let edge = EDGE.min(w / 3.);
-            let zone = |left: bool| {
+            let full = n.length.as_beats() as f32 * ppb;
+            let w = (full - 1.).max(3.);
+            // The resize zones, as `note_edit::hit` finds them: inside each
+            // end, hanging out into free space.
+            let (inside, before, after) = note_edit::edge_zones(&shown_notes, i, f64::from(ppb));
+            let (inside, before, after) = (inside as f32, before as f32, after as f32);
+            let zone = |left: f32, width: f32| {
                 div()
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .w(px(edge))
-                    .when(left, |d| d.left_0())
-                    .when(!left, |d| d.right_0())
+                    .left(px(left))
+                    .w(px(width))
                     .cursor_ew_resize()
             };
             let shade = 0.45 + 0.55 * f32::from(n.velocity) / 127.;
@@ -846,7 +845,10 @@ impl ProjectView {
                 .h(px(key - 2.))
                 .rounded(px(2.))
                 .bg(body)
-                .when(edges, |d| d.child(zone(true)).child(zone(false)))
+                .when(edges, |d| {
+                    d.child(zone(-before, before + inside))
+                        .child(zone(full - inside, inside + after))
+                })
                 .border_1()
                 .border_color(if selected {
                     theme.accent
