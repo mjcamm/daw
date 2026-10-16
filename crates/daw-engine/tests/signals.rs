@@ -6,8 +6,9 @@
 use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
     AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
-    EffectKind, Engine, EngineConfig, FIRST_NODE, Layer, LayerId, LoopRange, MidiClip, MidiNote,
-    NotesSource, ParamId, Shape, Signal, SignalId, SignalSource, SignalUse, Ticks,
+    EffectKind, Engine, EngineConfig, FIRST_INSTRUMENT, FIRST_NODE, Layer, LayerId, LoopRange,
+    MidiClip, MidiNote, NotesSource, ParamId, Shape, Signal, SignalId, SignalSource, SignalUse,
+    Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, render};
 
@@ -24,7 +25,7 @@ const VOLUME: ParamId = ParamId {
 };
 const SYNTH_CUTOFF: ParamId = ParamId {
     node: FIRST_NODE,
-    device: DeviceRef::Instrument,
+    device: DeviceRef::Instrument(FIRST_INSTRUMENT),
     index: instrument::CUTOFF,
 };
 const FILTER_CUTOFF: ParamId = ParamId {

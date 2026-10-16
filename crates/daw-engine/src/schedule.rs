@@ -2,7 +2,7 @@
 
 use crate::project::Project;
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
-use daw_protocol::{DeviceId, EffectKind, Node, NodeId, ParamState, SignalSource};
+use daw_protocol::{DeviceId, EffectKind, InstrumentKind, Node, NodeId, ParamState, SignalSource};
 use std::collections::BTreeMap;
 
 /// Everything the audio thread needs to render, compiled from the project by
@@ -30,13 +30,22 @@ pub struct NodeRender {
     pub instrument_on: bool,
     /// Every note on the node's timeline, sorted by start.
     pub notes: Vec<ScheduledNote>,
-    /// One automation per instrument parameter, in index order; `None` for
-    /// a node that plays no notes.
-    pub instrument: Option<Vec<Automation>>,
+    /// The instruments, layered: each plays every note.
+    pub instruments: Vec<InstrumentState>,
     /// The effect chain in signal order.
     pub effects: Vec<EffectState>,
     /// One automation per channel parameter, in index order.
     pub channel: Vec<Automation>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstrumentState {
+    pub id: DeviceId,
+    pub kind: InstrumentKind,
+    /// Off, it is silent.
+    pub enabled: bool,
+    /// One automation per parameter, in index order.
+    pub params: Vec<Automation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -141,10 +150,16 @@ fn compile_node(
         output_on: !node.muted,
         instrument_on: !any_soloed || soloed,
         notes: schedule_notes(node),
-        instrument: node
-            .instrument
-            .as_ref()
-            .map(|params| compile_params(params, signals)),
+        instruments: node
+            .instruments
+            .iter()
+            .map(|(id, instrument)| InstrumentState {
+                id: *id,
+                kind: instrument.kind,
+                enabled: instrument.enabled,
+                params: compile_params(&instrument.params, signals),
+            })
+            .collect(),
         effects: node
             .effects
             .iter()

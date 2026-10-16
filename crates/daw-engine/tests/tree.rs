@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used, reason = "test helpers fail the test on error")]
 
 use daw_engine::{
-    AudioProcessor, ClipId, Command, Edit, Engine, EngineConfig, FIRST_NODE, MidiClip, MidiNote,
-    Node, NodeId, Ticks,
+    AudioProcessor, ClipId, Command, DeviceId, Edit, Engine, EngineConfig, FIRST_NODE, MidiClip,
+    MidiNote, Node, NodeId, Ticks,
 };
 use daw_testkit::{VARIED_BLOCKS, render};
 
@@ -63,7 +63,7 @@ fn add_lead(engine: &mut Engine, parent: NodeId) {
             id: LEAD,
             parent,
             index: 0,
-            node: Node::new("Lead", 1).with_instrument(),
+            node: Node::new("Lead", 1).with_instrument(DeviceId(104)),
         },
     );
 }
@@ -223,12 +223,46 @@ fn an_effect_switched_off_passes_sound_untouched() {
     );
     apply(
         &mut engine,
-        Edit::SetEffectEnabled {
+        Edit::SetDeviceEnabled {
             id: filter,
             enabled: false,
         },
     );
     assert_eq!(play(engine, processor, VARIED_BLOCKS), dry);
+}
+
+#[test]
+fn layered_instruments_all_play_every_note() {
+    let (mut engine, processor) = new_engine();
+    hold(&mut engine, FIRST_NODE, 1, 60);
+    let one = play(engine, processor, VARIED_BLOCKS);
+
+    let layered = |enabled: bool| {
+        let (mut engine, processor) = new_engine();
+        hold(&mut engine, FIRST_NODE, 1, 60);
+        apply(
+            &mut engine,
+            Edit::AddInstrument {
+                node: FIRST_NODE,
+                id: DeviceId(9),
+                index: 1,
+                instrument: daw_engine::Instrument::new(daw_engine::InstrumentKind::Synth),
+            },
+        );
+        if !enabled {
+            apply(
+                &mut engine,
+                Edit::SetDeviceEnabled {
+                    id: DeviceId(9),
+                    enabled: false,
+                },
+            );
+        }
+        play(engine, processor, VARIED_BLOCKS)
+    };
+    let doubled: Vec<f32> = one.iter().map(|s| s * 2.).collect();
+    assert_close(&layered(true), &doubled);
+    assert_eq!(layered(false), one, "a layer switched off is silent");
 }
 
 #[test]

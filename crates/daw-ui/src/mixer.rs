@@ -18,9 +18,12 @@ use crate::slider::{self, Axis};
 use crate::theme::Theme;
 use crate::tooltip;
 use crate::tree::{self, Bar, display_order};
-use daw_engine::devices::{CHANNEL_PARAMS, channel};
+use daw_engine::devices::{
+    CHANNEL_PARAMS, INSTRUMENTS, channel, instrument_description, instrument_name,
+};
 use daw_engine::{
-    Command, DeviceId, DeviceRef, Edit, Effect, EffectKind, NodeId, NodeSnapshot, ParamId,
+    Command, DeviceRef, Edit, Effect, EffectKind, Instrument, InstrumentKind, NodeId, NodeSnapshot,
+    ParamId,
 };
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, FontWeight, MouseButton, MouseDownEvent, Pixels,
@@ -167,6 +170,14 @@ impl ProjectView {
             .max()
             .unwrap_or(0)
             + 1;
+        // Room for the busiest MIDI strip's instruments and its "+"; none
+        // when no strip takes MIDI.
+        let instrument_slots = placed
+            .iter()
+            .filter(|(n, _)| n.takes_midi())
+            .map(|(n, _)| n.devices.iter().filter(|d| d.instrument.is_some()).count() + 1)
+            .max()
+            .unwrap_or(0);
 
         // Where each strip is drawn this frame, so the map follows motion.
         let mut lefts = Vec::with_capacity(placed.len());
@@ -186,7 +197,7 @@ impl ProjectView {
             .iter()
             .enumerate()
             .map(|(i, (node, layout))| {
-                let strip = self.strip(node, slots, i == 0, theme, cx);
+                let strip = self.strip(node, instrument_slots, slots, i == 0, theme, cx);
                 animated_strip(layout, widths[i], self.strip_width(node.id), strip)
             })
             .collect::<Vec<_>>();
@@ -230,9 +241,11 @@ impl ProjectView {
     }
 
     /// One node's strip.
+    #[allow(clippy::too_many_arguments, reason = "layout figures, passed through")]
     fn strip(
         &self,
         node: &NodeSnapshot,
+        instrument_slots: usize,
         slots: usize,
         first: bool,
         theme: &Theme,
@@ -351,6 +364,7 @@ impl ProjectView {
             .when(song, |d| d.border_l_1().border_color(theme.edge))
             .when(selected, |d| d.bg(selected_bg))
             .on_click(cx.listener(move |this, _, _, _| this.selected_node = Some(id)))
+            .child(self.instrument_slots(node, instrument_slots, theme, cx))
             .child(self.effect_slots(node, slots, theme, cx))
             .child(self.pan(node, theme, cx))
             .child(fader_area)
@@ -359,9 +373,258 @@ impl ProjectView {
             .child(name)
     }
 
-    /// The node's effect slots: one row per effect (on/off dot, name), then
-    /// "+" to add. Clicking a slot selects it; the selected slot has a
-    /// remove icon.
+    /// One instrument or effect in a strip: on/off dot, name, and when
+    /// selected a remove icon. Clicking it selects the node and the device.
+    fn slot_row(
+        &self,
+        node: NodeId,
+        device: &daw_engine::DeviceSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (id, remove_edit) = match device.device {
+            DeviceRef::Effect(id) => (id, Edit::RemoveEffect { id }),
+            DeviceRef::Instrument(id) => (id, Edit::RemoveInstrument { id }),
+            DeviceRef::Channel => return None,
+        };
+        let hover = theme.hover;
+        let enabled = device.enabled;
+        let selected = self.selected_effect == Some(id);
+        let mut selected_bg = theme.accent;
+        selected_bg.a = 0.18;
+        let dot = div()
+            .id(("slot-switch", id.0))
+            .size(px(12.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().size(px(6.)).rounded(px(3.)).bg(if enabled {
+                theme.active
+            } else {
+                theme.text_tertiary
+            }))
+            .tooltip(tooltip::text(if enabled {
+                "On: click to switch off"
+            } else {
+                "Off: click to switch on"
+            }))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                this.session.apply(Command::Edit(Edit::SetDeviceEnabled {
+                    id,
+                    enabled: !enabled,
+                }));
+            }));
+        let remove = selected.then(|| {
+            small_button(("slot-remove", id.0), theme)
+                .size(px(14.))
+                .child(icon(Icon::Close, theme.text_secondary, 10.))
+                .tooltip(tooltip::text("Remove"))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.selected_effect = None;
+                    this.session.apply(Command::Edit(remove_edit.clone()));
+                }))
+        });
+        Some(
+            div()
+                .id(("slot", id.0))
+                .h(px(SLOT_HEIGHT - 2.))
+                .mx(px(4.))
+                .px(px(2.))
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .rounded(px(4.))
+                .bg(if selected { selected_bg } else { theme.control })
+                .hover(move |s| s.bg(hover))
+                .text_size(px(10.))
+                .text_color(if enabled {
+                    theme.text
+                } else {
+                    theme.text_tertiary
+                })
+                .child(dot)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(device.name.clone()),
+                )
+                .children(remove)
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.selected_node = Some(node);
+                    this.selected_effect = Some(id);
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The dashed "+" at the end of a slot list, with its menu when open.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the slot's names and menu, passed through"
+    )]
+    fn add_slot(
+        &self,
+        name: &'static str,
+        text: &'static str,
+        node: NodeId,
+        menu: OpenMenu,
+        hint: &'static str,
+        panel: impl FnOnce(&mut Context<Self>) -> gpui::Div,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let hover = theme.hover;
+        let open = self.open_menu == Some(menu);
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .mx(px(4.))
+            .child(
+                div()
+                    .id((name, node.0))
+                    .h(px(SLOT_HEIGHT - 2.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(3.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(theme.hairline)
+                    .hover(move |s| s.bg(hover))
+                    .when(open, |d| d.bg(theme.control))
+                    .text_size(px(10.))
+                    .text_color(theme.text_tertiary)
+                    .child(icon(Icon::Plus, theme.text_tertiary, 11.))
+                    .child(text)
+                    .when(!open, |d| d.tooltip(tooltip::text(hint)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_menu(menu);
+                    })),
+            )
+            .when(open, |d| d.child(menu::float(panel(cx))))
+    }
+
+    /// A MIDI node's instruments, layered (each plays every note), then "+"
+    /// to open the instrument browser. Other strips leave the space empty,
+    /// so every strip stays aligned.
+    fn instrument_slots(
+        &self,
+        node: &NodeSnapshot,
+        slots: usize,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let area = div()
+            .h(px(slots as f32 * SLOT_HEIGHT + 6.))
+            .pt(px(6.))
+            .flex()
+            .flex_col()
+            .gap(px(2.));
+        if slots == 0 || !node.takes_midi() {
+            return area;
+        }
+        let id = node.id;
+        let instruments: Vec<AnyElement> = node
+            .devices
+            .iter()
+            .filter(|d| d.instrument.is_some())
+            .filter_map(|d| self.slot_row(id, d, theme, cx))
+            .collect();
+        let browser = move |cx: &mut Context<Self>| self.instrument_browser(id, theme, cx);
+        let add = self.add_slot(
+            "instrument-add",
+            "Instrument",
+            id,
+            OpenMenu::InstrumentBrowser(id),
+            "Add an instrument (they layer: each plays every note)",
+            browser,
+            theme,
+            cx,
+        );
+        area.children(instruments).child(add)
+    }
+
+    /// The instrument browser: built-in instruments with a line on each;
+    /// plugins come later. Choosing one adds it as a new layer.
+    fn instrument_browser(&self, node: NodeId, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let hover = theme.hover;
+        let label = |text: &'static str| {
+            div()
+                .px(px(10.))
+                .pt(px(8.))
+                .pb(px(4.))
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_tertiary)
+                .child(text)
+        };
+        let builtin = INSTRUMENTS.iter().map(|&kind| {
+            div()
+                .id(("browse-instrument", kind as usize))
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(6.))
+                .hover(move |s| s.bg(hover))
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(div().text_size(px(13.)).child(instrument_name(kind)))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme.text_secondary)
+                        .child(instrument_description(kind)),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.add_instrument(node, kind);
+                }))
+        });
+        menu::panel(theme)
+            .w(px(260.))
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
+            .child(label("BUILT-IN"))
+            .children(builtin.collect::<Vec<_>>())
+            .child(menu::separator(theme))
+            .child(label("PLUGINS"))
+            .child(
+                div()
+                    .px(px(10.))
+                    .pb(px(8.))
+                    .text_size(px(11.))
+                    .text_color(theme.text_tertiary)
+                    .child("VST3 and CLAP instruments come in a later phase."),
+            )
+    }
+
+    /// Adds an instrument as the node's last layer and selects it.
+    fn add_instrument(&mut self, node: NodeId, kind: InstrumentKind) {
+        self.open_menu = None;
+        let snapshot = self.session.snapshot();
+        let id = crate::tree::next_device_id(snapshot);
+        let index = snapshot.node(node).map_or(0, |n| {
+            n.devices.iter().filter(|d| d.instrument.is_some()).count()
+        });
+        self.session.apply(Command::Edit(Edit::AddInstrument {
+            node,
+            id,
+            index,
+            instrument: Instrument::new(kind),
+        }));
+        self.selected_node = Some(node);
+        self.selected_effect = Some(id);
+    }
+
+    /// The node's effect slots: one row per effect, then "+" to add.
     fn effect_slots(
         &self,
         node: &NodeSnapshot,
@@ -370,129 +633,42 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let id = node.id;
-        let hover = theme.hover;
-        let effects = node.devices.iter().filter_map(|device| {
-            let DeviceRef::Effect(effect) = device.device else {
-                return None;
-            };
-            let enabled = device.enabled;
-            let selected = self.selected_effect == Some(effect);
-            let mut selected_bg = theme.accent;
-            selected_bg.a = 0.18;
-            let dot = div()
-                .id(("slot-switch", effect.0))
-                .size(px(12.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(div().size(px(6.)).rounded(px(3.)).bg(if enabled {
-                    theme.active
-                } else {
-                    theme.text_tertiary
-                }))
-                .tooltip(tooltip::text(if enabled {
-                    "On: click to switch off"
-                } else {
-                    "Off: click to switch on"
-                }))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.session.apply(Command::Edit(Edit::SetEffectEnabled {
-                        id: effect,
-                        enabled: !enabled,
-                    }));
-                }));
-            let remove = selected.then(|| {
-                small_button(("slot-remove", effect.0), theme)
-                    .size(px(14.))
-                    .child(icon(Icon::Close, theme.text_secondary, 10.))
-                    .tooltip(tooltip::text("Remove"))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.selected_effect = None;
-                        this.session
-                            .apply(Command::Edit(Edit::RemoveEffect { id: effect }));
-                    }))
-            });
-            Some(
-                div()
-                    .id(("slot", effect.0))
-                    .h(px(SLOT_HEIGHT - 2.))
-                    .mx(px(4.))
-                    .px(px(2.))
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .rounded(px(4.))
-                    .bg(if selected { selected_bg } else { theme.control })
-                    .hover(move |s| s.bg(hover))
-                    .text_size(px(10.))
-                    .text_color(if enabled {
-                        theme.text
-                    } else {
-                        theme.text_tertiary
-                    })
-                    .child(dot)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(device.name.clone()),
-                    )
-                    .children(remove)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.selected_node = Some(id);
-                        this.selected_effect = Some(effect);
-                    })),
-            )
-        });
-        let open = self.open_menu == Some(OpenMenu::AddEffect(id));
-        let add = div()
-            .relative()
-            .flex()
-            .flex_col()
-            .mx(px(4.))
-            .child(
-                div()
-                    .id(("slot-add", id.0))
-                    .h(px(SLOT_HEIGHT - 2.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(theme.hairline)
-                    .hover(move |s| s.bg(hover))
-                    .when(open, |d| d.bg(theme.control))
-                    .child(icon(Icon::Plus, theme.text_tertiary, 11.))
-                    .when(!open, |d| d.tooltip(tooltip::text("Add an effect")))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.toggle_menu(OpenMenu::AddEffect(id));
-                    })),
-            )
-            .when(open, |d| {
-                d.child(menu::float(
-                    menu::panel(theme)
-                        .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
-                        .child(menu::item(theme, "add-filter", "Filter", "").on_click(
-                            cx.listener(move |this, _, _, _| {
-                                this.add_effect(id, EffectKind::Filter);
-                            }),
-                        )),
-                ))
-            });
+        let effects: Vec<AnyElement> = node
+            .devices
+            .iter()
+            .filter(|d| d.effect.is_some())
+            .filter_map(|d| self.slot_row(id, d, theme, cx))
+            .collect();
+        let effect_menu = move |cx: &mut Context<Self>| {
+            menu::panel(theme)
+                .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
+                .child(
+                    menu::item(theme, "add-filter", "Filter", "").on_click(cx.listener(
+                        move |this, _, _, _| {
+                            this.add_effect(id, EffectKind::Filter);
+                        },
+                    )),
+                )
+        };
+        let add = self.add_slot(
+            "slot-add",
+            "Effect",
+            id,
+            OpenMenu::AddEffect(id),
+            "Add an effect",
+            effect_menu,
+            theme,
+            cx,
+        );
         div()
             .h(px(slots as f32 * SLOT_HEIGHT + 6.))
             .pt(px(6.))
             .flex()
             .flex_col()
             .gap(px(2.))
-            .children(effects.collect::<Vec<_>>())
+            .border_t_1()
+            .border_color(theme.hairline)
+            .children(effects)
             .child(add)
     }
 
@@ -500,19 +676,7 @@ impl ProjectView {
     fn add_effect(&mut self, node: NodeId, kind: EffectKind) {
         self.open_menu = None;
         let snapshot = self.session.snapshot();
-        let id = DeviceId(
-            snapshot
-                .nodes
-                .iter()
-                .flat_map(|n| &n.devices)
-                .filter_map(|d| match d.device {
-                    DeviceRef::Effect(id) => Some(id.0),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0)
-                + 1,
-        );
+        let id = crate::tree::next_device_id(snapshot);
         let index = snapshot.node(node).map_or(0, |n| {
             n.devices.iter().filter(|d| d.effect.is_some()).count()
         });

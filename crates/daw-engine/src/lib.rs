@@ -23,15 +23,15 @@ mod upgrade;
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
-    Edit, Effect, EffectKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange,
-    Meter, MidiClip, MidiNote, Node, NodeId, NodeKind, NodeSnapshot, NotesSource, ParamId,
-    ParamSnapshot, ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
-    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    Edit, Effect, EffectKind, Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal,
+    Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote, Node, NodeId, NodeKind, NodeSnapshot,
+    NotesSource, ParamId, ParamSnapshot, ParamState, Scale, Segment, Shape, ShapePoint, Signal,
+    SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
-    DEFAULT_TEMPO_BPM, FIRST_NODE, MAX_EFFECTS, MAX_NODES, MAX_TEMPO_BPM, MIN_TEMPO_BPM, NodeExt,
-    Project, song, synth_node,
+    DEFAULT_TEMPO_BPM, FIRST_INSTRUMENT, FIRST_NODE, MAX_EFFECTS, MAX_INSTRUMENTS, MAX_NODES,
+    MAX_TEMPO_BPM, MIN_TEMPO_BPM, NodeExt, Project, song, synth_node,
 };
 pub use schedule::{EffectState, NodeRender, RenderState, ScheduledNote};
 
@@ -334,9 +334,16 @@ fn node_snapshot(
                         DeviceRef::Effect(id) => node.effect(id).map(|(_, e)| e.kind),
                         _ => None,
                     },
+                    instrument: match device {
+                        DeviceRef::Instrument(id) => node.instrument(id).map(|(_, i)| i.kind),
+                        _ => None,
+                    },
                     enabled: match device {
                         DeviceRef::Effect(id) => node.effect(id).is_none_or(|(_, e)| e.enabled),
-                        _ => true,
+                        DeviceRef::Instrument(id) => {
+                            node.instrument(id).is_none_or(|(_, i)| i.enabled)
+                        }
+                        DeviceRef::Channel => true,
                     },
                     name: device_name(node, device).to_owned(),
                     params: params
@@ -360,7 +367,9 @@ fn node_snapshot(
 
 fn device_name(node: &Node, device: DeviceRef) -> &'static str {
     match device {
-        DeviceRef::Instrument => "Synth",
+        DeviceRef::Instrument(id) => node
+            .instrument(id)
+            .map_or("Instrument", |(_, i)| devices::instrument_name(i.kind)),
         DeviceRef::Channel => "Channel",
         DeviceRef::Effect(id) => node
             .effects

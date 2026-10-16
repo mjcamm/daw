@@ -183,6 +183,49 @@ pub fn notes_switches(file: &mut Value) {
     }
 }
 
+/// Turns each node's single `instrument` (before version 8) into a list of
+/// one, with an id one past the highest device id in the file.
+pub fn instrument_lists(file: &mut Value) {
+    fn walk(node: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
+        visit(node);
+        let children = node.get_mut("children").and_then(Value::as_array_mut);
+        for child in children.into_iter().flatten() {
+            walk(child, visit);
+        }
+    }
+    let Some(root) = file.get_mut("root") else {
+        return;
+    };
+    let mut highest = 0;
+    walk(root, &mut |node| {
+        let effects = node.get("effects").and_then(Value::as_array);
+        for effect in effects.into_iter().flatten() {
+            highest = highest.max(effect.get("id").and_then(Value::as_u64).unwrap_or(0));
+        }
+    });
+    let mut next = highest + 1;
+    walk(root, &mut |node| {
+        let Some(node) = node.as_object_mut() else {
+            return;
+        };
+        match node.remove("instrument") {
+            Some(Value::Object(mut instrument)) => {
+                instrument.insert("id".to_owned(), next.into());
+                instrument.entry("enabled").or_insert(true.into());
+                next += 1;
+                node.insert(
+                    "instruments".to_owned(),
+                    Value::Array(vec![instrument.into()]),
+                );
+            }
+            _ => {
+                node.entry("instruments")
+                    .or_insert(Value::Array(Vec::new()));
+            }
+        }
+    });
+}
+
 /// Puts an older file's nodes under a new Song, and points every notes
 /// signal at the first of them.
 pub fn nest_under_song(file: &mut Value) {
@@ -482,6 +525,28 @@ mod tests {
         assert_eq!(root["children"][0]["name"], "Lead");
         assert_eq!(root["channel"].as_array().unwrap().len(), 2);
         assert_eq!(file["signals"][0]["source"]["Notes"]["node"], 1);
+    }
+
+    #[test]
+    fn single_instruments_become_lists_with_fresh_ids() {
+        let mut file = json!({
+            "root": {
+                "id": 0, "effects": [],
+                "children": [
+                    { "id": 1, "effects": [{ "id": 4 }], "instrument": { "kind": "Synth", "params": [] } },
+                    { "id": 2, "effects": [], "children": [] }
+                ]
+            }
+        });
+        instrument_lists(&mut file);
+        let synth = &file["root"]["children"][0];
+        assert!(synth.get("instrument").is_none());
+        assert_eq!(
+            synth["instruments"][0]["id"], 5,
+            "after the highest device id"
+        );
+        assert_eq!(synth["instruments"][0]["kind"], "Synth");
+        assert_eq!(file["root"]["children"][1]["instruments"], json!([]));
     }
 
     #[test]

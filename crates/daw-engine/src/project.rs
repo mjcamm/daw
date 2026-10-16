@@ -6,12 +6,13 @@
 
 use crate::devices::{
     CHANNEL_PARAMS, INSTRUMENT_PARAMS, ParamInfo, effect_params, fixed_device_params,
+    instrument_params,
 };
 use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
-    Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, InvalidClip, Layer,
-    LayerId, MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, Signal, SignalId, SignalSource,
-    SignalUse,
+    Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument,
+    InstrumentKind, InvalidClip, Layer, LayerId, MidiClip, Node, NodeId, NodeKind, ParamId,
+    ParamState, Signal, SignalId, SignalSource, SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -20,6 +21,8 @@ pub const MAX_TEMPO_BPM: f64 = 999.0;
 pub const DEFAULT_TEMPO_BPM: f64 = 120.0;
 /// Most effects in one node's chain.
 pub const MAX_EFFECTS: usize = 16;
+/// Most instruments layered on one node.
+pub const MAX_INSTRUMENTS: usize = 8;
 /// Most nodes in a project, the Song included. The audio side keeps a
 /// player for each, made up front.
 pub const MAX_NODES: usize = 256;
@@ -70,10 +73,16 @@ pub fn song() -> Node {
     node
 }
 
-/// A node named "Synth" that plays notes, at its defaults.
+/// The first node's Synth in a new project.
+pub const FIRST_INSTRUMENT: DeviceId = DeviceId(0);
+
+/// A MIDI node named "Synth" with one Synth (`FIRST_INSTRUMENT`), at its
+/// defaults.
 pub fn synth_node() -> Node {
     let mut node = Node::new("Synth", 6);
-    node.instrument = Some(default_params(&INSTRUMENT_PARAMS));
+    let mut synth = Instrument::new(InstrumentKind::Synth);
+    synth.params = default_params(&INSTRUMENT_PARAMS);
+    node.instruments.push((FIRST_INSTRUMENT, synth));
     node.channel = default_params(&CHANNEL_PARAMS);
     node
 }
@@ -96,13 +105,14 @@ pub trait NodeExt {
     fn params(&self, device: DeviceRef) -> Option<&Vec<ParamState>>;
     fn params_mut(&mut self, device: DeviceRef) -> Option<&mut Vec<ParamState>>;
     fn effect(&self, id: DeviceId) -> Option<(usize, &Effect)>;
+    fn instrument(&self, id: DeviceId) -> Option<(usize, &Instrument)>;
 }
 
 impl NodeExt for Node {
     fn devices(&self) -> impl Iterator<Item = (DeviceRef, &[ParamState])> {
-        self.instrument
+        self.instruments
             .iter()
-            .map(|params| (DeviceRef::Instrument, params.as_slice()))
+            .map(|(id, i)| (DeviceRef::Instrument(*id), i.params.as_slice()))
             .chain(
                 self.effects
                     .iter()
@@ -117,14 +127,16 @@ impl NodeExt for Node {
     fn param_infos(&self, device: DeviceRef) -> Option<&'static [ParamInfo]> {
         match device {
             DeviceRef::Effect(id) => self.effect(id).map(|(_, e)| effect_params(e.kind)),
-            DeviceRef::Instrument if self.instrument.is_none() => None,
+            DeviceRef::Instrument(id) => {
+                self.instrument(id).map(|(_, i)| instrument_params(i.kind))
+            }
             fixed => fixed_device_params(fixed),
         }
     }
 
     fn params(&self, device: DeviceRef) -> Option<&Vec<ParamState>> {
         match device {
-            DeviceRef::Instrument => self.instrument.as_ref(),
+            DeviceRef::Instrument(id) => self.instrument(id).map(|(_, i)| &i.params),
             DeviceRef::Channel => Some(&self.channel),
             DeviceRef::Effect(id) => self.effect(id).map(|(_, e)| &e.params),
         }
@@ -132,7 +144,11 @@ impl NodeExt for Node {
 
     fn params_mut(&mut self, device: DeviceRef) -> Option<&mut Vec<ParamState>> {
         match device {
-            DeviceRef::Instrument => self.instrument.as_mut(),
+            DeviceRef::Instrument(id) => self
+                .instruments
+                .iter_mut()
+                .find(|(i, _)| *i == id)
+                .map(|(_, i)| &mut i.params),
             DeviceRef::Channel => Some(&mut self.channel),
             DeviceRef::Effect(id) => self
                 .effects
@@ -148,6 +164,14 @@ impl NodeExt for Node {
             .enumerate()
             .find(|(_, (e, _))| *e == id)
             .map(|(i, (_, effect))| (i, effect))
+    }
+
+    fn instrument(&self, id: DeviceId) -> Option<(usize, &Instrument)> {
+        self.instruments
+            .iter()
+            .enumerate()
+            .find(|(_, (i, _))| *i == id)
+            .map(|(index, (_, instrument))| (index, instrument))
     }
 }
 
@@ -265,6 +289,14 @@ impl Project {
             .map(|e| e.id)
     }
 
+    /// The node holding an instrument.
+    pub fn instrument_node(&self, id: DeviceId) -> Option<NodeId> {
+        self.nodes()
+            .into_iter()
+            .find(|e| e.node.instrument(id).is_some())
+            .map(|e| e.id)
+    }
+
     /// Where a layer lives: its parameter and position in the stack.
     pub fn find_layer(&self, id: LayerId) -> Option<(ParamId, usize)> {
         self.nodes().into_iter().find_map(|entry| {
@@ -350,6 +382,8 @@ impl Project {
             used.clips.extend(entry.node.clips.keys().copied());
             used.devices
                 .extend(entry.node.effects.iter().map(|(id, _)| *id));
+            used.devices
+                .extend(entry.node.instruments.iter().map(|(id, _)| *id));
             for (_, params) in entry.node.devices() {
                 for state in params {
                     for (layer_id, layer) in &state.layers {
@@ -689,19 +723,72 @@ impl Project {
                     effect,
                 })
             }
-            Edit::SetEffectEnabled { id, enabled } => {
+            Edit::AddInstrument {
+                node,
+                id,
+                index,
+                mut instrument,
+            } => {
+                let target = self
+                    .node(node)
+                    .ok_or(CommandError::UnknownNode { id: node })?;
+                if target.kind != NodeKind::Midi {
+                    return Err(CommandError::InstrumentOnAudio { node });
+                }
+                let len = target.instruments.len();
+                let mut used = self.used_ids();
+                used.claim_device(id)?;
+                if len >= MAX_INSTRUMENTS {
+                    return Err(CommandError::TooManyInstruments {
+                        max: MAX_INSTRUMENTS,
+                    });
+                }
+                check_index(index, len)?;
+                prepare_params(
+                    &mut instrument.params,
+                    instrument_params(instrument.kind),
+                    &mut used,
+                    &self.signals,
+                )?;
+                self.node_or_err(node)?
+                    .instruments
+                    .insert(index, (id, instrument));
+                Ok(Edit::RemoveInstrument { id })
+            }
+            Edit::RemoveInstrument { id } => {
+                let node = self
+                    .instrument_node(id)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let target = self.node_or_err(node)?;
+                let index = target
+                    .instruments
+                    .iter()
+                    .position(|(i, _)| *i == id)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let (_, instrument) = target.instruments.remove(index);
+                Ok(Edit::AddInstrument {
+                    node,
+                    id,
+                    index,
+                    instrument,
+                })
+            }
+            Edit::SetDeviceEnabled { id, enabled } => {
                 let node = self
                     .effect_node(id)
+                    .or_else(|| self.instrument_node(id))
                     .ok_or(CommandError::UnknownDevice { id })?;
-                let effect = self
-                    .node_or_err(node)?
-                    .effects
-                    .iter_mut()
-                    .find(|(e, _)| *e == id)
-                    .map(|(_, e)| e)
-                    .ok_or(CommandError::UnknownDevice { id })?;
-                let previous = std::mem::replace(&mut effect.enabled, enabled);
-                Ok(Edit::SetEffectEnabled {
+                let target = self.node_or_err(node)?;
+                let switch = if let Some((_, e)) = target.effects.iter_mut().find(|(e, _)| *e == id)
+                {
+                    &mut e.enabled
+                } else if let Some((_, i)) = target.instruments.iter_mut().find(|(i, _)| *i == id) {
+                    &mut i.enabled
+                } else {
+                    return Err(CommandError::UnknownDevice { id });
+                };
+                let previous = std::mem::replace(switch, enabled);
+                Ok(Edit::SetDeviceEnabled {
                     id,
                     enabled: previous,
                 })
@@ -946,8 +1033,19 @@ fn prepare_node(
     used.claim_node(id)?;
     node.name = clean_name(&node.name)?;
     check_color(node.color)?;
-    if let Some(instrument) = &mut node.instrument {
-        prepare_params(instrument, &INSTRUMENT_PARAMS, used, signals)?;
+    if node.instruments.len() > MAX_INSTRUMENTS {
+        return Err(CommandError::TooManyInstruments {
+            max: MAX_INSTRUMENTS,
+        });
+    }
+    for (instrument_id, instrument) in &mut node.instruments {
+        used.claim_device(*instrument_id)?;
+        prepare_params(
+            &mut instrument.params,
+            instrument_params(instrument.kind),
+            used,
+            signals,
+        )?;
     }
     prepare_params(&mut node.channel, &CHANNEL_PARAMS, used, signals)?;
     if node.effects.len() > MAX_EFFECTS {
@@ -962,7 +1060,7 @@ fn prepare_node(
             signals,
         )?;
     }
-    if node.kind == NodeKind::Audio && node.instrument.is_some() {
+    if node.kind == NodeKind::Audio && !node.instruments.is_empty() {
         return Err(CommandError::InstrumentOnAudio { node: id });
     }
     if node.kind == NodeKind::Audio && !node.clips.is_empty() {
@@ -1104,7 +1202,7 @@ mod tests {
 
     const CUTOFF: ParamId = ParamId {
         node: FIRST_NODE,
-        device: DeviceRef::Instrument,
+        device: DeviceRef::Instrument(FIRST_INSTRUMENT),
         index: instrument::CUTOFF,
     };
     const VOLUME: ParamId = ParamId {
@@ -1403,7 +1501,7 @@ mod tests {
             .unwrap();
         assert_eq!(listens_to(&project, 1), Some(SWEEP));
         let layer =
-            &synth(&project).instrument.as_ref().unwrap()[instrument::CUTOFF as usize].layers[0].1;
+            &synth(&project).instruments[0].1.params[instrument::CUTOFF as usize].layers[0].1;
         assert_eq!(layer.blocks[0].1, block(0, 4));
     }
 
@@ -1646,7 +1744,7 @@ mod tests {
                 layer: Layer::new(BlendMode::Add),
             })
             .unwrap();
-        let ids: Vec<_> = synth(&project).instrument.as_ref().unwrap()[instrument::CUTOFF as usize]
+        let ids: Vec<_> = synth(&project).instruments[0].1.params[instrument::CUTOFF as usize]
             .layers
             .iter()
             .map(|(id, _)| id.0)
@@ -1666,7 +1764,7 @@ mod tests {
             })
             .unwrap();
         let layer =
-            &synth(&project).instrument.as_ref().unwrap()[instrument::CUTOFF as usize].layers[0].1;
+            &synth(&project).instruments[0].1.params[instrument::CUTOFF as usize].layers[0].1;
         let starts: Vec<_> = layer.blocks.iter().map(|(_, b)| b.start).collect();
         assert_eq!(
             starts,
@@ -1790,7 +1888,7 @@ mod tests {
         for param in [
             ParamId {
                 node: FIRST_NODE,
-                device: DeviceRef::Instrument,
+                device: DeviceRef::Instrument(FIRST_INSTRUMENT),
                 index: 99,
             },
             ParamId {
@@ -1851,7 +1949,7 @@ mod tests {
     #[test]
     fn effect_chain_has_a_limit() {
         let mut project = Project::default();
-        for i in 0..MAX_EFFECTS as u64 {
+        for i in 1..=MAX_EFFECTS as u64 {
             project
                 .apply(Edit::AddEffect {
                     node: FIRST_NODE,
@@ -2054,7 +2152,7 @@ mod node_tests {
         let mut drums = Node::new("Drums", 0);
         drums
             .children
-            .push((KICK, Node::new("Kick", 0).with_instrument()));
+            .push((KICK, Node::new("Kick", 0).with_instrument(DeviceId(101))));
         project
             .apply(Edit::AddNode {
                 id: DRUMS,
@@ -2094,10 +2192,10 @@ mod node_tests {
         let kick = project.node(KICK).unwrap();
         assert_eq!(kick.channel.len(), CHANNEL_PARAMS.len());
         assert_eq!(
-            kick.instrument.as_ref().map(Vec::len),
+            kick.instruments.first().map(|(_, i)| i.params.len()),
             Some(INSTRUMENT_PARAMS.len())
         );
-        assert!(project.node(DRUMS).unwrap().instrument.is_none());
+        assert!(project.node(DRUMS).unwrap().instruments.is_empty());
     }
 
     #[test]
@@ -2337,7 +2435,7 @@ mod node_tests {
                 index: 0,
                 node: Node::new("Vocals", 0)
                     .with_kind(NodeKind::Audio)
-                    .with_instrument()
+                    .with_instrument(DeviceId(102))
             }),
             Err(CommandError::InstrumentOnAudio { node: NodeId(8) })
         );
@@ -2357,7 +2455,7 @@ mod node_tests {
             .unwrap();
         round_trip_on(
             project,
-            Edit::SetEffectEnabled {
+            Edit::SetDeviceEnabled {
                 id: DeviceId(3),
                 enabled: false,
             },
@@ -2369,7 +2467,7 @@ mod node_tests {
         let mut project = tree();
         let param = ParamId {
             node: DRUMS,
-            device: DeviceRef::Instrument,
+            device: DeviceRef::Instrument(FIRST_INSTRUMENT),
             index: 0,
         };
         assert_eq!(

@@ -4,8 +4,8 @@
 //! tested without a window.
 
 use daw_engine::{
-    BlockId, ClipId, DeviceId, DeviceRef, Edit, Effect, Layer, LayerId, Node, NodeId, NodeSnapshot,
-    ParamState, SignalSource, Snapshot,
+    BlockId, ClipId, DeviceId, DeviceRef, Edit, Effect, Instrument, Layer, LayerId, Node, NodeId,
+    NodeSnapshot, ParamState, SignalSource, Snapshot,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -78,6 +78,20 @@ pub fn bars(rows: &[&NodeSnapshot]) -> Vec<Bar> {
 /// How many columns the map needs.
 pub fn columns(bars: &[Bar]) -> usize {
     bars.iter().map(|b| b.column + 1).max().unwrap_or(0)
+}
+
+/// A device id (instrument or effect) no device uses yet.
+pub fn next_device_id(snapshot: &Snapshot) -> DeviceId {
+    let highest = snapshot
+        .nodes
+        .iter()
+        .flat_map(|n| &n.devices)
+        .filter_map(|d| match d.device {
+            DeviceRef::Effect(id) | DeviceRef::Instrument(id) => Some(id.0),
+            DeviceRef::Channel => None,
+        })
+        .max();
+    DeviceId(highest.map_or(0, |h| h + 1))
 }
 
 /// An id no node uses yet.
@@ -231,7 +245,7 @@ impl FreshIds {
                 ids.clip = ids.clip.max(clip.0);
             }
             for device in &node.devices {
-                if let DeviceRef::Effect(id) = device.device {
+                if let DeviceRef::Effect(id) | DeviceRef::Instrument(id) = device.device {
                     ids.device = ids.device.max(id.0);
                 }
                 for (layer, l) in device.params.iter().flat_map(|p| &p.layers) {
@@ -288,7 +302,17 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
     copy.soloed = node.soloed;
     for device in &node.devices {
         match device.device {
-            DeviceRef::Instrument => copy.instrument = Some(copy_params(&device.params, ids)),
+            DeviceRef::Instrument(_) => {
+                if let Some(kind) = device.instrument {
+                    let instrument = Instrument {
+                        kind,
+                        enabled: device.enabled,
+                        params: copy_params(&device.params, ids),
+                    };
+                    copy.instruments
+                        .push((DeviceId(FreshIds::next(&mut ids.device)), instrument));
+                }
+            }
             DeviceRef::Channel => copy.channel = copy_params(&device.params, ids),
             DeviceRef::Effect(_) => {
                 if let Some(kind) = device.effect {
@@ -357,8 +381,8 @@ mod tests {
         let (mut engine, _processor) = Engine::new(EngineConfig::default());
         let mut drums = Node::new("Drums", 0);
         drums.children = vec![
-            (KICK, Node::new("Kick", 0).with_instrument()),
-            (HATS, Node::new("Hats", 1).with_instrument()),
+            (KICK, Node::new("Kick", 0).with_instrument(DeviceId(201))),
+            (HATS, Node::new("Hats", 1).with_instrument(DeviceId(202))),
         ];
         engine
             .apply(Command::Edit(Edit::AddNode {

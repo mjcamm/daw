@@ -47,8 +47,8 @@ pub struct SignalId(pub u64);
 /// A device on a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeviceRef {
-    /// The node's instrument.
-    Instrument,
+    /// One of the node's instruments.
+    Instrument(DeviceId),
     /// The node's own volume and pan.
     Channel,
     /// An effect in the node's chain.
@@ -62,6 +62,36 @@ pub struct ParamId {
     pub node: NodeId,
     pub device: DeviceRef,
     pub index: u32,
+}
+
+/// Built-in instruments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum InstrumentKind {
+    /// Saw synth with a filter and envelopes.
+    Synth,
+}
+
+/// An instrument and the state of its parameters. A MIDI node can hold
+/// several: each plays every note, and their sounds add up (layering).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Instrument {
+    pub kind: InstrumentKind,
+    /// Off, it is silent.
+    #[serde(default = "on")]
+    pub enabled: bool,
+    /// One entry per parameter, in index order. Empty means all defaults.
+    pub params: Vec<ParamState>,
+}
+
+impl Instrument {
+    /// An instrument, on, with every parameter at its default.
+    pub fn new(kind: InstrumentKind) -> Self {
+        Self {
+            kind,
+            enabled: true,
+            params: Vec::new(),
+        }
+    }
 }
 
 /// Built-in effects.

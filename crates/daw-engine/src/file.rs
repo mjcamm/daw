@@ -5,11 +5,11 @@
 //! uses, so a hand-edited or damaged file can never produce an invalid
 //! project. Undo history and transport position are not saved.
 
-use crate::devices::{CHANNEL_PARAMS, INSTRUMENT_PARAMS};
+use crate::devices::CHANNEL_PARAMS;
 use crate::project::{Project, song};
 use daw_protocol::{
-    ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, LoopRange, MidiClip, Node, NodeId,
-    NodeKind, ParamId, ParamState, Signal, SignalId,
+    ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument, LoopRange, MidiClip, Node,
+    NodeId, NodeKind, ParamId, ParamState, Signal, SignalId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -21,8 +21,8 @@ pub const FORMAT: &str = "daw-project";
 /// version 4 moved listening to signals onto layers and made notes signals
 /// ADSR hits; version 5 made velocity a clamp; version 6 added switches for
 /// the pitch range and the clamp; version 7 made the nodes a tree under the
-/// Song.
-pub const VERSION: u32 = 7;
+/// Song; version 8 let a node layer several instruments.
+pub const VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -55,9 +55,9 @@ pub struct NodeFile {
     pub color: u8,
     pub muted: bool,
     pub soloed: bool,
-    /// Missing for a node that plays no notes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instrument: Option<InstrumentFile>,
+    /// Layered instruments (MIDI nodes only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instruments: Vec<InstrumentFile>,
     pub effects: Vec<EffectFile>,
     /// Volume and pan, in parameter order.
     pub channel: Vec<ParamState>,
@@ -66,16 +66,11 @@ pub struct NodeFile {
     pub children: Vec<NodeFile>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InstrumentKind {
-    Synth,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstrumentFile {
-    pub kind: InstrumentKind,
-    /// In parameter order.
-    pub params: Vec<ParamState>,
+    pub id: DeviceId,
+    #[serde(flatten)]
+    pub instrument: Instrument,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,10 +146,14 @@ fn node_file(id: NodeId, node: &Node) -> NodeFile {
         color: node.color,
         muted: node.muted,
         soloed: node.soloed,
-        instrument: node.instrument.as_ref().map(|params| InstrumentFile {
-            kind: InstrumentKind::Synth,
-            params: params.clone(),
-        }),
+        instruments: node
+            .instruments
+            .iter()
+            .map(|(id, instrument)| InstrumentFile {
+                id: *id,
+                instrument: instrument.clone(),
+            })
+            .collect(),
         effects: node
             .effects
             .iter()
@@ -195,7 +194,11 @@ fn file_node(file: NodeFile) -> Result<(NodeId, Node), LoadError> {
         color: file.color,
         muted: file.muted,
         soloed: file.soloed,
-        instrument: file.instrument.map(|i| i.params),
+        instruments: file
+            .instruments
+            .into_iter()
+            .map(|i| (i.id, i.instrument))
+            .collect(),
         effects: file.effects.into_iter().map(|e| (e.id, e.effect)).collect(),
         channel: file.channel,
         clips,
@@ -263,7 +266,10 @@ impl ProjectFile {
             if header.version < 6 {
                 crate::upgrade::notes_switches(&mut value);
             }
-            crate::upgrade::nest_under_song(&mut value);
+            if header.version < 7 {
+                crate::upgrade::nest_under_song(&mut value);
+            }
+            crate::upgrade::instrument_lists(&mut value);
             return serde_json::from_value(value).map_err(LoadError::Json);
         }
         serde_json::from_str(json).map_err(LoadError::Json)
@@ -277,9 +283,6 @@ impl ProjectFile {
             return Err(LoadError::RootId(root.id));
         }
         check_count("Channel", CHANNEL_PARAMS.len(), root.channel.len())?;
-        if let Some(instrument) = &root.instrument {
-            check_count("Synth", INSTRUMENT_PARAMS.len(), instrument.params.len())?;
-        }
         if let Some(range) = self.loop_range {
             crate::check_loop(range)?;
         }
@@ -288,9 +291,6 @@ impl ProjectFile {
             root: song(),
             ..Project::default()
         };
-        if root.instrument.is_some() {
-            project.root.instrument = Some(crate::project::default_params(&INSTRUMENT_PARAMS));
-        }
         let song = NodeId::ROOT;
         // Signals first, so the layers that listen to them resolve.
         let mut edits: Vec<Edit> = self
@@ -324,9 +324,15 @@ impl ProjectFile {
                 soloed: root.soloed,
             },
         ]);
-        if let Some(instrument) = root.instrument {
-            edits.extend(param_edits(song, DeviceRef::Instrument, instrument.params));
-        }
+        // The Song is an audio node, so instruments on it are refused.
+        edits.extend(root.instruments.into_iter().enumerate().map(|(index, i)| {
+            Edit::AddInstrument {
+                node: song,
+                id: i.id,
+                index,
+                instrument: i.instrument,
+            }
+        }));
         edits.extend(param_edits(song, DeviceRef::Channel, root.channel));
         edits.extend(
             root.effects
@@ -406,7 +412,7 @@ fn param_edits(
 mod tests {
     use super::*;
     use crate::devices::{filter, instrument};
-    use crate::project::FIRST_NODE;
+    use crate::project::{FIRST_INSTRUMENT, FIRST_NODE};
     use daw_protocol::{
         BlendMode, Block, BlockId, EffectKind, Layer, LayerId, MidiNote, NotesSource, Segment,
         Shape, ShapePoint, SignalSource, Ticks,
@@ -506,7 +512,7 @@ mod tests {
             Edit::AddLayer {
                 param: ParamId {
                     node: FIRST_NODE,
-                    device: DeviceRef::Instrument,
+                    device: DeviceRef::Instrument(FIRST_INSTRUMENT),
                     index: instrument::CUTOFF,
                 },
                 id: LayerId(5),
@@ -543,7 +549,7 @@ mod tests {
         }
         project.node_mut(FIRST_NODE).unwrap().color = 3;
         // A folder holding a muted node that plays notes through an effect.
-        let mut inner = Node::new("Hats", 1).with_instrument();
+        let mut inner = Node::new("Hats", 1).with_instrument(DeviceId(103));
         inner.muted = true;
         inner
             .effects
@@ -606,6 +612,13 @@ mod tests {
             let node_object = node.as_object_mut().unwrap();
             node_object.remove("id");
             node_object.remove("children");
+            // One instrument, without an id or switch.
+            let mut instrument = node_object["instruments"][0].clone();
+            let instrument_object = instrument.as_object_mut().unwrap();
+            instrument_object.remove("id");
+            instrument_object.remove("enabled");
+            node_object.remove("instruments");
+            node_object.insert("instrument".to_owned(), instrument);
             let object = v.as_object_mut().unwrap();
             object.remove("root");
             object.insert("nodes".to_owned(), json!([node]));
@@ -676,8 +689,8 @@ mod tests {
         // A block shape value out of range.
         assert!(matches!(
             load(&file_json(|v| {
-                v["root"]["children"][0]["instrument"]["params"][0]["layers"][0][1]["blocks"][0]
-                    [1]["shape"]["points"][0]["value"] = 3.into();
+                v["root"]["children"][0]["instruments"][0]["params"][0]["layers"][0][1]["blocks"]
+                    [0][1]["shape"]["points"][0]["value"] = 3.into();
             })),
             Err(LoadError::Invalid(CommandError::InvalidBlock { .. }))
         ));
@@ -728,8 +741,7 @@ mod tests {
         // (invert folded into the points).
         let cutoff = |p: &Project| {
             daw_automation::Automation::compile(
-                &p.node(FIRST_NODE).unwrap().instrument.as_ref().unwrap()
-                    [instrument::CUTOFF as usize],
+                &p.node(FIRST_NODE).unwrap().instruments[0].1.params[instrument::CUTOFF as usize],
             )
         };
         let (loaded, expected) = (cutoff(&project), cutoff(&rich_project()));
@@ -737,13 +749,7 @@ mod tests {
             assert!((loaded.value_at(beat) - expected.value_at(beat)).abs() < 1e-9);
         }
         assert!(
-            project
-                .node(FIRST_NODE)
-                .unwrap()
-                .instrument
-                .as_ref()
-                .unwrap()[0]
-                .layers[0]
+            project.node(FIRST_NODE).unwrap().instruments[0].1.params[0].layers[0]
                 .1
                 .blocks
                 .iter()

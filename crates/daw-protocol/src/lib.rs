@@ -8,9 +8,9 @@ mod automation;
 mod time;
 
 pub use automation::{
-    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Layer, LayerId, NodeId,
-    NotesSource, ParamId, ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
-    SignalSource,
+    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Instrument, InstrumentKind,
+    Layer, LayerId, NodeId, NotesSource, ParamId, ParamState, Scale, Segment, Shape, ShapePoint,
+    Signal, SignalId, SignalSource,
 };
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -117,8 +117,20 @@ pub enum Edit {
     RemoveEffect {
         id: DeviceId,
     },
-    /// Switch an effect on or off; off, it passes sound through untouched.
-    SetEffectEnabled {
+    /// Add an instrument to a MIDI node's layers at `index` (0 is first).
+    AddInstrument {
+        node: NodeId,
+        id: DeviceId,
+        index: usize,
+        instrument: Instrument,
+    },
+    /// Remove an instrument, with its parameters and layers.
+    RemoveInstrument {
+        id: DeviceId,
+    },
+    /// Switch an instrument or effect on or off. An effect switched off
+    /// passes sound through untouched; an instrument switched off is silent.
+    SetDeviceEnabled {
         id: DeviceId,
         enabled: bool,
     },
@@ -230,10 +242,9 @@ pub struct Node {
     pub color: u8,
     pub muted: bool,
     pub soloed: bool,
-    /// The instrument's parameters in index order, or `None` for a node
-    /// without one. Only MIDI nodes can have one. An empty list means all
-    /// defaults.
-    pub instrument: Option<Vec<ParamState>>,
+    /// The instruments, layered: each plays every note. Only MIDI nodes
+    /// have them.
+    pub instruments: Vec<(DeviceId, Instrument)>,
     pub effects: Vec<(DeviceId, Effect)>,
     /// Volume and pan in index order. An empty list means the defaults.
     pub channel: Vec<ParamState>,
@@ -252,7 +263,7 @@ impl Node {
             color,
             muted: false,
             soloed: false,
-            instrument: None,
+            instruments: Vec::new(),
             effects: Vec::new(),
             channel: Vec::new(),
             clips: std::collections::BTreeMap::new(),
@@ -265,12 +276,11 @@ impl Node {
         Self { kind, ..self }
     }
 
-    /// The same node with an instrument at its defaults.
-    pub fn with_instrument(self) -> Self {
-        Self {
-            instrument: Some(Vec::new()),
-            ..self
-        }
+    /// The same node with a Synth (id `id`) added at its defaults.
+    pub fn with_instrument(mut self, id: DeviceId) -> Self {
+        self.instruments
+            .push((id, Instrument::new(InstrumentKind::Synth)));
+        self
     }
 }
 
@@ -360,7 +370,7 @@ impl NodeSnapshot {
     pub fn has_instrument(&self) -> bool {
         self.devices
             .iter()
-            .any(|d| d.device == DeviceRef::Instrument)
+            .any(|d| matches!(d.device, DeviceRef::Instrument(_)))
     }
 }
 
@@ -388,7 +398,9 @@ pub struct DeviceSnapshot {
     pub device: DeviceRef,
     /// The kind, for an effect.
     pub effect: Option<EffectKind>,
-    /// False for an effect switched off.
+    /// The kind, for an instrument.
+    pub instrument: Option<InstrumentKind>,
+    /// False for an instrument or effect switched off.
     pub enabled: bool,
     pub name: String,
     pub params: Vec<ParamSnapshot>,
@@ -469,6 +481,9 @@ pub enum CommandError {
         id: DeviceId,
     },
     TooManyEffects {
+        max: usize,
+    },
+    TooManyInstruments {
         max: usize,
     },
     /// An insert position past the end of a list.
@@ -634,6 +649,9 @@ impl fmt::Display for CommandError {
             Self::DuplicateDevice { id } => write!(f, "device {} already exists", id.0),
             Self::UnknownDevice { id } => write!(f, "device {} does not exist", id.0),
             Self::TooManyEffects { max } => write!(f, "a node holds at most {max} effects"),
+            Self::TooManyInstruments { max } => {
+                write!(f, "a node holds at most {max} instruments")
+            }
             Self::IndexOutOfRange { index, len } => {
                 write!(f, "index {index} is past the end of a list of {len}")
             }

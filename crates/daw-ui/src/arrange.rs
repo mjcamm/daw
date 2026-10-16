@@ -514,9 +514,8 @@ impl ProjectView {
         let id = tree::next_node_id(snapshot);
         let color = tree::next_color(snapshot);
         let node = match kind {
-            NodeKind::Midi => {
-                Node::new(&tree::next_name(snapshot, "Synth"), color).with_instrument()
-            }
+            NodeKind::Midi => Node::new(&tree::next_name(snapshot, "Synth"), color)
+                .with_instrument(tree::next_device_id(snapshot)),
             NodeKind::Audio => {
                 Node::new(&tree::next_name(snapshot, "Audio"), color).with_kind(NodeKind::Audio)
             }

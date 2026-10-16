@@ -24,6 +24,7 @@
 
 ## Model changes worth knowing
 
+- **Layered instruments** (file version 8): a MIDI node holds a list of instruments (`Node.instruments`, `DeviceRef::Instrument(DeviceId)`), each playing every note, summed; `AddInstrument`, `RemoveInstrument`, and `SetDeviceEnabled` for instruments and effects alike. Older files' single instrument becomes a list of one. Added on the mixer through the instrument browser.
 - **Node kinds** (2026-10-16, the user's call): every node is MIDI or Audio (`NodeKind`). MIDI clips go on any MIDI node, with or without an instrument; audio nodes take audio clips once they exist; the Song holds no clips. "Folder" is not a type: any node with children is one. Only MIDI nodes have instruments.
 - **Parent first** (the user's call, reversing the earlier "folders below"): on Arrange the Song is at the top and each parent sits above its children; on the mixer each parent strip sits left of its children. Opening slides children out from under the parent; folding slides them back. Map bars start at the parent's row (or strip) with the chevron; while a node is dragged, every row offers a drop slot to nest into it. Map sizes ease as levels come and go.
 
@@ -38,7 +39,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Next up
 
-1. **Phase 5, rest** (`docs/design/node-tree.md`): an effect's settings in the inspector (selected slot), the node's channel strip in the inspector on Arrange (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song (drums with a separate kick, music folder).
+1. **Phase 5, rest** (`docs/design/node-tree.md`): the node's channel strip in the inspector on Arrange (next, agreed with the user; ask about its layout first). An effect's or instrument's settings in the inspector are on hold (the user's call). (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song (drums with a separate kick, music folder).
 2. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI) is still to run; the user chose to start Phase 5 first. Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
 
 ## Design rules the user has set

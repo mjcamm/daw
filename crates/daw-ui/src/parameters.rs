@@ -112,8 +112,15 @@ fn rows(node: &NodeSnapshot) -> Vec<Row<'_>> {
     if let Some(channel) = find(DeviceRef::Channel) {
         push_device(&mut rows, channel);
     }
-    rows.push(Row::Section("Instrument"));
-    if let Some(instrument) = find(DeviceRef::Instrument) {
+    let instruments: Vec<_> = node
+        .devices
+        .iter()
+        .filter(|d| matches!(d.device, DeviceRef::Instrument(_)))
+        .collect();
+    if !instruments.is_empty() {
+        rows.push(Row::Section("Instruments"));
+    }
+    for instrument in instruments {
         push_device(&mut rows, instrument);
     }
     rows.push(Row::Section("Effects"));
@@ -2215,7 +2222,7 @@ mod tests {
                 "section Global",
                 "device Channel",
                 "+ add to Channel",
-                "section Instrument",
+                "section Instruments",
                 "device Synth",
                 "+ add to Synth",
                 "section Effects",

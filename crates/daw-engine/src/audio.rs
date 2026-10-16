@@ -12,11 +12,11 @@
 //! bus, and the Song's output is the processor's.
 
 use crate::devices::{
-    CHANNEL_PARAMS, INSTRUMENT_PARAMS, MAX_DEVICE_PARAMS, ParamInfo, channel_settings,
-    effect_params, filter_params, synth_params,
+    CHANNEL_PARAMS, MAX_DEVICE_PARAMS, ParamInfo, channel_settings, effect_params, filter_params,
+    instrument_params, synth_params,
 };
-use crate::project::{MAX_EFFECTS, MAX_NODES};
-use crate::schedule::{EffectState, NodeRender, RenderState};
+use crate::project::{MAX_EFFECTS, MAX_INSTRUMENTS, MAX_NODES};
+use crate::schedule::{EffectState, InstrumentState, NodeRender, RenderState};
 use crate::transport::Transport;
 use daw_automation::Automation;
 use daw_dsp::filter_effect::FilterEffect;
@@ -277,6 +277,7 @@ impl AudioProcessor {
         for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
             let player = &mut self.players[index];
             player.sync_effects(&node.effects, self.sample_rate);
+            player.sync_instruments(&node.instruments);
             if player.fresh {
                 // Start at the node's gains rather than ramping up from
                 // silence.
@@ -348,10 +349,11 @@ impl AudioProcessor {
         for (slot, node) in self.state.nodes.iter().enumerate() {
             let index = self.slots[slot];
             let player = &mut self.players[index];
-            if node.instrument.is_some() {
+            // Every instrument plays; their sounds add up in the bus.
+            for ((_, synth), state) in player.synths.iter_mut().zip(&node.instruments) {
                 let scratch = &mut self.scratch[span.clone()];
-                player.synth.render(scratch);
-                if node.instrument_on {
+                synth.render(scratch);
+                if node.instrument_on && state.enabled {
                     let bus = player.bus_left[span.clone()]
                         .iter_mut()
                         .zip(&mut player.bus_right[span.clone()]);
@@ -497,7 +499,11 @@ struct NodePlayer {
     node: Option<NodeId>,
     /// Just given a node: its gains start where they should be.
     fresh: bool,
-    synth: Synth,
+    sample_rate: f32,
+    /// The running instruments, in the order of the node's instruments.
+    /// Capacity is reserved up front so rebuilding never allocates.
+    synths: Vec<(DeviceId, Synth)>,
+    spare_synths: Vec<(DeviceId, Synth)>,
     /// The running chain, in the order of the node's effects. Capacity is
     /// reserved up front so rebuilding it never allocates.
     effects: Vec<(DeviceId, EffectInstance)>,
@@ -519,7 +525,9 @@ impl NodePlayer {
         Self {
             node: None,
             fresh: false,
-            synth: Synth::new(sample_rate),
+            sample_rate,
+            synths: Vec::with_capacity(MAX_INSTRUMENTS),
+            spare_synths: Vec::with_capacity(MAX_INSTRUMENTS),
             effects: Vec::with_capacity(MAX_EFFECTS),
             spare_effects: Vec::with_capacity(MAX_EFFECTS),
             gain_left: Smoothed::new(0.0, CONTROL_FRAMES as u32),
@@ -536,7 +544,7 @@ impl NodePlayer {
     fn start(&mut self, node: NodeId, meter: &PlayerMeter) {
         self.node = Some(node);
         self.fresh = true;
-        self.synth.release_all();
+        self.synths.clear();
         self.effects.clear();
         self.cursor = 0;
         self.pending_ends = [None; MAX_PENDING_ENDS];
@@ -548,6 +556,7 @@ impl NodePlayer {
     fn free(&mut self, meter: &PlayerMeter) {
         self.node = None;
         self.release_all();
+        self.synths.clear();
         self.effects.clear();
         meter.node.store(0, Ordering::Relaxed);
         meter.peaks.take();
@@ -584,13 +593,35 @@ impl NodePlayer {
         std::mem::swap(&mut self.effects, &mut self.spare_effects);
     }
 
+    /// Rebuilds the running instruments to match `wanted`, keeping existing
+    /// ones (and their sounding voices) by id. Allocation-free: a synth
+    /// holds no heap memory.
+    fn sync_instruments(&mut self, wanted: &[InstrumentState]) {
+        debug_assert!(wanted.len() <= MAX_INSTRUMENTS);
+        self.spare_synths.clear();
+        for instrument in wanted {
+            let synth = match self.synths.iter().position(|(id, _)| *id == instrument.id) {
+                Some(index) => self.synths.swap_remove(index).1,
+                None => Synth::new(self.sample_rate),
+            };
+            self.spare_synths.push((instrument.id, synth));
+        }
+        self.synths.clear();
+        std::mem::swap(&mut self.synths, &mut self.spare_synths);
+    }
+
     /// Evaluates every parameter's layers at `beat` and applies the results.
     fn update_params(&mut self, node: &NodeRender, beat: f64) {
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
 
-        if let Some(instrument) = &node.instrument {
-            evaluate(instrument, &INSTRUMENT_PARAMS, beat, &mut plain);
-            self.synth.set_params(synth_params(&plain));
+        for ((_, synth), instrument) in self.synths.iter_mut().zip(&node.instruments) {
+            evaluate(
+                &instrument.params,
+                instrument_params(instrument.kind),
+                beat,
+                &mut plain,
+            );
+            synth.set_params(synth_params(&plain));
         }
 
         for ((_, instance), effect) in self.effects.iter_mut().zip(&node.effects) {
@@ -604,7 +635,7 @@ impl NodePlayer {
         // An instrument is a mono source: pan it with equal power. Anything
         // else is a stereo bus: balance it, so a centred folder passes its
         // sound unchanged.
-        let (left, right) = if node.instrument.is_some() {
+        let (left, right) = if !node.instruments.is_empty() {
             equal_power(pan)
         } else {
             balance(pan)
@@ -648,7 +679,9 @@ impl NodePlayer {
             if let Some(pending) = *slot
                 && transport.frames_until(pending.end_beats) <= 0
             {
-                self.synth.note_off(pending.note_id);
+                for (_, synth) in &mut self.synths {
+                    synth.note_off(pending.note_id);
+                }
                 *slot = None;
             }
         }
@@ -668,12 +701,16 @@ impl NodePlayer {
                     .filter_map(|(i, p)| p.map(|p| (i, p)))
                     .min_by(|(_, a), (_, b)| a.end_beats.total_cmp(&b.end_beats))
                     .unwrap_or((0, PendingEnd { note_id, end_beats }));
-                self.synth.note_off(soonest.note_id);
+                for (_, synth) in &mut self.synths {
+                    synth.note_off(soonest.note_id);
+                }
                 slot
             }
         };
         self.pending_ends[slot] = Some(PendingEnd { note_id, end_beats });
-        self.synth.note_on(note_id, pitch, velocity);
+        for (_, synth) in &mut self.synths {
+            synth.note_on(note_id, pitch, velocity);
+        }
     }
 
     /// Frames until this node's next note starts or ends.
@@ -703,7 +740,9 @@ impl NodePlayer {
     }
 
     fn release_all(&mut self) {
-        self.synth.release_all();
+        for (_, synth) in &mut self.synths {
+            synth.release_all();
+        }
         self.pending_ends = [None; MAX_PENDING_ENDS];
     }
 }

@@ -27,6 +27,8 @@ pub enum OpenMenu {
     AddNode,
     /// Adding an effect to a node's chain, from its mixer strip.
     AddEffect(daw_engine::NodeId),
+    /// The instrument browser for a MIDI node's strip.
+    InstrumentBrowser(daw_engine::NodeId),
     /// Publishing a node as a signal, and the signals it publishes.
     NodeSignals(daw_engine::NodeId),
 }

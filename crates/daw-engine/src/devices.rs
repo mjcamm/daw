@@ -7,7 +7,7 @@ use daw_dsp::envelope::AdsrParams;
 use daw_dsp::filter_effect::{FilterEffectParams, FilterMode};
 use daw_dsp::gain::db_to_gain;
 use daw_dsp::synth::SynthParams;
-use daw_protocol::{DeviceRef, EffectKind, Scale};
+use daw_protocol::{DeviceRef, EffectKind, InstrumentKind, Scale};
 
 /// Most parameters any built-in device has.
 pub const MAX_DEVICE_PARAMS: usize = 16;
@@ -139,18 +139,39 @@ pub fn effect_params(kind: EffectKind) -> &'static [ParamInfo] {
     }
 }
 
+pub fn instrument_name(kind: InstrumentKind) -> &'static str {
+    match kind {
+        InstrumentKind::Synth => "Synth",
+    }
+}
+
+/// One line on what a built-in instrument is, for the browser.
+pub fn instrument_description(kind: InstrumentKind) -> &'static str {
+    match kind {
+        InstrumentKind::Synth => "Saw synth with filter and envelopes",
+    }
+}
+
+/// Every built-in instrument, for the browser.
+pub const INSTRUMENTS: [InstrumentKind; 1] = [InstrumentKind::Synth];
+
+pub fn instrument_params(kind: InstrumentKind) -> &'static [ParamInfo] {
+    match kind {
+        InstrumentKind::Synth => &INSTRUMENT_PARAMS,
+    }
+}
+
 pub fn effect_name(kind: EffectKind) -> &'static str {
     match kind {
         EffectKind::Filter => "Filter",
     }
 }
 
-/// Parameters of a device that is not an effect.
+/// Parameters of the channel; instruments and effects depend on their kind.
 pub fn fixed_device_params(device: DeviceRef) -> Option<&'static [ParamInfo]> {
     match device {
-        DeviceRef::Instrument => Some(&INSTRUMENT_PARAMS),
         DeviceRef::Channel => Some(&CHANNEL_PARAMS),
-        DeviceRef::Effect(_) => None,
+        DeviceRef::Instrument(_) | DeviceRef::Effect(_) => None,
     }
 }
 

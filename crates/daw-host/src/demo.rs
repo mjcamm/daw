@@ -8,8 +8,8 @@
 use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, Edit, Effect,
-    EffectKind, Engine, FIRST_NODE, Layer, LayerId, LoopRange, MidiClip, MidiNote, ParamId,
-    Segment, Shape, ShapePoint, Ticks,
+    EffectKind, Engine, FIRST_INSTRUMENT, FIRST_NODE, Layer, LayerId, LoopRange, MidiClip,
+    MidiNote, ParamId, Segment, Shape, ShapePoint, Ticks,
 };
 
 /// What to listen for, printed by the player.
@@ -167,7 +167,7 @@ fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
     wobble.fade_in = Ticks::from_beats(1);
     let synth_cutoff = ParamId {
         node: FIRST_NODE,
-        device: DeviceRef::Instrument,
+        device: DeviceRef::Instrument(FIRST_INSTRUMENT),
         index: instrument::CUTOFF,
     };
     add_layer(engine, synth_cutoff, 3, BlendMode::Add, wobble)

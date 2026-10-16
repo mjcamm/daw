@@ -200,7 +200,7 @@ impl ProjectView {
                             &tree::next_name(snapshot, name),
                             tree::next_color(snapshot),
                         )
-                        .with_instrument(),
+                        .with_instrument(tree::next_device_id(snapshot)),
                     });
                 }
                 let landings: Vec<Landing> = drag
