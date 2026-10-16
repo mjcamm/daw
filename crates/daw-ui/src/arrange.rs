@@ -483,7 +483,8 @@ impl ProjectView {
             .child(content)
     }
 
-    fn toggle_fold(&mut self, node: NodeId) {
+    /// Folds or unfolds a folder, on Arrange and the mixer alike.
+    pub(crate) fn toggle_fold(&mut self, node: NodeId) {
         if !self.folded.remove(&node) {
             self.folded.insert(node);
         }

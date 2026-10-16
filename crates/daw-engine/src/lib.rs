@@ -333,6 +333,10 @@ fn node_snapshot(
                         DeviceRef::Effect(id) => node.effect(id).map(|(_, e)| e.kind),
                         _ => None,
                     },
+                    enabled: match device {
+                        DeviceRef::Effect(id) => node.effect(id).is_none_or(|(_, e)| e.enabled),
+                        _ => true,
+                    },
                     name: device_name(node, device).to_owned(),
                     params: params
                         .iter()

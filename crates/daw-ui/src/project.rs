@@ -90,6 +90,14 @@ pub struct ProjectView {
     pub(crate) selected_clips: std::collections::BTreeSet<daw_engine::ClipId>,
     /// Clips being dragged on Arrange; one edit on release.
     pub(crate) clip_drag: Option<crate::clip_drag::ClipDrag>,
+    /// The mixer's strip width, scrolling and meters.
+    pub(crate) mixer_view: crate::mixer::MixerView,
+    /// A pan, scrollbar or strip-width drag on the mixer.
+    pub(crate) mixer_drag: Option<crate::mixer::MixerDrag>,
+    /// The mixer's strips as they animate in, out and around.
+    pub(crate) strip_motion: crate::motion::RowMotion,
+    /// The effect selected in a mixer strip.
+    pub(crate) selected_effect: Option<daw_engine::DeviceId>,
     /// Arrange's rows as they animate in, out and around.
     pub(crate) row_motion: crate::motion::RowMotion,
     /// Where the Parameters page lanes were last drawn: the top-left is
@@ -171,6 +179,10 @@ impl ProjectView {
             selected_node: None,
             folded: std::collections::HashSet::new(),
             row_motion: crate::motion::RowMotion::default(),
+            mixer_view: crate::mixer::MixerView::default(),
+            mixer_drag: None,
+            strip_motion: crate::motion::RowMotion::default(),
+            selected_effect: None,
             selected_clips: std::collections::BTreeSet::new(),
             clip_drag: None,
             lanes_bounds: Rc::default(),
@@ -336,7 +348,7 @@ impl Render for ProjectView {
             self.window_title = title;
         }
         let theme = Theme::get(cx);
-        if self.page == Page::Arrange {
+        if matches!(self.page, Page::Arrange | Page::Mixer) {
             let snapshot = self.session.snapshot();
             let previous = self.session.previous_snapshot();
             let rows = crate::tree::display_order(snapshot, &self.folded);
@@ -346,8 +358,12 @@ impl Render for ProjectView {
                     .or_else(|| previous.and_then(|p| p.node(id)))
                     .cloned()
             };
-            self.row_motion
-                .update(&rows, last, std::time::Instant::now());
+            let motion = if self.page == Page::Arrange {
+                &mut self.row_motion
+            } else {
+                &mut self.strip_motion
+            };
+            motion.update(&rows, last, std::time::Instant::now());
             self.autoscroll_clip_drag();
         }
 
@@ -357,6 +373,7 @@ impl Render for ProjectView {
                 .render_parameters(&theme, window, cx)
                 .into_any_element(),
             Page::Signals => self.render_signals(&theme, window, cx).into_any_element(),
+            Page::Mixer => self.render_mixer(&theme, cx),
             other => placeholder(&theme, other).into_any_element(),
         };
         let banner = |text: String| {
@@ -430,6 +447,7 @@ impl ProjectView {
             || self.inspector_resize.is_some()
             || self.notes_drag.is_some()
             || self.clip_drag.is_some()
+            || self.mixer_drag.is_some()
     }
 
     /// While something is being dragged, follows the mouse anywhere in the

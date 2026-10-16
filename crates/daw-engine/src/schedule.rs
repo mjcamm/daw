@@ -43,6 +43,9 @@ pub struct NodeRender {
 pub struct EffectState {
     pub id: DeviceId,
     pub kind: EffectKind,
+    /// Off, it passes sound through (its memory is kept for when it is
+    /// switched back on).
+    pub enabled: bool,
     /// One automation per parameter, in index order.
     pub params: Vec<Automation>,
 }
@@ -148,6 +151,7 @@ fn compile_node(
             .map(|(id, effect)| EffectState {
                 id: *id,
                 kind: effect.kind,
+                enabled: effect.enabled,
                 params: compile_params(&effect.params, signals),
             })
             .collect(),

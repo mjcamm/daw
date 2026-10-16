@@ -361,7 +361,7 @@ impl AudioProcessor {
                     }
                 }
             }
-            player.process_span(span.clone());
+            player.process_span(node, span.clone());
             if let Some(parent) = node.parent {
                 let (child, parent) = two_mut(&mut self.players, index, self.slots[parent]);
                 for (to, from) in parent.bus_left[span.clone()]
@@ -613,11 +613,14 @@ impl NodePlayer {
         self.gain_right.set_target(gain * right);
     }
 
-    /// Effects, then volume and pan, over a span of the bus.
-    fn process_span(&mut self, span: std::ops::Range<usize>) {
+    /// Effects (those switched on), then volume and pan, over a span of
+    /// the bus.
+    fn process_span(&mut self, node: &NodeRender, span: std::ops::Range<usize>) {
         let (left, right) = (&mut self.bus_left[span.clone()], &mut self.bus_right[span]);
-        for (_, effect) in &mut self.effects {
-            effect.process(left, right);
+        for ((_, effect), state) in self.effects.iter_mut().zip(&node.effects) {
+            if state.enabled {
+                effect.process(left, right);
+            }
         }
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             *l *= self.gain_left.next_value();

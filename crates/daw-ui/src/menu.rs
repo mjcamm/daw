@@ -25,6 +25,8 @@ pub enum OpenMenu {
     SignalUses(daw_engine::SignalId),
     /// Adding a node: an instrument or a folder.
     AddNode,
+    /// Adding an effect to a node's chain, from its mixer strip.
+    AddEffect(daw_engine::NodeId),
     /// Publishing a node as a signal, and the signals it publishes.
     NodeSignals(daw_engine::NodeId),
 }

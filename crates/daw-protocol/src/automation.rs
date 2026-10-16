@@ -75,15 +75,24 @@ pub enum EffectKind {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Effect {
     pub kind: EffectKind,
+    /// Off, the effect passes sound through untouched. Files from before
+    /// the switch existed load with it on.
+    #[serde(default = "on")]
+    pub enabled: bool,
     /// One entry per parameter, in index order. Empty means all defaults.
     pub params: Vec<ParamState>,
 }
 
+fn on() -> bool {
+    true
+}
+
 impl Effect {
-    /// An effect with every parameter at its default.
+    /// An effect, on, with every parameter at its default.
     pub fn new(kind: EffectKind) -> Self {
         Self {
             kind,
+            enabled: true,
             params: Vec::new(),
         }
     }

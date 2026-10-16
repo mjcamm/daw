@@ -687,6 +687,23 @@ impl Project {
                     effect,
                 })
             }
+            Edit::SetEffectEnabled { id, enabled } => {
+                let node = self
+                    .effect_node(id)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let effect = self
+                    .node_or_err(node)?
+                    .effects
+                    .iter_mut()
+                    .find(|(e, _)| *e == id)
+                    .map(|(_, e)| e)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let previous = std::mem::replace(&mut effect.enabled, enabled);
+                Ok(Edit::SetEffectEnabled {
+                    id,
+                    enabled: previous,
+                })
+            }
             Edit::AddLayer {
                 param,
                 id,
@@ -2302,6 +2319,26 @@ mod node_tests {
             Err(CommandError::NoInstrument { node: NodeId(8) })
         );
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn effects_switch_off_and_back() {
+        let mut project = tree();
+        project
+            .apply(Edit::AddEffect {
+                node: KICK,
+                id: DeviceId(3),
+                index: 0,
+                effect: Effect::new(EffectKind::Filter),
+            })
+            .unwrap();
+        round_trip_on(
+            project,
+            Edit::SetEffectEnabled {
+                id: DeviceId(3),
+                enabled: false,
+            },
+        );
     }
 
     #[test]

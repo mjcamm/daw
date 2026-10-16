@@ -1,6 +1,6 @@
 # Mixer
 
-*Status: layout agreed with the user 2026-10-16; not built. Needs the node tree (Phase 5): the engine has one node today. Sketches: https://claude.ai/artifact/4xzV4YFut9r4ovpByU7qFT*
+*Status: layout agreed with the user 2026-10-16; **built** (`crates/daw-ui/src/mixer.rs`). Next: an effect's settings in the inspector when its slot is selected; sends and sidechains in Phase 6 (no placeholder until then). Sketches: https://claude.ai/artifact/4xzV4YFut9r4ovpByU7qFT*
 
 ## The idea
 
@@ -30,6 +30,15 @@ A traditional mixer: every node is a strip in one flat row (the tree "un-nested"
 - **Sends and sidechains** are audio signals (Phase 6): no cables. Hovering a signal chip lights the strip that publishes it.
 - **Selecting a strip** selects the node everywhere; the inspector (`inspector.md`) shows its device chain in detail, as in the mockup's right panel.
 - **Strip width** zooms with a slider, like the timelines.
+
+## As built
+
+- **Fader:** the volume's resting value (the same drag as Parameters' resting-value slider; one edit on release); double-click for 0 dB; the dB readout below. When layers move the volume, an orange marker on the fader shows where it is at the playhead.
+- **Pan:** the app's slider, horizontal, centre-detented (within 2 %), double-click to centre.
+- **Meters:** a stereo pair beside the fader; a peak line holds for 1.2 s, then falls; red near clipping.
+- **Effect slots** at the top: one row per effect (on/off dot, name), then "+" (menu: Filter). Clicking a slot selects the node and the effect; the selected slot shows ×. Every strip's slot area is as tall as the busiest strip's, so the strips stay aligned. Effects switch off with `Edit::SetEffectEnabled` (off passes sound untouched; files from before load with it on).
+- **Map:** bars in the folder's colour, named on hover, an arrow (Lucide `corner-right-up`) up into the folder's strip, chevrons to fold (shared with Arrange). Strips animate like Arrange's rows (`motion.rs`), closing to the right into their folder.
+- **Footer:** the desk's sideways scrollbar and a strip-width slider (60 to 140 px; the Song is 10 px wider).
 
 ## Still to decide when building
 

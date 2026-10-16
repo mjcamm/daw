@@ -117,6 +117,11 @@ pub enum Edit {
     RemoveEffect {
         id: DeviceId,
     },
+    /// Switch an effect on or off; off, it passes sound through untouched.
+    SetEffectEnabled {
+        id: DeviceId,
+        enabled: bool,
+    },
     /// Insert a layer into a parameter's stack at `index` (0 is the bottom).
     AddLayer {
         param: ParamId,
@@ -356,6 +361,8 @@ pub struct DeviceSnapshot {
     pub device: DeviceRef,
     /// The kind, for an effect.
     pub effect: Option<EffectKind>,
+    /// False for an effect switched off.
+    pub enabled: bool,
     pub name: String,
     pub params: Vec<ParamSnapshot>,
 }

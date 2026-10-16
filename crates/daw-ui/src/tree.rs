@@ -293,6 +293,7 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
                 if let Some(kind) = device.effect {
                     let effect = Effect {
                         kind,
+                        enabled: device.enabled,
                         params: copy_params(&device.params, ids),
                     };
                     copy.effects

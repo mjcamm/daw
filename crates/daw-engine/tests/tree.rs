@@ -204,6 +204,34 @@ fn tree_output_is_identical_for_any_block_size() {
 }
 
 #[test]
+fn an_effect_switched_off_passes_sound_untouched() {
+    let (mut engine, processor) = new_engine();
+    hold(&mut engine, FIRST_NODE, 1, 60);
+    let dry = play(engine, processor, VARIED_BLOCKS);
+
+    let (mut engine, processor) = new_engine();
+    hold(&mut engine, FIRST_NODE, 1, 60);
+    let filter = daw_engine::DeviceId(5);
+    apply(
+        &mut engine,
+        Edit::AddEffect {
+            node: FIRST_NODE,
+            id: filter,
+            index: 0,
+            effect: daw_engine::Effect::new(daw_engine::EffectKind::Filter),
+        },
+    );
+    apply(
+        &mut engine,
+        Edit::SetEffectEnabled {
+            id: filter,
+            enabled: false,
+        },
+    );
+    assert_eq!(play(engine, processor, VARIED_BLOCKS), dry);
+}
+
+#[test]
 fn meters_report_each_node() {
     let (mut engine, mut processor) = new_engine();
     add_folder(&mut engine);

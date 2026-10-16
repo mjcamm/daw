@@ -12,6 +12,7 @@ mod inspector;
 mod launch;
 mod layout;
 mod menu;
+mod mixer;
 mod motion;
 mod parameters;
 mod project;

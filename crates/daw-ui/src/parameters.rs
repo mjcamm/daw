@@ -328,6 +328,18 @@ pub(crate) struct BaseDrag {
     preview: f64,
 }
 
+impl BaseDrag {
+    /// A resting-value drag starting at `origin_y` (dragging up raises it).
+    pub(crate) fn new(param: ParamId, origin_y: Pixels, original: f64) -> Self {
+        Self {
+            param,
+            origin_y,
+            original,
+            preview: original,
+        }
+    }
+}
+
 /// A layer's mix being dragged with its slider.
 #[derive(Debug, Clone)]
 pub(crate) struct MixDrag {
@@ -813,6 +825,7 @@ impl ProjectView {
         if self.drag_frame(position)
             || self.drag_inspector(position, modifiers.shift)
             || self.drag_clips(position, modifiers)
+            || self.drag_mixer(position, modifiers.shift)
         {
             return;
         }
@@ -863,6 +876,7 @@ impl ProjectView {
         self.frame_drag = None;
         self.finish_inspector_drag();
         self.finish_clip_drag();
+        self.finish_mixer_drag();
         if let Some(drag) = self.mix_drag.take()
             && drag.preview != drag.original
         {
@@ -887,6 +901,14 @@ impl ProjectView {
                 block: drag.preview,
             }));
         }
+    }
+
+    /// The resting value being dragged for `param`, if it is.
+    pub(crate) fn base_preview(&self, param: ParamId) -> Option<f64> {
+        self.base_drag
+            .as_ref()
+            .filter(|d| d.param == param)
+            .map(|d| d.preview)
     }
 
     /// A parameter's resting value as shown: the slider's preview while it
