@@ -82,6 +82,13 @@ pub enum Edit {
     RemoveClip {
         id: ClipId,
     },
+    /// Replace a clip, wherever it is, with `clip` on `node`: moving it in
+    /// time or to another node, resizing it, or changing its notes.
+    SetClip {
+        id: ClipId,
+        node: NodeId,
+        clip: MidiClip,
+    },
     /// Silence the node and everything under it.
     SetMute {
         node: NodeId,
@@ -494,6 +501,10 @@ pub enum CommandError {
     TooManyNodes {
         max: usize,
     },
+    /// Clips play through an instrument; this node has none.
+    NoInstrument {
+        node: NodeId,
+    },
     /// Colours index the nine-colour content palette.
     ColorOutOfRange {
         color: u8,
@@ -617,6 +628,9 @@ impl fmt::Display for CommandError {
                 write!(f, "node {} cannot move inside itself", id.0)
             }
             Self::TooManyNodes { max } => write!(f, "a project holds at most {max} nodes"),
+            Self::NoInstrument { node } => {
+                write!(f, "node {} has no instrument to play clips", node.0)
+            }
             Self::ColorOutOfRange { color } => write!(f, "colour {color} is not in the palette"),
             Self::EmptyName => f.write_str("names cannot be empty"),
             Self::NothingToUndo => f.write_str("nothing to undo"),

@@ -19,7 +19,10 @@ use gpui::{
 use std::cell::Cell;
 use std::rc::Rc;
 
-actions!(daw, [TogglePlay, Save, Undo, Redo, DeleteSelection]);
+actions!(
+    daw,
+    [TogglePlay, Save, Undo, Redo, DeleteSelection, CancelDrag]
+);
 
 /// The key context of an open project, for its shortcuts.
 pub const KEY_CONTEXT: &str = "Workspace";
@@ -83,6 +86,10 @@ pub struct ProjectView {
     pub(crate) selected_node: Option<NodeId>,
     /// Folders folded in the nesting map. UI state, not saved.
     pub(crate) folded: std::collections::HashSet<NodeId>,
+    /// Clips selected on Arrange.
+    pub(crate) selected_clips: std::collections::BTreeSet<daw_engine::ClipId>,
+    /// Clips being dragged on Arrange; one edit on release.
+    pub(crate) clip_drag: Option<crate::clip_drag::ClipDrag>,
     /// Arrange's rows as they animate in, out and around.
     pub(crate) row_motion: crate::motion::RowMotion,
     /// Where the Parameters page lanes were last drawn: the top-left is
@@ -164,6 +171,8 @@ impl ProjectView {
             selected_node: None,
             folded: std::collections::HashSet::new(),
             row_motion: crate::motion::RowMotion::default(),
+            selected_clips: std::collections::BTreeSet::new(),
+            clip_drag: None,
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
             selected_block: None,
@@ -339,6 +348,7 @@ impl Render for ProjectView {
             };
             self.row_motion
                 .update(&rows, last, std::time::Instant::now());
+            self.autoscroll_clip_drag();
         }
 
         let page = match self.page {
@@ -373,6 +383,9 @@ impl Render for ProjectView {
             .on_action(cx.listener(|this, _: &Undo, _, _| this.session.apply(Command::Undo)))
             .on_action(cx.listener(|this, _: &Redo, _, _| this.session.apply(Command::Redo)))
             .on_action(cx.listener(|this, _: &DeleteSelection, _, _| this.delete_selection()))
+            .on_action(cx.listener(|this, _: &CancelDrag, _, _| {
+                this.cancel_clip_drag();
+            }))
             .child(self.render_header(&theme, cx))
             .children(
                 self.session
@@ -416,6 +429,7 @@ impl ProjectView {
             || self.frame_drag.is_some()
             || self.inspector_resize.is_some()
             || self.notes_drag.is_some()
+            || self.clip_drag.is_some()
     }
 
     /// While something is being dragged, follows the mouse anywhere in the

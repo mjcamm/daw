@@ -3,6 +3,8 @@
 mod app;
 mod arrange;
 mod block_edit;
+mod clip_drag;
+mod clip_edit;
 mod frame;
 mod header;
 mod icons;
@@ -28,7 +30,7 @@ use gpui::{
     App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
     px, size,
 };
-use project::{DeleteSelection, Redo, Save, TogglePlay, Undo};
+use project::{CancelDrag, DeleteSelection, Redo, Save, TogglePlay, Undo};
 use theme::Theme;
 
 #[global_allocator]
@@ -47,6 +49,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-,", OpenPreferences, None),
         KeyBinding::new("delete", DeleteSelection, not_typing),
+        KeyBinding::new("escape", CancelDrag, not_typing),
         KeyBinding::new("backspace", DeleteSelection, not_typing),
     ]
 }

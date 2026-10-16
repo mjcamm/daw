@@ -213,6 +213,15 @@ impl Project {
         find_node_mut(&mut self.root, NodeId::ROOT, id)
     }
 
+    /// A node that exists and has an instrument, so clips can play on it.
+    fn check_plays_clips(&self, node: NodeId) -> Result<(), CommandError> {
+        match self.node(node) {
+            None => Err(CommandError::UnknownNode { id: node }),
+            Some(n) if n.instrument.is_none() => Err(CommandError::NoInstrument { node }),
+            Some(_) => Ok(()),
+        }
+    }
+
     fn node_or_err(&mut self, id: NodeId) -> Result<&mut Node, CommandError> {
         self.node_mut(id).ok_or(CommandError::UnknownNode { id })
     }
@@ -579,9 +588,7 @@ impl Project {
                 Ok(Edit::SetTempo { bpm: previous })
             }
             Edit::AddClip { node, id, clip } => {
-                if self.node(node).is_none() {
-                    return Err(CommandError::UnknownNode { id: node });
-                }
+                self.check_plays_clips(node)?;
                 self.used_ids().claim_clip(id)?;
                 validate_clip(&clip).map_err(|reason| CommandError::InvalidClip { reason })?;
                 self.node_or_err(node)?.clips.insert(id, clip);
@@ -595,6 +602,22 @@ impl Project {
                     .remove(&id)
                     .ok_or(CommandError::UnknownClip { id })?;
                 Ok(Edit::AddClip { node, id, clip })
+            }
+            Edit::SetClip { id, node, clip } => {
+                let from = self.clip_node(id).ok_or(CommandError::UnknownClip { id })?;
+                self.check_plays_clips(node)?;
+                validate_clip(&clip).map_err(|reason| CommandError::InvalidClip { reason })?;
+                let previous = self
+                    .node_or_err(from)?
+                    .clips
+                    .remove(&id)
+                    .ok_or(CommandError::UnknownClip { id })?;
+                self.node_or_err(node)?.clips.insert(id, clip);
+                Ok(Edit::SetClip {
+                    id,
+                    node: from,
+                    clip: previous,
+                })
             }
             Edit::SetMute { node, muted } => {
                 let target = self.node_or_err(node)?;
@@ -919,6 +942,9 @@ fn prepare_node(
             used,
             signals,
         )?;
+    }
+    if node.instrument.is_none() && !node.clips.is_empty() {
+        return Err(CommandError::NoInstrument { node: id });
     }
     for (clip_id, clip) in &node.clips {
         used.claim_clip(*clip_id)?;
@@ -2023,7 +2049,10 @@ mod node_tests {
     }
 
     fn round_trip(edit: Edit) {
-        let mut project = tree();
+        round_trip_on(tree(), edit);
+    }
+
+    fn round_trip_on(mut project: Project, edit: Edit) {
         let original = project.clone();
         let inverse = project.apply(edit).unwrap();
         assert_ne!(project, original);
@@ -2205,6 +2234,74 @@ mod node_tests {
             Err(CommandError::UnknownNode { id: KICK })
         );
         assert_eq!(project, before, "the first removal was undone");
+    }
+
+    fn one_beat() -> MidiClip {
+        MidiClip {
+            start: Ticks::ZERO,
+            length: Ticks::from_beats(1),
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn clips_move_between_nodes_and_back() {
+        let mut project = tree();
+        project
+            .apply(Edit::AddClip {
+                node: FIRST_NODE,
+                id: ClipId(1),
+                clip: one_beat(),
+            })
+            .unwrap();
+        let moved = MidiClip {
+            start: Ticks::from_beats(4),
+            ..one_beat()
+        };
+        round_trip_on(
+            project.clone(),
+            Edit::SetClip {
+                id: ClipId(1),
+                node: KICK,
+                clip: moved.clone(),
+            },
+        );
+        project
+            .apply(Edit::SetClip {
+                id: ClipId(1),
+                node: KICK,
+                clip: moved.clone(),
+            })
+            .unwrap();
+        assert_eq!(project.clip_node(ClipId(1)), Some(KICK));
+        assert_eq!(project.node(KICK).unwrap().clips[&ClipId(1)], moved);
+        assert!(project.node(FIRST_NODE).unwrap().clips.is_empty());
+    }
+
+    #[test]
+    fn clips_only_go_on_nodes_that_play_them() {
+        let mut project = tree();
+        let before = project.clone();
+        assert_eq!(
+            project.apply(Edit::AddClip {
+                node: DRUMS,
+                id: ClipId(1),
+                clip: one_beat()
+            }),
+            Err(CommandError::NoInstrument { node: DRUMS })
+        );
+        let mut folder = Node::new("Folder", 0);
+        folder.clips.insert(ClipId(2), one_beat());
+        assert_eq!(
+            project.apply(Edit::AddNode {
+                id: NodeId(8),
+                parent: NodeId::ROOT,
+                index: 0,
+                node: folder
+            }),
+            Err(CommandError::NoInstrument { node: NodeId(8) })
+        );
+        assert_eq!(project, before);
     }
 
     #[test]

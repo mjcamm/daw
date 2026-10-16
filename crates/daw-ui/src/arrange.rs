@@ -4,7 +4,7 @@
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
 use crate::layout::{
-    BEATS_PER_BAR, meter_height, note_rows, ruler_label_step, timeline_bars, x_to_snapped_position,
+    BEATS_PER_BAR, meter_height, ruler_label_step, timeline_bars, x_to_snapped_position,
 };
 use crate::menu::{self, OpenMenu};
 use crate::motion::RowLayout;
@@ -12,11 +12,10 @@ use crate::parameters::small_button;
 use crate::project::{ProjectView, RenameTarget, song_clips};
 use crate::scroll;
 use crate::signals::{node_has_notes, published_signals};
-use crate::theme::{ContentColor, Theme};
+use crate::theme::Theme;
 use crate::tooltip;
 use crate::tree::{self, Bar, Drop, display_order};
-use crate::zoom::Zoom;
-use daw_engine::{ClipId, Command, Edit, MidiClip, Node, NodeId, NodeSnapshot};
+use daw_engine::{Command, Edit, Node, NodeId, NodeSnapshot};
 use gpui::{
     ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
 };
@@ -24,8 +23,6 @@ use std::time::Instant;
 
 const RULER_HEIGHT: f32 = 28.;
 const NODE_LIST_WIDTH: f32 = 260.;
-const CLIP_INSET: f32 = 4.;
-const CLIP_LABEL_HEIGHT: f32 = 16.;
 const METER_HEIGHT: f32 = 32.;
 /// Width of one column of the nesting map, and its padding.
 const MAP_COLUMN: f32 = 18.;
@@ -96,7 +93,7 @@ impl ProjectView {
                     .flex_shrink_0()
                     .child(self.render_map(&placed, &map_bars, map_width, theme, cx))
                     .child(self.render_node_list(&placed, theme, cx))
-                    .child(self.render_timeline(&placed, theme, bars, width)),
+                    .child(self.render_timeline(&placed, theme, bars, width, cx)),
             );
 
         div()
@@ -663,27 +660,47 @@ impl ProjectView {
         theme: &Theme,
         bars: u32,
         width: f32,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let zoom = self.arrange_view.zoom;
-        let lanes = rows.iter().map(|(node, layout)| {
-            let color = if node.muted {
-                theme.muted_content
-            } else {
-                theme.content(node.color)
-            };
-            let lane = div()
-                .relative()
-                .h(px(zoom.row_height))
-                .flex_none()
-                .border_b_1()
-                .border_color(theme.hairline)
-                .children(
-                    node.clips
-                        .iter()
-                        .map(|(id, clip)| clip_view(*id, clip, &node.name, color, zoom)),
-                );
-            animated(layout, zoom.row_height, lane)
-        });
+        // Where each row starts, for the drag preview.
+        let mut row_tops = Vec::with_capacity(rows.len());
+        let mut y = 0.;
+        for (_, layout) in rows.iter().filter(|(_, l)| l.ghost.is_none()) {
+            row_tops.push(y);
+            y += layout.height;
+        }
+        let overlay = self.clip_drag_overlay(&row_tops, theme);
+        let lanes: Vec<_> = rows
+            .iter()
+            .map(|(node, layout)| {
+                let color = if node.muted {
+                    theme.muted_content
+                } else {
+                    theme.content(node.color)
+                };
+                let lane = div()
+                    .relative()
+                    .h(px(zoom.row_height))
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(theme.hairline)
+                    // A press on empty lane clears the clip selection.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.selected_clips.clear()),
+                    )
+                    .children(
+                        node.clips
+                            .iter()
+                            .map(|(id, clip)| {
+                                self.clip_element(*id, clip, &node.name, color, theme, cx)
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                animated(layout, zoom.row_height, lane)
+            })
+            .collect();
 
         let playhead = div()
             .absolute()
@@ -710,6 +727,7 @@ impl ProjectView {
                     .flex_col()
                     .children(grid_lines(zoom, bars, theme))
                     .children(lanes)
+                    .children(overlay)
                     .child(playhead),
             )
     }
@@ -854,56 +872,4 @@ fn meter_bar(peak: f32, size: f32, theme: &Theme) -> impl IntoElement {
                     theme.meter_low
                 }),
         )
-}
-
-fn clip_view(
-    id: ClipId,
-    clip: &MidiClip,
-    label: &str,
-    color: ContentColor,
-    zoom: Zoom,
-) -> impl IntoElement {
-    let left = zoom.beat_to_x(clip.start.as_beats());
-    let width = zoom.beat_to_x(clip.length.as_beats());
-    let note_area = (zoom.row_height - 2. * CLIP_INSET - CLIP_LABEL_HEIGHT - 6.).max(0.);
-    let notes = clip
-        .notes
-        .iter()
-        .zip(note_rows(clip))
-        .filter(|(note, _)| note.start < clip.length)
-        .map(move |(note, row)| {
-            let end = (note.start + note.length).min(clip.length);
-            div()
-                .absolute()
-                .left(px(zoom.beat_to_x(note.start.as_beats())))
-                .top(px(CLIP_LABEL_HEIGHT + row * note_area))
-                .w(px(
-                    (zoom.beat_to_x((end - note.start).as_beats()) - 1.).max(2.)
-                ))
-                .h(px(3.))
-                .rounded(px(1.))
-                .bg(color.detail)
-        });
-    div()
-        .id(("clip", id.0))
-        .absolute()
-        .left(px(left))
-        .top(px(CLIP_INSET))
-        .w(px(width))
-        .h(px(zoom.row_height - 2. * CLIP_INSET))
-        .rounded(px(5.))
-        .bg(color.fill)
-        .border_1()
-        .border_color(color.outline)
-        .overflow_hidden()
-        .child(
-            div()
-                .px(px(6.))
-                .pt(px(2.))
-                .text_size(px(10.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(color.detail)
-                .child(label.to_owned()),
-        )
-        .children(notes)
 }

@@ -1,6 +1,7 @@
 # Drives the DAW window: screenshot, click, double-click, key presses.
 # Usage: ui-drive.ps1 shot <out.png> | click <x> <y> | dclick <x> <y> | key <vk> | front
 #        down <x> <y> | move <x> <y> | up <x> <y>  (a drag in steps, to look mid-drag)
+#        keydown <vk> | keyup <vk>  (hold a key, e.g. 17 Ctrl, 18 Alt, 16 Shift)
 # Coordinates are relative to the window's client area top-left.
 param([string]$cmd, [string]$a, [string]$b)
 Add-Type -AssemblyName System.Drawing
@@ -41,6 +42,8 @@ switch ($cmd) {
   "dclick" { MoveTo $a $b; Click; Start-Sleep -Milliseconds 60; Click }
   "move" { MoveTo $a $b }
   "down" { MoveTo $a $b; [W]::mouse_event(2,0,0,0,[UIntPtr]::Zero) }
+  "keydown" { [W]::keybd_event([byte][int]$a,0,0,[UIntPtr]::Zero) }
+  "keyup" { [W]::keybd_event([byte][int]$a,0,2,[UIntPtr]::Zero) }
   "up" { MoveTo $a $b; [W]::mouse_event(4,0,0,0,[UIntPtr]::Zero) }
   "key" { [W]::keybd_event([byte][int]$a,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 40; [W]::keybd_event([byte][int]$a,0,2,[UIntPtr]::Zero) }
   "front" { "focused" }

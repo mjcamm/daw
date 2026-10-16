@@ -810,7 +810,10 @@ impl ProjectView {
 
     /// Updates the preview of whatever is being dragged.
     pub(crate) fn drag_to(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
-        if self.drag_frame(position) || self.drag_inspector(position, modifiers.shift) {
+        if self.drag_frame(position)
+            || self.drag_inspector(position, modifiers.shift)
+            || self.drag_clips(position, modifiers)
+        {
             return;
         }
         if let Some(drag) = &mut self.base_drag {
@@ -859,6 +862,7 @@ impl ProjectView {
     pub(crate) fn finish_drag(&mut self) {
         self.frame_drag = None;
         self.finish_inspector_drag();
+        self.finish_clip_drag();
         if let Some(drag) = self.mix_drag.take()
             && drag.preview != drag.original
         {
@@ -997,13 +1001,16 @@ impl ProjectView {
     }
 
     /// Deletes the selected block (Delete or Backspace); on Arrange, the
-    /// selected node.
+    /// selected clips, or with none the selected node.
     pub(crate) fn delete_selection(&mut self) {
         if self.block_drag.is_some() {
             return;
         }
         if self.page == Page::Arrange {
-            if let Some(id) = self.selected_node {
+            // Selected clips go first; with none, the selected node.
+            if !self.delete_clips()
+                && let Some(id) = self.selected_node
+            {
                 self.delete_node(id);
             }
             return;
