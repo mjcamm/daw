@@ -30,6 +30,8 @@ pub enum Axis {
 pub struct Zoom {
     pub pixels_per_beat: f32,
     pub row_height: f32,
+    /// The row height's range: node rows by default, keys in the piano roll.
+    rows: (f32, f32),
 }
 
 impl Zoom {
@@ -37,13 +39,22 @@ impl Zoom {
         Self {
             pixels_per_beat,
             row_height,
+            rows: (MIN_ROW_HEIGHT, MAX_ROW_HEIGHT),
         }
     }
 
-    fn range(axis: Axis) -> (f32, f32) {
+    /// This zoom with rows ranging `min..=max` high.
+    pub const fn with_rows(self, min: f32, max: f32) -> Self {
+        Self {
+            rows: (min, max),
+            ..self
+        }
+    }
+
+    fn range(self, axis: Axis) -> (f32, f32) {
         match axis {
             Axis::Horizontal => (MIN_PIXELS_PER_BEAT, MAX_PIXELS_PER_BEAT),
-            Axis::Vertical => (MIN_ROW_HEIGHT, MAX_ROW_HEIGHT),
+            Axis::Vertical => self.rows,
         }
     }
 
@@ -56,13 +67,13 @@ impl Zoom {
 
     /// Where the slider for `axis` sits, `0..=1` (0 is zoomed out).
     pub fn position(self, axis: Axis) -> f32 {
-        let (min, max) = Self::range(axis);
+        let (min, max) = self.range(axis);
         ((self.get(axis) / min).ln() / (max / min).ln()).clamp(0., 1.)
     }
 
     /// This zoom with the slider for `axis` at `position`.
     pub fn with_position(self, axis: Axis, position: f32) -> Self {
-        let (min, max) = Self::range(axis);
+        let (min, max) = self.range(axis);
         let value = min * (max / min).powf(position.clamp(0., 1.));
         match axis {
             Axis::Horizontal => Self {

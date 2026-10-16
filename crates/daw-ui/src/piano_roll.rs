@@ -3,23 +3,26 @@
 //!
 //! Double-click a clip on Arrange to open it. The panel slides up from the
 //! bottom and resizes from its top edge; its header holds the tools (select,
-//! pen, scissors), the zoom and a close button. A keyboard runs down the
-//! left (click a key to hear it) and a velocity lane along the bottom.
+//! pen, scissors), the grid and a close button. A keyboard runs down the
+//! left (click a key to hear it) and a velocity lane along the bottom, and
+//! the same frame as Arrange's (scrollbars with zoom sliders at their ends)
+//! scrolls and zooms it: sideways is time, up and down the key height.
 //! Every gesture is one undo step (`Edit::SetClip`); the rules live in
 //! `note_edit.rs`. The panel is meant to hold an audio editor later too.
 
+use crate::frame::Timeline;
 use crate::icons::{Icon, icon};
 use crate::inspector::note_name;
 use crate::note_edit::{self, Part, Selection};
 use crate::parameters::small_button;
 use crate::project::ProjectView;
-use crate::slider::{self, Axis};
 use crate::theme::Theme;
 use crate::tooltip;
+use crate::zoom::Zoom;
 use daw_engine::{ClipId, Command, Edit, MidiClip, MidiNote, NodeId, Ticks};
 use gpui::{
-    AnyElement, Bounds, Context, FontWeight, MouseButton, MouseDownEvent, Pixels, Point,
-    ScrollHandle, canvas, div, fill, point, prelude::*, px, size,
+    AnyElement, Bounds, Context, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, canvas,
+    div, fill, point, prelude::*, px, size,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -31,7 +34,9 @@ const HEADER_HEIGHT: f32 = 30.;
 const RULER_HEIGHT: f32 = 18.;
 const KEYS_WIDTH: f32 = 52.;
 const VELOCITY_HEIGHT: f32 = 56.;
-const KEY_HEIGHT: f32 = 12.;
+/// The piano roll's zoom when first opened (the clip's fit then sets the
+/// time zoom): 12 px keys, ranging 6 to 40.
+pub const DEFAULT_ZOOM: Zoom = Zoom::new(48., 12.).with_rows(6., 40.);
 /// Within this many pixels of a note's end, a press resizes it (at most a
 /// third of the note, so short notes can still be moved).
 const EDGE: f32 = 4.;
@@ -40,8 +45,8 @@ const EDGE: f32 = 4.;
 const DEAD_ZONE: f32 = 3.;
 /// How long a previewed note sounds.
 const PREVIEW_TIME: Duration = Duration::from_millis(280);
-const MIN_ZOOM: f32 = 8.;
-const MAX_ZOOM: f32 = 400.;
+/// The time zoom a clip is fitted within.
+const FIT_ZOOM: (f32, f32) = (8., 400.);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -95,8 +100,6 @@ pub struct NoteEditor {
     pub tool: Tool,
     pub selection: Selection,
     pub height: f32,
-    pixels_per_beat: f32,
-    scroll: ScrollHandle,
     /// Where the grid's content was drawn: its top-left is the clip start
     /// at pitch 127, and it moves as the grid scrolls.
     grid: Rc<Cell<Bounds<Pixels>>>,
@@ -117,8 +120,6 @@ impl NoteEditor {
             tool: Tool::Select,
             selection: Selection::new(),
             height,
-            pixels_per_beat: 48.,
-            scroll: ScrollHandle::new(),
             grid: Rc::default(),
             velocity: Rc::default(),
             fitted: false,
@@ -133,12 +134,12 @@ impl NoteEditor {
     }
 
     /// The pointer as (beat from the clip start, pitch).
-    fn at(&self, position: Point<Pixels>) -> (f64, u8) {
+    fn at(&self, position: Point<Pixels>, zoom: Zoom) -> (f64, u8) {
         let origin = self.grid.get().origin;
         let x = (position.x - origin.x) / px(1.);
         let y = (position.y - origin.y) / px(1.);
-        let beat = f64::from(x / self.pixels_per_beat);
-        let pitch = (127. - (y / KEY_HEIGHT).floor()).clamp(0., 127.) as u8;
+        let beat = f64::from(x / zoom.pixels_per_beat);
+        let pitch = (127. - (y / zoom.row_height).floor()).clamp(0., 127.) as u8;
         (beat, pitch)
     }
 }
@@ -156,6 +157,12 @@ impl ProjectView {
         Some((editor, clip))
     }
 
+    /// Where the open clip starts, in beats.
+    pub(crate) fn note_editor_start(&self) -> Option<f32> {
+        self.editor_clip()
+            .map(|(_, clip)| clip.start.as_beats() as f32)
+    }
+
     /// Opens a clip's notes in the bottom panel.
     pub(crate) fn open_note_editor(&mut self, clip: ClipId) {
         let snapshot = self.session.snapshot();
@@ -166,11 +173,18 @@ impl ProjectView {
         else {
             return;
         };
-        let height = self
-            .note_editor
-            .as_ref()
-            .map_or(DEFAULT_HEIGHT, |e| e.height);
-        self.note_editor = Some(NoteEditor::new(node.id, clip, height));
+        // Already open: nothing to do. Another clip: swap it in without
+        // sliding the panel up again.
+        let mut editor = NoteEditor::new(node.id, clip, DEFAULT_HEIGHT);
+        if let Some(open) = &self.note_editor {
+            if open.clip == clip {
+                return;
+            }
+            editor.height = open.height;
+            editor.tool = open.tool;
+            editor.opened = open.opened;
+        }
+        self.note_editor = Some(editor);
     }
 
     pub(crate) fn close_note_editor(&mut self) {
@@ -251,8 +265,9 @@ impl ProjectView {
         let Some((editor, clip)) = self.editor_clip() else {
             return;
         };
-        let (beat, pitch) = editor.at(event.position);
-        let edge = f64::from(EDGE / editor.pixels_per_beat);
+        let zoom = self.notes_view.zoom;
+        let (beat, pitch) = editor.at(event.position, zoom);
+        let edge = f64::from(EDGE / zoom.pixels_per_beat);
         let notes = clip.notes.clone();
         let hit = note_edit::hit(&notes, beat, pitch, edge);
         let (node, tool) = (editor.node, editor.tool);
@@ -381,8 +396,9 @@ impl ProjectView {
         };
         let origin = editor.velocity.get().origin;
         let x = (event.position.x - origin.x) / px(1.);
-        let tolerance = 6. / editor.pixels_per_beat;
-        let beat = f64::from(x / editor.pixels_per_beat);
+        let ppb = self.notes_view.zoom.pixels_per_beat;
+        let tolerance = 6. / ppb;
+        let beat = f64::from(x / ppb);
         let found = clip
             .notes
             .iter()
@@ -423,9 +439,10 @@ impl ProjectView {
         if editor.drag.is_none() {
             return false;
         }
-        let ppb = editor.pixels_per_beat;
+        let zoom = self.notes_view.zoom;
+        let ppb = zoom.pixels_per_beat;
         let beats = |dx: Pixels| Ticks::from_beats_f64(f64::from(dx / px(1.) / ppb));
-        let (_, pointer_pitch) = editor.at(position);
+        let (_, pointer_pitch) = editor.at(position, zoom);
         let Some(drag) = &mut editor.drag else {
             return false;
         };
@@ -539,8 +556,9 @@ impl ProjectView {
         };
         let preview = editor.preview.take();
         if let NoteDrag::Box { from, to, original } = drag {
-            let (b0, p0) = editor.at(from);
-            let (b1, p1) = editor.at(to);
+            let zoom = self.notes_view.zoom;
+            let (b0, p0) = editor.at(from, zoom);
+            let (b1, p1) = editor.at(to, zoom);
             if let Some((_, clip)) = self.editor_clip() {
                 let mut chosen = note_edit::in_box(&clip.notes, b0, b1, p0, p1);
                 chosen.extend(original);
@@ -560,8 +578,9 @@ impl ProjectView {
         let Some(NoteDrag::Box { from, to, original }) = &editor.drag else {
             return None;
         };
-        let (b0, p0) = editor.at(*from);
-        let (b1, p1) = editor.at(*to);
+        let zoom = self.notes_view.zoom;
+        let (b0, p0) = editor.at(*from, zoom);
+        let (b1, p1) = editor.at(*to, zoom);
         let mut chosen = note_edit::in_box(notes, b0, b1, p0, p1);
         chosen.extend(original.iter().copied());
         Some(chosen)
@@ -655,7 +674,9 @@ impl ProjectView {
         let snapshot = self.session.snapshot();
         let node = snapshot.node(editor.node)?;
         let colors = theme.content(node.color);
-        let ppb = editor.pixels_per_beat;
+        let zoom = self.notes_view.zoom;
+        let ppb = zoom.pixels_per_beat;
+        let key = zoom.row_height;
         let shown_notes: Vec<MidiNote> = editor
             .preview
             .as_ref()
@@ -668,8 +689,8 @@ impl ProjectView {
             .unwrap_or_else(|| editor.selection.clone());
         let clip_beats = clip.length.as_beats() as f32;
         let width = (clip_beats + 4.) * ppb;
-        let height = 128. * KEY_HEIGHT;
-        let offset = editor.scroll.offset();
+        let height = 128. * key;
+        let offset = self.notes_view.x.offset();
         let position = self.session.position_beats() - clip.start.as_beats();
 
         // Slides up when opened.
@@ -694,7 +715,6 @@ impl ProjectView {
                 .tooltip(tooltip::text(hint))
                 .on_click(cx.listener(move |this, _, _, _| this.set_note_tool(tool)))
         };
-        let zoom = ((ppb / MIN_ZOOM).ln() / (MAX_ZOOM / MIN_ZOOM).ln()).clamp(0., 1.);
         let header = div()
             .h(px(HEADER_HEIGHT))
             .flex_none()
@@ -718,22 +738,7 @@ impl ProjectView {
             .child(tool_button("tool-scissors", Icon::Scissors, Tool::Scissors, "Scissors (3): click a note to split it"))
             .child(div().flex_1())
             .child(div().text_size(px(12.)).child(self.render_snap(true, theme, cx)))
-            .child(div().w(px(10.)))
-            .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(theme.text_tertiary)
-                    .child("Zoom"),
-            )
-            .child(
-                slider::slider("note-zoom", Axis::Horizontal, zoom, 90., false, theme)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, _| {
-                            this.start_note_zoom(event.position);
-                        }),
-                    ),
-            )
+            .child(div().w(px(6.)))
             .child(
                 small_button("note-editor-close", theme)
                     .child(icon(Icon::Close, theme.text_secondary, 13.))
@@ -761,17 +766,14 @@ impl ProjectView {
                 let origin = bounds.origin;
                 for pitch in 0..=127u8 {
                     if is_black(pitch) {
-                        let y = (127 - pitch) as f32 * KEY_HEIGHT;
+                        let y = (127 - pitch) as f32 * key;
                         window.paint_quad(fill(
-                            Bounds::new(
-                                origin + point(px(0.), px(y)),
-                                size(px(width), px(KEY_HEIGHT)),
-                            ),
+                            Bounds::new(origin + point(px(0.), px(y)), size(px(width), px(key))),
                             black,
                         ));
                     }
                     if pitch % 12 == 0 {
-                        let y = (128 - pitch) as f32 * KEY_HEIGHT - 1.;
+                        let y = (128 - pitch) as f32 * key - 1.;
                         window.paint_quad(fill(
                             Bounds::new(origin + point(px(0.), px(y)), size(px(width), px(1.))),
                             bar_line,
@@ -839,9 +841,9 @@ impl ProjectView {
             div()
                 .absolute()
                 .left(px(n.start.as_beats() as f32 * ppb))
-                .top(px((127 - n.pitch) as f32 * KEY_HEIGHT + 1.))
+                .top(px((127 - n.pitch) as f32 * key + 1.))
                 .w(px(w))
-                .h(px(KEY_HEIGHT - 2.))
+                .h(px(key - 2.))
                 .rounded(px(2.))
                 .bg(body)
                 .when(edges, |d| d.child(zone(true)).child(zone(false)))
@@ -898,7 +900,7 @@ impl ProjectView {
             .min_w_0()
             .min_h_0()
             .overflow_scroll()
-            .track_scroll(&editor.scroll)
+            .track_scroll(&self.notes_view.x)
             .child(
                 div()
                     .id("note-grid")
@@ -923,7 +925,7 @@ impl ProjectView {
             let label = (pitch % 12 == 0).then(|| note_name(pitch));
             div()
                 .id(("key", usize::from(pitch)))
-                .h(px(KEY_HEIGHT))
+                .h(px(key))
                 .flex()
                 .items_center()
                 .justify_end()
@@ -1062,6 +1064,18 @@ impl ProjectView {
                 ),
             );
 
+        // Arrange's frame: scrollbars with the zoom sliders at their ends.
+        let body = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(ruler)
+            .child(div().flex_1().min_h_0().flex().child(keyboard).child(grid))
+            .child(velocity)
+            .into_any_element();
+        let frame = self.timeline_frame(Timeline::Notes, body, KEYS_WIDTH, theme, cx);
+
         let mut handle_hover = theme.accent;
         handle_hover.a = 0.35;
         let handle = div()
@@ -1098,9 +1112,7 @@ impl ProjectView {
                 .border_t_1()
                 .border_color(theme.edge)
                 .child(header)
-                .child(ruler)
-                .child(div().flex_1().min_h_0().flex().child(keyboard).child(grid))
-                .child(velocity)
+                .child(frame)
                 .child(handle)
                 .into_any_element(),
         )
@@ -1114,14 +1126,15 @@ impl ProjectView {
         if editor.fitted {
             return;
         }
-        let view = editor.scroll.bounds();
+        let view = self.notes_view.x.bounds();
         if view.size.width <= px(1.) {
             return;
         }
         let view_width = view.size.width / px(1.);
         let view_height = view.size.height / px(1.);
-        let ppb =
-            ((view_width - 20.) / (clip.length.as_beats() as f32 + 1.)).clamp(MIN_ZOOM, MAX_ZOOM);
+        let ppb = ((view_width - 20.) / (clip.length.as_beats() as f32 + 1.))
+            .clamp(FIT_ZOOM.0, FIT_ZOOM.1);
+        let key = self.notes_view.zoom.row_height;
         let middle = if clip.notes.is_empty() {
             60.
         } else {
@@ -1131,30 +1144,12 @@ impl ProjectView {
                 .fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
             (f32::from(low) + f32::from(high)) / 2.
         };
-        let y = ((127. - middle) * KEY_HEIGHT - view_height / 2.).max(0.);
+        let y = ((127. - middle) * key - view_height / 2.).max(0.);
+        self.notes_view.zoom.pixels_per_beat = ppb;
+        self.notes_view.x.set_offset(point(px(0.), px(-y)));
         if let Some(editor) = &mut self.note_editor {
-            editor.pixels_per_beat = ppb;
-            editor.scroll.set_offset(point(px(0.), px(-y)));
             editor.fitted = true;
         }
-    }
-
-    fn start_note_zoom(&mut self, at: Point<Pixels>) {
-        if let Some(editor) = &self.note_editor {
-            self.note_zoom_drag = Some((at.x, editor.pixels_per_beat));
-        }
-    }
-
-    /// Follows the zoom slider; false if it is not being dragged.
-    pub(crate) fn drag_note_zoom(&mut self, position: Point<Pixels>) -> bool {
-        let Some((origin, original)) = self.note_zoom_drag else {
-            return false;
-        };
-        if let Some(editor) = &mut self.note_editor {
-            let dx = (position.x - origin) / px(1.);
-            editor.pixels_per_beat = (original * (dx / 60.).exp2()).clamp(MIN_ZOOM, MAX_ZOOM);
-        }
-        true
     }
 }
 
@@ -1175,7 +1170,7 @@ mod tests {
             point(px(100.), px(50.)),
             size(px(1000.), px(1536.)),
         ));
-        let (beat, pitch) = editor.at(point(px(100. + 96.), px(50. + 5.5 * KEY_HEIGHT)));
+        let (beat, pitch) = editor.at(point(px(100. + 96.), px(50. + 5.5 * 12.)), DEFAULT_ZOOM);
         assert!((beat - 2.).abs() < 1e-6, "48 px per beat");
         assert_eq!(pitch, 122);
     }

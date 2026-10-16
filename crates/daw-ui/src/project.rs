@@ -111,8 +111,6 @@ pub struct ProjectView {
     pub(crate) note_preview: Option<(NodeId, u8, std::time::Instant)>,
     /// Notes copied in the editor.
     pub(crate) note_clipboard: Vec<daw_engine::MidiNote>,
-    /// The editor's zoom slider being dragged: where it began, and the zoom.
-    pub(crate) note_zoom_drag: Option<(gpui::Pixels, f32)>,
     /// Clips selected on Arrange.
     pub(crate) selected_clips: std::collections::BTreeSet<daw_engine::ClipId>,
     /// Clips being dragged on Arrange; one edit on release.
@@ -149,6 +147,8 @@ pub struct ProjectView {
     pub(crate) arrange_view: TimelineView,
     pub(crate) parameters_view: TimelineView,
     pub(crate) signals_view: TimelineView,
+    /// The piano roll's zoom and scroll.
+    pub(crate) notes_view: TimelineView,
     /// A layer just jumped to from elsewhere, highlighted briefly so it is
     /// easy to spot.
     pub(crate) highlight: Option<(LayerId, std::time::Instant)>,
@@ -219,7 +219,6 @@ impl ProjectView {
             note_editor: None,
             note_preview: None,
             note_clipboard: Vec::new(),
-            note_zoom_drag: None,
             clip_drag: None,
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
@@ -234,6 +233,7 @@ impl ProjectView {
             arrange_view: TimelineView::new(Zoom::new(PIXELS_PER_BEAT, 56.)),
             parameters_view: TimelineView::new(DEFAULT_ZOOM),
             signals_view: TimelineView::new(crate::signals::DEFAULT_ZOOM),
+            notes_view: TimelineView::shared(crate::piano_roll::DEFAULT_ZOOM),
             highlight: None,
             signal_highlight: None,
             selected_signal: None,
@@ -521,7 +521,6 @@ impl ProjectView {
             || self.clip_drag.is_some()
             || self.mixer_drag.is_some()
             || self.note_editor.as_ref().is_some_and(|e| e.dragging())
-            || self.note_zoom_drag.is_some()
     }
 
     /// While something is being dragged, follows the mouse anywhere in the

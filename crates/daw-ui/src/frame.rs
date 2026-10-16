@@ -58,6 +58,8 @@ pub enum Timeline {
     Arrange,
     Parameters,
     Signals,
+    /// The piano roll in the bottom panel.
+    Notes,
 }
 
 /// A timeline page's view state: zoom, scroll areas and where its
@@ -78,6 +80,18 @@ impl TimelineView {
             zoom,
             x: ScrollHandle::new(),
             y: ScrollHandle::new(),
+            track_x: Rc::default(),
+            track_y: Rc::default(),
+        }
+    }
+
+    /// One scroll area for both axes (the piano roll's grid).
+    pub fn shared(zoom: Zoom) -> Self {
+        let scroll = ScrollHandle::new();
+        Self {
+            zoom,
+            x: scroll.clone(),
+            y: scroll,
             track_x: Rc::default(),
             track_y: Rc::default(),
         }
@@ -115,6 +129,7 @@ impl ProjectView {
             Timeline::Arrange => &self.arrange_view,
             Timeline::Parameters => &self.parameters_view,
             Timeline::Signals => &self.signals_view,
+            Timeline::Notes => &self.notes_view,
         }
     }
 
@@ -123,6 +138,7 @@ impl ProjectView {
             Timeline::Arrange => &mut self.arrange_view,
             Timeline::Parameters => &mut self.parameters_view,
             Timeline::Signals => &mut self.signals_view,
+            Timeline::Notes => &mut self.notes_view,
         }
     }
 
@@ -199,6 +215,8 @@ impl ProjectView {
             (Timeline::Parameters, Axis::Vertical) => "parameters-scroll-y",
             (Timeline::Signals, Axis::Horizontal) => "signals-scroll-x",
             (Timeline::Signals, Axis::Vertical) => "signals-scroll-y",
+            (Timeline::Notes, Axis::Horizontal) => "notes-scroll-x",
+            (Timeline::Notes, Axis::Vertical) => "notes-scroll-y",
         };
         scroll::scrollbar(id, axis, extent, active, theme)
             .child(
@@ -246,6 +264,8 @@ impl ProjectView {
             (Timeline::Parameters, Axis::Vertical) => "parameters-zoom-y",
             (Timeline::Signals, Axis::Horizontal) => "signals-zoom-x",
             (Timeline::Signals, Axis::Vertical) => "signals-zoom-y",
+            (Timeline::Notes, Axis::Horizontal) => "notes-zoom-x",
+            (Timeline::Notes, Axis::Vertical) => "notes-zoom-y",
         };
         let position = self.timeline(timeline).zoom.position(zoom_axis);
         zoom::slider(id, zoom_axis, position, active, theme).on_mouse_down(
@@ -268,6 +288,8 @@ impl ProjectView {
     /// otherwise the middle of the view.
     pub(crate) fn drag_frame(&mut self, position: Point<Pixels>) -> bool {
         let playhead_beats = self.session.position_beats() as f32;
+        // The piano roll's time starts at its clip.
+        let clip_start = self.note_editor_start().unwrap_or(0.);
         match self.frame_drag {
             None => false,
             Some(FrameDrag::Scroll(timeline, drag)) => {
@@ -281,7 +303,20 @@ impl ProjectView {
             }
             Some(FrameDrag::Zoom(timeline, drag)) => {
                 let zoom = drag.zoom_at(position);
+                let playhead_beats = if timeline == Timeline::Notes {
+                    playhead_beats - clip_start
+                } else {
+                    playhead_beats
+                };
                 let view = self.timeline_mut(timeline);
+                // The piano roll's keys zoom about the middle of the view.
+                let old_key = view.zoom.row_height;
+                if timeline == Timeline::Notes && zoom.row_height != old_key {
+                    let extent = Extent::of(&view.y, Axis::Vertical);
+                    let middle = extent.view / 2.;
+                    let scrolled = keep_anchor(extent.scrolled, middle, old_key, zoom.row_height);
+                    scroll::scroll_to(&view.y, Axis::Vertical, scrolled);
+                }
                 let old = view.zoom.pixels_per_beat;
                 if zoom.pixels_per_beat != old {
                     let extent = Extent::of(&view.x, Axis::Horizontal);

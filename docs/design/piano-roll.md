@@ -4,8 +4,9 @@
 
 ## Panel
 
-- **Opening:** double-click a clip on Arrange. The panel slides up from the bottom (about 0.2 s), resizes from its top edge (at least 160 px), and closes with × in its header. It belongs to Arrange.
-- **Header:** colour dot and "<node> · notes", the tools (select, pen, scissors), the grid picker, a zoom slider, ×.
+- **Opening:** double-click a clip on Arrange. The panel slides up from the bottom (about 0.2 s), resizes from its top edge (at least 160 px), and closes with × in its header. It belongs to Arrange. Double-clicking the clip already open does nothing; another clip swaps in without sliding again (user, 2026-10-16).
+- **Header:** colour dot and "<node> · notes", the tools (select, pen, scissors), the grid picker, ×.
+- **Scroll and zoom:** the same frame as Arrange (`frame.rs`, `Timeline::Notes`): a vertical scrollbar with the key-height zoom at its foot, and a horizontal scrollbar with the time zoom at its end (user: "the same zoom tools as the arranger"). Keys range 6 to 40 px (12 to start) and zoom about the middle of the view; time zoom holds the playhead still when it is in view. One scroll area serves both axes (`TimelineView::shared`).
 - **Grid:** the editor has its own snap or slide and grid (1 Bar to 1/64, starting at 1/16), set with the same chip and panel as Arrange's (user, 2026-10-16: "a grid 1 bar, 1/4, 1/8, 1/16 etc and slide mode same as arranger has"). The grid draws a line at every step while they are at least 6 px apart, beats stronger, bars strongest. New notes are one grid step long; left and right nudge by a step.
 - **Body:** a ruler (song bars), a keyboard down the left (white and black keys from the `key_white` / `key_black` theme tokens; C notes labelled, middle C = C3; click a key to hear it), the grid (black-key rows shaded, octave and beat lines, the area after the clip's end dimmed), and a velocity lane along the bottom. The keyboard, ruler and velocity lane follow the grid's scroll. On opening, the zoom fits the clip and the view centres on its notes.
 
