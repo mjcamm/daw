@@ -1,6 +1,6 @@
 //! The header bar: song details, page tabs, then the transport.
 
-use crate::block_edit::Grid;
+use crate::block_edit::{Grid, Snap};
 use crate::icons::{Icon, icon};
 use crate::layout::format_position;
 use crate::menu::{self, OpenMenu};
@@ -70,7 +70,7 @@ impl ProjectView {
             .child(song)
             .child(self.render_tabs(theme, cx))
             .child(div().flex_1())
-            .child(self.render_snap(theme, cx))
+            .child(self.render_snap(false, theme, cx))
             .child(self.render_transport(theme, cx))
     }
 
@@ -169,13 +169,28 @@ impl ProjectView {
 }
 
 impl ProjectView {
-    /// Snap or slide for block edits: a chip that opens a small panel.
-    fn render_snap(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let snap = self.snap;
-        let open = self.open_menu == Some(OpenMenu::Snap);
+    fn snap_setting(&mut self, notes: bool) -> &mut Snap {
+        if notes {
+            &mut self.note_grid
+        } else {
+            &mut self.snap
+        }
+    }
+
+    /// Snap or slide and the grid: a chip that opens a small panel. Arrange
+    /// has one in the header, the piano roll its own (`notes`).
+    pub(crate) fn render_snap(
+        &self,
+        notes: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let snap = if notes { self.note_grid } else { self.snap };
+        let menu = OpenMenu::Snap { notes };
+        let open = self.open_menu == Some(menu);
         let hover = theme.hover;
         let chip = div()
-            .id("snap")
+            .id(if notes { "note-snap" } else { "snap" })
             .flex()
             .items_center()
             .gap(px(5.))
@@ -201,17 +216,24 @@ impl ProjectView {
                     .child(snap.label()),
             )
             .child(icon(Icon::ChevronDown, theme.text_tertiary, 11.))
-            .on_click(cx.listener(|this, _, _, _| this.toggle_menu(OpenMenu::Snap)));
+            .on_click(cx.listener(move |this, _, _, _| this.toggle_menu(menu)));
         div()
             .relative()
             .flex()
             .flex_col()
             .child(chip)
-            .when(open, |d| d.child(self.render_snap_panel(theme, cx)))
+            .when(open, |d| {
+                d.child(self.render_snap_panel(notes, snap, theme, cx))
+            })
     }
 
-    fn render_snap_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let snap = self.snap;
+    fn render_snap_panel(
+        &self,
+        notes: bool,
+        snap: Snap,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let segment = |id: &'static str, label: &'static str, selected: bool| {
             div()
                 .id(id)
@@ -237,26 +259,37 @@ impl ProjectView {
             .bg(theme.control)
             .text_size(px(12.))
             .child(
-                segment("snap-on", "Snap", snap.enabled)
-                    .on_click(cx.listener(|this, _, _, _| this.snap.enabled = true)),
+                segment("snap-on", "Snap", snap.enabled).on_click(cx.listener(
+                    move |this, _, _, _| {
+                        this.snap_setting(notes).enabled = true;
+                    },
+                )),
             )
             .child(
-                segment("snap-off", "Slide", !snap.enabled)
-                    .on_click(cx.listener(|this, _, _, _| this.snap.enabled = false)),
+                segment("snap-off", "Slide", !snap.enabled).on_click(cx.listener(
+                    move |this, _, _, _| {
+                        this.snap_setting(notes).enabled = false;
+                    },
+                )),
             );
         let grids = Grid::ALL.map(|grid| {
             let current = snap.enabled && snap.grid == grid;
             menu::item(
                 theme,
-                ("snap-grid", grid as usize),
+                (
+                    if notes { "note-snap-grid" } else { "snap-grid" },
+                    grid as usize,
+                ),
                 grid.label(),
                 if current { "✓" } else { "" },
             )
             .when(!snap.enabled, |d| d.text_color(theme.text_tertiary))
             .on_click(cx.listener(move |this, _, _, _| {
                 // Picking a grid while sliding switches snapping back on.
-                this.snap.enabled = true;
-                this.snap.grid = grid;
+                *this.snap_setting(notes) = Snap {
+                    enabled: true,
+                    grid,
+                };
                 this.open_menu = None;
             }))
         });

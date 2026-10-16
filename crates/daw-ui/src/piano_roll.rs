@@ -32,8 +32,12 @@ const RULER_HEIGHT: f32 = 18.;
 const KEYS_WIDTH: f32 = 52.;
 const VELOCITY_HEIGHT: f32 = 56.;
 const KEY_HEIGHT: f32 = 12.;
-/// Within this many pixels of a note's end, a press resizes it.
-const EDGE: f32 = 5.;
+/// Within this many pixels of a note's end, a press resizes it (at most a
+/// third of the note, so short notes can still be moved).
+const EDGE: f32 = 4.;
+/// A press on a note moves or resizes it only once the pointer has
+/// travelled this far, so a click never nudges it.
+const DEAD_ZONE: f32 = 3.;
 /// How long a previewed note sounds.
 const PREVIEW_TIME: Duration = Duration::from_millis(280);
 const MIN_ZOOM: f32 = 8.;
@@ -232,14 +236,14 @@ impl ProjectView {
     /// The grid step for new notes and snapping.
     fn note_snap(&self, flip: bool) -> crate::block_edit::Snap {
         if flip {
-            self.snap.inverted()
+            self.note_grid.inverted()
         } else {
-            self.snap
+            self.note_grid
         }
     }
 
     fn grid_length(&self) -> Ticks {
-        self.snap.grid.ticks().max(note_edit::MIN_LENGTH)
+        self.note_grid.grid.ticks().max(note_edit::MIN_LENGTH)
     }
 
     /// A press on the grid, with the current tool.
@@ -416,11 +420,19 @@ impl ProjectView {
         let Some(editor) = &mut self.note_editor else {
             return false;
         };
+        if editor.drag.is_none() {
+            return false;
+        }
+        let ppb = editor.pixels_per_beat;
+        let beats = |dx: Pixels| Ticks::from_beats_f64(f64::from(dx / px(1.) / ppb));
+        let (_, pointer_pitch) = editor.at(position);
         let Some(drag) = &mut editor.drag else {
             return false;
         };
-        let ppb = editor.pixels_per_beat;
-        let beats = |dx: Pixels| Ticks::from_beats_f64(f64::from(dx / px(1.) / ppb));
+        let still = |origin: Point<Pixels>| {
+            let d = position - origin;
+            (d.x / px(1.)).abs() < DEAD_ZONE && (d.y / px(1.)).abs() < DEAD_ZONE
+        };
         let mut sound = None;
         match drag {
             NoteDrag::Move {
@@ -432,9 +444,14 @@ impl ProjectView {
                 shift,
             } => {
                 *copy = modifiers.secondary();
+                if editor.preview.is_none() && still(*origin) {
+                    return true;
+                }
                 let anchor = original[*grabbed];
+                // The grabbed note's start lands on the grid; its pitch is
+                // the row under the pointer.
                 let dt = snap.round(anchor.start + beats(position.x - origin.x)) - anchor.start;
-                let dpitch = -((position.y - origin.y) / px(1.) / KEY_HEIGHT).round() as i32;
+                let dpitch = i32::from(pointer_pitch) - i32::from(anchor.pitch);
                 let (notes, chosen) = if *copy {
                     note_edit::copied(original, selection, dt, dpitch)
                 } else {
@@ -466,6 +483,9 @@ impl ProjectView {
                 original,
                 selection,
             } => {
+                if editor.preview.is_none() && still(*origin) {
+                    return true;
+                }
                 let anchor = original[*grabbed];
                 let notes = if *part == Part::End {
                     let edge = anchor.start + anchor.length;
@@ -697,6 +717,8 @@ impl ProjectView {
             .child(tool_button("tool-pen", Icon::Pencil, Tool::Pen, "Pen (2): click to add a note and drag its length, click a note to delete it"))
             .child(tool_button("tool-scissors", Icon::Scissors, Tool::Scissors, "Scissors (3): click a note to split it"))
             .child(div().flex_1())
+            .child(div().text_size(px(12.)).child(self.render_snap(true, theme, cx)))
+            .child(div().w(px(10.)))
             .child(
                 div()
                     .text_size(px(10.))
@@ -722,6 +744,9 @@ impl ProjectView {
         // The grid: rows (black keys darker), beat lines, the clip's span,
         // notes, the playhead and a box selection.
         let grid_cell = editor.grid.clone();
+        let step_beats = self.note_grid.grid.ticks().as_beats() as f32;
+        let mut beat_line = theme.grid;
+        beat_line.a *= 2.2;
         let (black, line, bar_line, outside) = {
             let mut black = theme.control;
             black.a *= 0.6;
@@ -753,12 +778,27 @@ impl ProjectView {
                         ));
                     }
                 }
-                let beats = (width / ppb).ceil() as i32;
-                for beat in 0..=beats {
-                    let x = beat as f32 * ppb;
+                // Lines at every grid step (when at least 6 px apart), beats
+                // stronger, bars strongest.
+                let step = if step_beats * ppb >= 6. {
+                    step_beats
+                } else {
+                    1.
+                };
+                let steps = (width / ppb / step).ceil() as i32;
+                for k in 0..=steps {
+                    let beat = k as f32 * step;
+                    let x = beat * ppb;
+                    let color = if beat % 4. == 0. {
+                        bar_line
+                    } else if beat.fract() == 0. {
+                        beat_line
+                    } else {
+                        line
+                    };
                     window.paint_quad(fill(
                         Bounds::new(origin + point(px(x), px(0.)), size(px(1.), px(height))),
-                        if beat % 4 == 0 { bar_line } else { line },
+                        color,
                     ));
                 }
                 window.paint_quad(fill(
@@ -774,8 +814,21 @@ impl ProjectView {
         .size_full();
         let mut selected_fill = theme.accent;
         selected_fill.a = 0.85;
+        let edges = editor.tool == Tool::Select;
         let notes = shown_notes.iter().enumerate().map(|(i, n)| {
             let selected = selection.contains(&i);
+            let w = (n.length.as_beats() as f32 * ppb - 1.).max(3.);
+            let edge = EDGE.min(w / 3.);
+            let zone = |left: bool| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(edge))
+                    .when(left, |d| d.left_0())
+                    .when(!left, |d| d.right_0())
+                    .cursor_ew_resize()
+            };
             let shade = 0.45 + 0.55 * f32::from(n.velocity) / 127.;
             let mut body = if selected {
                 selected_fill
@@ -787,10 +840,11 @@ impl ProjectView {
                 .absolute()
                 .left(px(n.start.as_beats() as f32 * ppb))
                 .top(px((127 - n.pitch) as f32 * KEY_HEIGHT + 1.))
-                .w(px((n.length.as_beats() as f32 * ppb - 1.).max(3.)))
+                .w(px(w))
                 .h(px(KEY_HEIGHT - 2.))
                 .rounded(px(2.))
                 .bg(body)
+                .when(edges, |d| d.child(zone(true)).child(zone(false)))
                 .border_1()
                 .border_color(if selected {
                     theme.accent
@@ -837,6 +891,7 @@ impl ProjectView {
             _ => None,
         };
         let cursor_tool = editor.tool;
+        let resizing = matches!(editor.drag, Some(NoteDrag::Resize { .. }));
         let grid = div()
             .id("note-grid-scroll")
             .flex_1()
@@ -851,6 +906,7 @@ impl ProjectView {
                     .w(px(width))
                     .h(px(height))
                     .when(cursor_tool == Tool::Pen, |d| d.cursor_crosshair())
+                    .when(resizing, |d| d.cursor_ew_resize())
                     .child(paint)
                     .children(notes.collect::<Vec<_>>())
                     .children(playhead)

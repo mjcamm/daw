@@ -134,6 +134,8 @@ pub struct ProjectView {
     pub(crate) lanes_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Snap or slide for block edits. A UI preference, not project state.
     pub(crate) snap: Snap,
+    /// The piano roll's own snap or slide and grid (finer than Arrange's).
+    pub(crate) note_grid: Snap,
     pub(crate) selected_block: Option<BlockId>,
     /// A block being dragged, shown as a preview until the mouse is
     /// released; then it becomes one edit.
@@ -221,6 +223,10 @@ impl ProjectView {
             clip_drag: None,
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
+            note_grid: Snap {
+                enabled: true,
+                grid: crate::block_edit::Grid::Sixteenth,
+            },
             selected_block: None,
             block_drag: None,
             base_drag: None,

@@ -17,8 +17,9 @@ pub enum OpenMenu {
     AddLayer(daw_engine::ParamId),
     /// A layer's blend mode.
     BlendMode(daw_engine::LayerId),
-    /// Snap or slide, and the snap grid.
-    Snap,
+    /// Snap or slide, and the snap grid: Arrange's (`notes: false`) or the
+    /// piano roll's.
+    Snap { notes: bool },
     /// A signal's colour swatches.
     SignalColor(daw_engine::SignalId),
     /// The layers listening to a signal.

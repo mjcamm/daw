@@ -5,7 +5,8 @@
 ## Panel
 
 - **Opening:** double-click a clip on Arrange. The panel slides up from the bottom (about 0.2 s), resizes from its top edge (at least 160 px), and closes with × in its header. It belongs to Arrange.
-- **Header:** colour dot and "<node> · notes", the tools (select, pen, scissors), a zoom slider, ×.
+- **Header:** colour dot and "<node> · notes", the tools (select, pen, scissors), the grid picker, a zoom slider, ×.
+- **Grid:** the editor has its own snap or slide and grid (1 Bar to 1/64, starting at 1/16), set with the same chip and panel as Arrange's (user, 2026-10-16: "a grid 1 bar, 1/4, 1/8, 1/16 etc and slide mode same as arranger has"). The grid draws a line at every step while they are at least 6 px apart, beats stronger, bars strongest. New notes are one grid step long; left and right nudge by a step.
 - **Body:** a ruler (song bars), a keyboard down the left (white and black keys from the `key_white` / `key_black` theme tokens; C notes labelled, middle C = C3; click a key to hear it), the grid (black-key rows shaded, octave and beat lines, the area after the clip's end dimmed), and a velocity lane along the bottom. The keyboard, ruler and velocity lane follow the grid's scroll. On opening, the zoom fits the clip and the view centres on its notes.
 
 ## Tools
@@ -20,5 +21,7 @@ Also: Delete removes the selected notes (before clips or nodes); up and down mov
 
 ## Feel
 
+- **Moving:** press a note and drag. Nothing moves until the pointer has travelled 3 px, so a click only selects. The grabbed note's start lands on the grid (or slides), and its pitch is the row under the pointer.
+- **Resizing:** the outer 4 px at each end of a note (at most a third of a short note) show a sideways cursor and resize that end; the cursor stays sideways for the whole drag.
 - **Hearing notes:** adding a note, moving notes to a new pitch, nudging pitch and clicking a key play the note for about 0.3 s through the node's instruments (`Command::PreviewNote`, not part of the song or undo).
 - **Undo:** each gesture is one `Edit::SetClip`.
