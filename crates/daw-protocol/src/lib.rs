@@ -33,6 +33,14 @@ pub enum Command {
     Undo,
     /// Reapply the most recently undone edit.
     Redo,
+    /// Start (`on`) or end a note played straight away on a node's
+    /// instruments, to hear it while editing. Not part of the song or undo.
+    PreviewNote {
+        node: NodeId,
+        pitch: u8,
+        velocity: u8,
+        on: bool,
+    },
 }
 
 /// An undoable change to the project.

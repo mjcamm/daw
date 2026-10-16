@@ -266,6 +266,38 @@ fn layered_instruments_all_play_every_note() {
 }
 
 #[test]
+fn previewed_notes_sound_while_stopped_and_stop_when_released() {
+    let (mut engine, mut processor) = new_engine();
+    let preview = |on: bool| Command::PreviewNote {
+        node: FIRST_NODE,
+        pitch: 60,
+        velocity: 100,
+        on,
+    };
+    engine.apply(preview(true)).unwrap();
+    let held = render(&mut engine, &mut processor, 4800, VARIED_BLOCKS);
+    assert!(
+        held.samples.iter().any(|&s| s != 0.0),
+        "heard while stopped"
+    );
+    engine.apply(preview(false)).unwrap();
+    // The release fades out; well after it, silence.
+    render(&mut engine, &mut processor, 48_000, VARIED_BLOCKS);
+    let after = render(&mut engine, &mut processor, 4800, VARIED_BLOCKS);
+    assert!(after.samples.iter().all(|&s| s == 0.0));
+    assert!(
+        engine
+            .apply(Command::PreviewNote {
+                node: NodeId(99),
+                pitch: 60,
+                velocity: 100,
+                on: true
+            })
+            .is_err()
+    );
+}
+
+#[test]
 fn meters_report_each_node() {
     let (mut engine, mut processor) = new_engine();
     add_folder(&mut engine);

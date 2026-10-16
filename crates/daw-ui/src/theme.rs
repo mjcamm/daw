@@ -41,6 +41,10 @@ pub struct Theme {
     pub scrim: Hsla,
     pub meter_low: Hsla,
     pub meter_high: Hsla,
+    /// The piano roll's keyboard: white and black keys, as on a piano in
+    /// either theme (slightly softened in dark).
+    pub key_white: Hsla,
+    pub key_black: Hsla,
     pub palette: [ContentColor; 9],
     pub muted_content: ContentColor,
 }
@@ -125,6 +129,8 @@ impl Theme {
             scrim: hsla(rgba(0x0000_0080)),
             meter_low: hsla(rgb(0x30D158)),
             meter_high: hsla(rgb(0xFF453A)),
+            key_white: hsla(rgb(0xC8C8CC)),
+            key_black: hsla(rgb(0x1A1A1C)),
             palette: DARK_PALETTE.map(bright),
             muted_content: ContentColor {
                 fill: with_alpha(0x6E6E73, 0.1),
@@ -158,6 +164,8 @@ impl Theme {
             scrim: hsla(rgba(0x0000_0040)),
             meter_low: hsla(rgb(0x34C759)),
             meter_high: hsla(rgb(0xFF3B30)),
+            key_white: hsla(rgb(0xFFFFFF)),
+            key_black: hsla(rgb(0x2C2C2E)),
             palette: LIGHT_PALETTE.map(|(fill, deep)| ContentColor {
                 fill: hsla(rgb(fill)),
                 outline: with_alpha(deep, 0.3),

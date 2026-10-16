@@ -143,6 +143,22 @@ impl Engine {
                 }
                 self.outbox.push_back(AudioMsg::Locate(position.as_beats()));
             }
+            Command::PreviewNote {
+                node,
+                pitch,
+                velocity,
+                on,
+            } => {
+                if self.project.node(node).is_none() {
+                    return Err(CommandError::UnknownNode { id: node });
+                }
+                self.outbox.push_back(AudioMsg::Preview {
+                    node,
+                    pitch: pitch.min(127),
+                    velocity: velocity.clamp(1, 127),
+                    on,
+                });
+            }
             Command::SetLoop(range) => {
                 if let Some(range) = range {
                     check_loop(range)?;

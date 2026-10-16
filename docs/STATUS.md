@@ -24,6 +24,7 @@
 
 ## Model changes worth knowing
 
+- **Piano roll** (2026-10-16, `docs/design/piano-roll.md`): double-click a clip on Arrange for a bottom panel with select, pen and scissors tools, a keyboard, a velocity lane, note preview, and the usual keys. Driven and checked by Claude; not yet tried by the user.
 - **Layered instruments** (file version 8): a MIDI node holds a list of instruments (`Node.instruments`, `DeviceRef::Instrument(DeviceId)`), each playing every note, summed; `AddInstrument`, `RemoveInstrument`, and `SetDeviceEnabled` for instruments and effects alike. Older files' single instrument becomes a list of one. Added on the mixer through the instrument browser.
 - **Node kinds** (2026-10-16, the user's call): every node is MIDI or Audio (`NodeKind`). MIDI clips go on any MIDI node, with or without an instrument; audio nodes take audio clips once they exist; the Song holds no clips. "Folder" is not a type: any node with children is one. Only MIDI nodes have instruments.
 - **Parent first** (the user's call, reversing the earlier "folders below"): on Arrange the Song is at the top and each parent sits above its children; on the mixer each parent strip sits left of its children. Opening slides children out from under the parent; folding slides them back. Map bars start at the parent's row (or strip) with the chevron; while a node is dragged, every row offers a drop slot to nest into it. Map sizes ease as levels come and go.
@@ -58,7 +59,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Known gaps
 
-- No way to write new notes yet (MIDI editing is Phase 9); clips can be moved, copied and resized. Effects are added on the mixer; their settings show only on Parameters for now. No node colour picker yet.
+- New clips can't be made from nothing yet (only moved, copied, resized, and their notes edited in the piano roll). Effects are added on the mixer; their settings show only on Parameters for now. No node colour picker yet.
 - Parameters update every 32 samples (gains ramp, others step); revisit if anything sounds zippery.
 - Reference WAVs in `crates/daw-engine/tests/references/` total about 4 MB; keep new ones short.
 - `docs/gpui-notes.md` holds hard-won GPUI knowledge; add to it.

@@ -47,7 +47,18 @@ pub(crate) enum AudioMsg {
     Locate(f64),
     SetLoop(Option<(f64, f64)>),
     SwapState(Box<RenderState>),
+    /// A note heard straight away while editing.
+    Preview {
+        node: NodeId,
+        pitch: u8,
+        velocity: u8,
+        on: bool,
+    },
 }
+
+/// Preview notes use ids from here up, one per pitch, so they never meet
+/// the song's own notes.
+const PREVIEW_NOTE_IDS: u32 = u32::MAX - 128;
 
 /// Peaks since last read, as `f32` bits. Non-negative floats order the same
 /// as their bits, so `fetch_max` on the bits keeps the louder.
@@ -230,6 +241,24 @@ impl AudioProcessor {
                     self.transport.locate(beats);
                 }
                 AudioMsg::SetLoop(range) => self.transport.set_loop(range),
+                AudioMsg::Preview {
+                    node,
+                    pitch,
+                    velocity,
+                    on,
+                } => {
+                    let player = self.players.iter_mut().find(|p| p.node == Some(node));
+                    if let Some(player) = player {
+                        let id = PREVIEW_NOTE_IDS + u32::from(pitch);
+                        for (_, synth) in &mut player.synths {
+                            if on {
+                                synth.note_on(id, pitch, velocity);
+                            } else {
+                                synth.note_off(id);
+                            }
+                        }
+                    }
+                }
                 AudioMsg::SwapState(state) => {
                     self.transport.set_tempo(state.tempo_bpm);
                     let old = std::mem::replace(&mut self.state, state);

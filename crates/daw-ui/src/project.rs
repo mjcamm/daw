@@ -21,7 +21,26 @@ use std::rc::Rc;
 
 actions!(
     daw,
-    [TogglePlay, Save, Undo, Redo, DeleteSelection, CancelDrag]
+    [
+        TogglePlay,
+        Save,
+        Undo,
+        Redo,
+        DeleteSelection,
+        CancelDrag,
+        ToolSelect,
+        ToolPen,
+        ToolScissors,
+        NudgeUp,
+        NudgeDown,
+        OctaveUp,
+        OctaveDown,
+        NudgeLeft,
+        NudgeRight,
+        SelectAll,
+        CopyNotes,
+        PasteNotes
+    ]
 );
 
 /// The key context of an open project, for its shortcuts.
@@ -86,6 +105,14 @@ pub struct ProjectView {
     pub(crate) selected_node: Option<NodeId>,
     /// Folders folded in the nesting map. UI state, not saved.
     pub(crate) folded: std::collections::HashSet<NodeId>,
+    /// The piano roll in the bottom panel, if a clip is open.
+    pub(crate) note_editor: Option<crate::piano_roll::NoteEditor>,
+    /// A note being heard from the editor, and since when.
+    pub(crate) note_preview: Option<(NodeId, u8, std::time::Instant)>,
+    /// Notes copied in the editor.
+    pub(crate) note_clipboard: Vec<daw_engine::MidiNote>,
+    /// The editor's zoom slider being dragged: where it began, and the zoom.
+    pub(crate) note_zoom_drag: Option<(gpui::Pixels, f32)>,
     /// Clips selected on Arrange.
     pub(crate) selected_clips: std::collections::BTreeSet<daw_engine::ClipId>,
     /// Clips being dragged on Arrange; one edit on release.
@@ -187,6 +214,10 @@ impl ProjectView {
             strip_motion: crate::motion::RowMotion::default(),
             selected_effect: None,
             selected_clips: std::collections::BTreeSet::new(),
+            note_editor: None,
+            note_preview: None,
+            note_clipboard: Vec::new(),
+            note_zoom_drag: None,
             clip_drag: None,
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
@@ -370,8 +401,22 @@ impl Render for ProjectView {
             self.autoscroll_clip_drag();
         }
 
+        self.end_note_preview();
+        // The piano roll slides up under Arrange.
+        let editor = if self.page == Page::Arrange {
+            self.render_note_editor(&theme, cx)
+        } else {
+            None
+        };
         let page = match self.page {
-            Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),
+            Page::Arrange => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(self.render_arrange(&theme, cx))
+                .children(editor)
+                .into_any_element(),
             Page::Parameters if self.shown_node().is_some() => self
                 .render_parameters(&theme, window, cx)
                 .into_any_element(),
@@ -406,6 +451,24 @@ impl Render for ProjectView {
             .on_action(cx.listener(|this, _: &CancelDrag, _, _| {
                 this.cancel_clip_drag();
             }))
+            .on_action(cx.listener(|this, _: &ToolSelect, _, _| {
+                this.set_note_tool(crate::piano_roll::Tool::Select)
+            }))
+            .on_action(cx.listener(|this, _: &ToolPen, _, _| {
+                this.set_note_tool(crate::piano_roll::Tool::Pen)
+            }))
+            .on_action(cx.listener(|this, _: &ToolScissors, _, _| {
+                this.set_note_tool(crate::piano_roll::Tool::Scissors)
+            }))
+            .on_action(cx.listener(|this, _: &NudgeUp, _, _| this.nudge_notes(0, 1)))
+            .on_action(cx.listener(|this, _: &NudgeDown, _, _| this.nudge_notes(0, -1)))
+            .on_action(cx.listener(|this, _: &OctaveUp, _, _| this.nudge_notes(0, 12)))
+            .on_action(cx.listener(|this, _: &OctaveDown, _, _| this.nudge_notes(0, -12)))
+            .on_action(cx.listener(|this, _: &NudgeLeft, _, _| this.nudge_notes(-1, 0)))
+            .on_action(cx.listener(|this, _: &NudgeRight, _, _| this.nudge_notes(1, 0)))
+            .on_action(cx.listener(|this, _: &SelectAll, _, _| this.select_all_notes()))
+            .on_action(cx.listener(|this, _: &CopyNotes, _, _| this.copy_notes()))
+            .on_action(cx.listener(|this, _: &PasteNotes, _, _| this.paste_notes()))
             .child(self.render_header(&theme, cx))
             .children(
                 self.session
@@ -451,6 +514,8 @@ impl ProjectView {
             || self.notes_drag.is_some()
             || self.clip_drag.is_some()
             || self.mixer_drag.is_some()
+            || self.note_editor.as_ref().is_some_and(|e| e.dragging())
+            || self.note_zoom_drag.is_some()
     }
 
     /// While something is being dragged, follows the mouse anywhere in the

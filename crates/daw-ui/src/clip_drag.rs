@@ -325,6 +325,12 @@ impl ProjectView {
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
+                    if event.click_count >= 2 {
+                        // Double-click opens the clip in the piano roll.
+                        this.clip_drag = None;
+                        this.open_note_editor(id);
+                        return;
+                    }
                     this.press_clip(id, Grab::Body, event);
                 }),
             )

@@ -833,6 +833,8 @@ impl ProjectView {
             || self.drag_inspector(position, modifiers.shift)
             || self.drag_clips(position, modifiers)
             || self.drag_mixer(position, modifiers.shift)
+            || self.drag_note_zoom(position)
+            || self.drag_note_editor(position, modifiers)
         {
             return;
         }
@@ -884,6 +886,8 @@ impl ProjectView {
         self.finish_inspector_drag();
         self.finish_clip_drag();
         self.finish_mixer_drag();
+        self.finish_note_drag();
+        self.note_zoom_drag = None;
         if let Some(drag) = self.mix_drag.take()
             && drag.preview != drag.original
         {
@@ -1036,8 +1040,10 @@ impl ProjectView {
             return;
         }
         if self.page == Page::Arrange {
-            // Selected clips go first; with none, the selected node.
-            if !self.delete_clips()
+            // Selected notes in the editor go first, then selected clips;
+            // with neither, the selected node.
+            if !self.delete_notes()
+                && !self.delete_clips()
                 && let Some(id) = self.selected_node
             {
                 self.delete_node(id);

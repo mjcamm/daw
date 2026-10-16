@@ -14,7 +14,9 @@ mod layout;
 mod menu;
 mod mixer;
 mod motion;
+mod note_edit;
 mod parameters;
+mod piano_roll;
 mod project;
 mod scroll;
 mod session;
@@ -31,7 +33,11 @@ use gpui::{
     App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
     px, size,
 };
-use project::{CancelDrag, DeleteSelection, Redo, Save, TogglePlay, Undo};
+use project::{
+    CancelDrag, CopyNotes, DeleteSelection, NudgeDown, NudgeLeft, NudgeRight, NudgeUp, OctaveDown,
+    OctaveUp, PasteNotes, Redo, Save, SelectAll, TogglePlay, ToolPen, ToolScissors, ToolSelect,
+    Undo,
+};
 use theme::Theme;
 
 #[global_allocator]
@@ -52,6 +58,19 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("delete", DeleteSelection, not_typing),
         KeyBinding::new("escape", CancelDrag, not_typing),
         KeyBinding::new("backspace", DeleteSelection, not_typing),
+        // The piano roll, while it is open.
+        KeyBinding::new("1", ToolSelect, not_typing),
+        KeyBinding::new("2", ToolPen, not_typing),
+        KeyBinding::new("3", ToolScissors, not_typing),
+        KeyBinding::new("up", NudgeUp, not_typing),
+        KeyBinding::new("down", NudgeDown, not_typing),
+        KeyBinding::new("shift-up", OctaveUp, not_typing),
+        KeyBinding::new("shift-down", OctaveDown, not_typing),
+        KeyBinding::new("left", NudgeLeft, not_typing),
+        KeyBinding::new("right", NudgeRight, not_typing),
+        KeyBinding::new("secondary-a", SelectAll, not_typing),
+        KeyBinding::new("secondary-c", CopyNotes, not_typing),
+        KeyBinding::new("secondary-v", PasteNotes, not_typing),
     ]
 }
 
