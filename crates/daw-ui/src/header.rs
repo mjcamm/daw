@@ -78,7 +78,7 @@ impl ProjectView {
         let tabs = Page::ALL.map(|page| {
             let selected = page == self.page;
             // Parameters belong to a node, so that page needs one selected.
-            let available = page != Page::Parameters || self.node_selected;
+            let available = page != Page::Parameters || self.shown_node().is_some();
             div()
                 .id(SharedString::from(page.label()))
                 .px(px(12.))

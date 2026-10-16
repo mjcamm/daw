@@ -5,7 +5,7 @@
 use daw_engine::devices::{CHANNEL_PARAMS, channel};
 use daw_engine::{
     AudioProcessor, ClipId, Command, CommandError, DeviceRef, Edit, Engine, EngineConfig,
-    LoopRange, MidiClip, MidiNote, ParamId, Ticks,
+    FIRST_NODE, LoopRange, MidiClip, MidiNote, ParamId, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, assert_reference, render};
 
@@ -38,6 +38,7 @@ fn add_clip(engine: &mut Engine, id: u64, start: f64, length: f64, notes: &[(f64
     };
     engine
         .apply(Command::Edit(Edit::AddClip {
+            node: FIRST_NODE,
             id: ClipId(id),
             clip,
         }))
@@ -260,6 +261,7 @@ fn channel_param(index: u32, plain: f64) -> Edit {
     let info = &CHANNEL_PARAMS[index as usize];
     Edit::SetParam {
         param: ParamId {
+            node: FIRST_NODE,
             device: DeviceRef::Channel,
             index,
         },
@@ -375,14 +377,17 @@ fn snapshot_lists_clips_and_mix_settings() {
     };
     engine.apply(Command::SetLoop(Some(range))).unwrap();
     let snapshot = engine.snapshot();
-    let channel = snapshot.devices.last().unwrap();
+    let channel = snapshot.node(FIRST_NODE).unwrap().devices.last().unwrap();
     assert_eq!(channel.device, DeviceRef::Channel);
     assert_eq!(channel.params[1].display, "R25");
     assert_eq!(snapshot.loop_range, Some(range));
-    assert_eq!(snapshot.clips.len(), 1);
-    assert_eq!(snapshot.clips[0].0, ClipId(5));
-    assert_eq!(snapshot.clips[0].1.start, beats(4.0));
-    assert_eq!(snapshot.clips[0].1.notes.len(), 2);
+    assert_eq!(snapshot.node(FIRST_NODE).unwrap().clips.len(), 1);
+    assert_eq!(snapshot.node(FIRST_NODE).unwrap().clips[0].0, ClipId(5));
+    assert_eq!(
+        snapshot.node(FIRST_NODE).unwrap().clips[0].1.start,
+        beats(4.0)
+    );
+    assert_eq!(snapshot.node(FIRST_NODE).unwrap().clips[0].1.notes.len(), 2);
 }
 
 #[test]
@@ -417,24 +422,39 @@ fn constant_editing_during_playback_stays_realtime_safe() {
 
 #[test]
 fn muting_silences_the_node_and_undo_brings_it_back() {
-    let muted = render_held_note(&[Edit::SetMute { muted: true }], 2);
+    let muted = render_held_note(
+        &[Edit::SetMute {
+            node: FIRST_NODE,
+            muted: true,
+        }],
+        2,
+    );
     assert!(muted.is_silent());
 
     let (mut engine, mut processor) = engine();
     add_clip(&mut engine, 1, 0.0, 4.0, &[(0.0, 4.0, 60)]);
     engine
-        .apply(Command::Edit(Edit::SetMute { muted: true }))
+        .apply(Command::Edit(Edit::SetMute {
+            node: FIRST_NODE,
+            muted: true,
+        }))
         .unwrap();
     engine.apply(Command::Undo).unwrap();
     engine.apply(Command::Play).unwrap();
     let rendered = render(&mut engine, &mut processor, 12_000, VARIED_BLOCKS);
     assert!(peak(&rendered.samples) > 0.01);
-    assert!(!engine.snapshot().node.muted);
+    assert!(!engine.snapshot().node(FIRST_NODE).unwrap().muted);
 }
 
 #[test]
 fn soloing_the_only_node_keeps_it_audible() {
-    let soloed = render_held_note(&[Edit::SetSolo { soloed: true }], 2);
+    let soloed = render_held_note(
+        &[Edit::SetSolo {
+            node: FIRST_NODE,
+            soloed: true,
+        }],
+        2,
+    );
     let normal = render_held_note(&[], 2);
     assert!(soloed == normal);
 }
@@ -457,7 +477,10 @@ fn meter_reports_output_peaks_since_last_read() {
 #[test]
 fn snapshot_describes_the_node() {
     let (engine, _processor) = engine();
-    let node = engine.snapshot().node;
+    let snapshot = engine.snapshot();
+    let node = snapshot.node(FIRST_NODE).unwrap();
     assert_eq!(node.name, "Synth");
     assert!(!node.muted && !node.soloed);
+    assert_eq!(node.parent, Some(daw_engine::NodeId::ROOT));
+    assert_eq!(snapshot.root().children, [FIRST_NODE]);
 }

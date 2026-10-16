@@ -215,6 +215,7 @@ mod tests {
     /// Kicks only, with the given attack, decay, sustain and release (beats).
     fn envelope(attack: f64, decay: f64, sustain: f64, release: f64) -> NotesSource {
         NotesSource {
+            node: daw_protocol::NodeId(1),
             pitch_range: true,
             velocity_clamp: true,
             lowest: KICK,

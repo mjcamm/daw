@@ -5,8 +5,8 @@
 use daw_engine::devices::{channel, filter};
 use daw_engine::{
     AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
-    EffectKind, Engine, EngineConfig, Layer, LayerId, LoopRange, MidiClip, MidiNote, ParamId,
-    ProjectFile, Shape, Ticks,
+    EffectKind, Engine, EngineConfig, FIRST_NODE, Layer, LayerId, LoopRange, MidiClip, MidiNote,
+    ParamId, ProjectFile, Shape, Ticks,
 };
 use daw_testkit::{VARIED_BLOCKS, render};
 
@@ -26,6 +26,7 @@ fn busy_engine() -> (Engine, AudioProcessor) {
     apply(
         &mut engine,
         Edit::AddClip {
+            node: FIRST_NODE,
             id: ClipId(1),
             clip: MidiClip {
                 start: Ticks::ZERO,
@@ -44,6 +45,7 @@ fn busy_engine() -> (Engine, AudioProcessor) {
     apply(
         &mut engine,
         Edit::AddEffect {
+            node: FIRST_NODE,
             id: DeviceId(1),
             index: 0,
             effect: Effect::new(EffectKind::Filter),
@@ -58,6 +60,7 @@ fn busy_engine() -> (Engine, AudioProcessor) {
         &mut engine,
         Edit::AddLayer {
             param: ParamId {
+                node: FIRST_NODE,
                 device: DeviceRef::Effect(DeviceId(1)),
                 index: filter::CUTOFF,
             },
@@ -70,6 +73,7 @@ fn busy_engine() -> (Engine, AudioProcessor) {
         &mut engine,
         Edit::SetParam {
             param: ParamId {
+                node: FIRST_NODE,
                 device: DeviceRef::Channel,
                 index: channel::PAN,
             },

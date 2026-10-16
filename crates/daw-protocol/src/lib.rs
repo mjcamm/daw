@@ -8,7 +8,7 @@ mod automation;
 mod time;
 
 pub use automation::{
-    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Layer, LayerId,
+    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Layer, LayerId, NodeId,
     NotesSource, ParamId, ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
     SignalSource,
 };
@@ -44,25 +44,53 @@ pub enum Edit {
         name: String,
     },
     RenameNode {
+        node: NodeId,
         name: String,
+    },
+    SetNodeColor {
+        node: NodeId,
+        color: u8,
+    },
+    /// Insert a node, with everything in it and under it, as `parent`'s
+    /// child at `index` (0 is first). Every id inside must be unused.
+    AddNode {
+        id: NodeId,
+        parent: NodeId,
+        index: usize,
+        node: Node,
+    },
+    /// Remove a node and everything under it. The Song cannot be removed.
+    RemoveNode {
+        id: NodeId,
+    },
+    /// Move a node (with everything under it) to be `parent`'s child at
+    /// `index`, counted after it has been taken out. Not into itself.
+    MoveNode {
+        id: NodeId,
+        parent: NodeId,
+        index: usize,
     },
     /// Set the song tempo in beats per minute.
     SetTempo {
         bpm: f64,
     },
     AddClip {
+        node: NodeId,
         id: ClipId,
         clip: MidiClip,
     },
     RemoveClip {
         id: ClipId,
     },
-    /// Silence the node.
+    /// Silence the node and everything under it.
     SetMute {
+        node: NodeId,
         muted: bool,
     },
-    /// While any node is soloed, only soloed nodes are heard.
+    /// While any node is soloed, only instruments on soloed nodes, or under
+    /// them, are heard.
     SetSolo {
+        node: NodeId,
         soloed: bool,
     },
     /// Set a parameter's default state (normalized). This is what moving a
@@ -71,8 +99,9 @@ pub enum Edit {
         param: ParamId,
         value: f64,
     },
-    /// Insert an effect into the chain at `index` (0 is first).
+    /// Insert an effect into a node's chain at `index` (0 is first).
     AddEffect {
+        node: NodeId,
         id: DeviceId,
         index: usize,
         effect: Effect,
@@ -164,6 +193,52 @@ pub enum Edit {
     },
 }
 
+/// A node and everything in it, as sent in [`Edit::AddNode`]: one node
+/// type for instruments, folders and the Song alike.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Node {
+    pub name: String,
+    /// Index into the nine-colour content palette.
+    pub color: u8,
+    pub muted: bool,
+    pub soloed: bool,
+    /// The instrument's parameters in index order, or `None` for a node
+    /// that plays no notes (a folder). An empty list means all defaults.
+    pub instrument: Option<Vec<ParamState>>,
+    pub effects: Vec<(DeviceId, Effect)>,
+    /// Volume and pan in index order. An empty list means the defaults.
+    pub channel: Vec<ParamState>,
+    pub clips: std::collections::BTreeMap<ClipId, MidiClip>,
+    /// Children in order; their sound flows into this node.
+    pub children: Vec<(NodeId, Node)>,
+}
+
+impl Node {
+    /// A node with nothing in it and default settings: a folder, or with
+    /// [`Node::with_instrument`] a node that plays notes.
+    pub fn new(name: &str, color: u8) -> Self {
+        Self {
+            name: name.to_owned(),
+            color,
+            muted: false,
+            soloed: false,
+            instrument: None,
+            effects: Vec::new(),
+            channel: Vec::new(),
+            clips: std::collections::BTreeMap::new(),
+            children: Vec::new(),
+        }
+    }
+
+    /// The same node with an instrument at its defaults.
+    pub fn with_instrument(self) -> Self {
+        Self {
+            instrument: Some(Vec::new()),
+            ..self
+        }
+    }
+}
+
 /// Identifies a clip. Chosen by whoever creates the clip.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -210,24 +285,53 @@ pub struct Snapshot {
     /// Transport position in beats, as last reported by the audio side.
     pub position_beats: f64,
     pub loop_range: Option<LoopRange>,
-    pub node: NodeSnapshot,
-    /// Clips in id order.
-    pub clips: Vec<(ClipId, MidiClip)>,
-    /// The node's devices in signal order: instrument, effects, channel.
-    pub devices: Vec<DeviceSnapshot>,
+    /// Every node in tree order: each parent before its children, the Song
+    /// first.
+    pub nodes: Vec<NodeSnapshot>,
     /// Every motion signal, in id order.
     pub signals: Vec<SignalSnapshot>,
     pub can_undo: bool,
     pub can_redo: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NodeSnapshot {
+    pub id: NodeId,
+    /// `None` for the Song.
+    pub parent: Option<NodeId>,
+    /// 0 for the Song, 1 for its children, and so on.
+    pub depth: usize,
+    pub children: Vec<NodeId>,
     pub name: String,
     /// Index into the nine-colour content palette.
     pub color: u8,
     pub muted: bool,
     pub soloed: bool,
+    /// Clips in id order.
+    pub clips: Vec<(ClipId, MidiClip)>,
+    /// Devices in signal order: instrument (if any), effects, channel.
+    pub devices: Vec<DeviceSnapshot>,
+}
+
+impl NodeSnapshot {
+    /// Whether the node plays notes.
+    pub fn has_instrument(&self) -> bool {
+        self.devices
+            .iter()
+            .any(|d| d.device == DeviceRef::Instrument)
+    }
+}
+
+impl Snapshot {
+    /// A node by id.
+    pub fn node(&self, id: NodeId) -> Option<&NodeSnapshot> {
+        self.nodes.iter().find(|n| n.id == id)
+    }
+
+    /// The Song: the root of the tree.
+    pub fn root(&self) -> &NodeSnapshot {
+        &self.nodes[0]
+    }
 }
 
 /// Peak output levels since they were last read, as linear amplitudes.
@@ -370,6 +474,21 @@ pub enum CommandError {
     WrongSignalKind {
         id: SignalId,
     },
+    DuplicateNode {
+        id: NodeId,
+    },
+    UnknownNode {
+        id: NodeId,
+    },
+    /// The Song cannot be removed or moved.
+    RootNode,
+    /// A node cannot move inside itself.
+    NodeInsideItself {
+        id: NodeId,
+    },
+    TooManyNodes {
+        max: usize,
+    },
     /// Colours index the nine-colour content palette.
     ColorOutOfRange {
         color: u8,
@@ -486,6 +605,13 @@ impl fmt::Display for CommandError {
             Self::WrongSignalKind { id } => {
                 write!(f, "signal {} is the wrong kind for this edit", id.0)
             }
+            Self::DuplicateNode { id } => write!(f, "node {} already exists", id.0),
+            Self::UnknownNode { id } => write!(f, "node {} does not exist", id.0),
+            Self::RootNode => f.write_str("the Song cannot be removed or moved"),
+            Self::NodeInsideItself { id } => {
+                write!(f, "node {} cannot move inside itself", id.0)
+            }
+            Self::TooManyNodes { max } => write!(f, "a project holds at most {max} nodes"),
             Self::ColorOutOfRange { color } => write!(f, "colour {color} is not in the palette"),
             Self::EmptyName => f.write_str("names cannot be empty"),
             Self::NothingToUndo => f.write_str("nothing to undo"),

@@ -23,8 +23,8 @@ pub enum OpenMenu {
     SignalColor(daw_engine::SignalId),
     /// The layers listening to a signal.
     SignalUses(daw_engine::SignalId),
-    /// Publishing the node as a signal, and the signals it publishes.
-    NodeSignals,
+    /// Publishing a node as a signal, and the signals it publishes.
+    NodeSignals(daw_engine::NodeId),
 }
 
 /// The floating panel. Place it where the menu should appear; close it with

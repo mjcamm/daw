@@ -9,7 +9,9 @@ use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
 use crate::zoom::Zoom;
-use daw_engine::{BlockId, Command, Edit, LayerId, LoopRange, SignalId};
+use daw_engine::{
+    BlockId, Command, Edit, LayerId, LoopRange, MidiClip, NodeId, NodeSnapshot, SignalId, Snapshot,
+};
 use gpui::{
     Bounds, Context, DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, MouseMoveEvent,
     MouseUpEvent, Pixels, Subscription, Window, actions, canvas, div, prelude::*, px,
@@ -46,7 +48,7 @@ impl Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenameTarget {
     Song,
-    Node,
+    Node(NodeId),
     Layer(LayerId),
     Signal(SignalId),
 }
@@ -77,9 +79,8 @@ pub struct ProjectView {
     /// pressing the menu's own trigger closes it rather than reopening it.
     /// Cleared at the start of every press.
     dismissed_menu: Option<OpenMenu>,
-    /// Whether the node is selected; the Parameters page shows the selected
-    /// node.
-    pub(crate) node_selected: bool,
+    /// The node selected on Arrange; the Parameters page shows it.
+    pub(crate) selected_node: Option<NodeId>,
     /// Where the Parameters page lanes were last drawn: the top-left is
     /// beat 0 of the first row.
     pub(crate) lanes_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -131,7 +132,20 @@ pub struct ProjectView {
 
 impl EventEmitter<ProjectEvent> for ProjectView {}
 
+/// Every clip in the song, on every node.
+pub(crate) fn song_clips(snapshot: &Snapshot) -> impl Iterator<Item = &MidiClip> {
+    snapshot
+        .nodes
+        .iter()
+        .flat_map(|n| n.clips.iter().map(|(_, c)| c))
+}
+
 impl ProjectView {
+    /// The selected node, if it still exists.
+    pub(crate) fn shown_node(&self) -> Option<&NodeSnapshot> {
+        self.session.snapshot().node(self.selected_node?)
+    }
+
     pub fn new(session: Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
@@ -143,7 +157,7 @@ impl ProjectView {
             ruler_bounds: Rc::default(),
             open_menu: None,
             dismissed_menu: None,
-            node_selected: false,
+            selected_node: None,
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
             selected_block: None,
@@ -233,7 +247,10 @@ impl ProjectView {
         let snapshot = self.session.snapshot();
         let current = match target {
             RenameTarget::Song => snapshot.song_name.clone(),
-            RenameTarget::Node => snapshot.node.name.clone(),
+            RenameTarget::Node(id) => snapshot
+                .node(id)
+                .map(|n| n.name.clone())
+                .unwrap_or_default(),
             RenameTarget::Layer(id) => layer_name(snapshot, id),
             RenameTarget::Signal(id) => snapshot
                 .signals
@@ -273,7 +290,7 @@ impl ProjectView {
         if let (Some(rename), Some(name)) = (self.rename.take(), name) {
             let edit = match rename.target {
                 RenameTarget::Song => Edit::RenameSong { name },
-                RenameTarget::Node => Edit::RenameNode { name },
+                RenameTarget::Node(node) => Edit::RenameNode { node, name },
                 RenameTarget::Layer(id) => Edit::RenameLayer { id, name },
                 RenameTarget::Signal(id) => Edit::RenameSignal { id, name },
             };
@@ -307,7 +324,7 @@ impl Render for ProjectView {
 
         let page = match self.page {
             Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),
-            Page::Parameters if self.node_selected => self
+            Page::Parameters if self.shown_node().is_some() => self
                 .render_parameters(&theme, window, cx)
                 .into_any_element(),
             Page::Signals => self.render_signals(&theme, window, cx).into_any_element(),
@@ -421,8 +438,9 @@ impl ProjectView {
 /// The current name of a layer, or empty if it no longer exists.
 fn layer_name(snapshot: &daw_engine::Snapshot, id: LayerId) -> String {
     snapshot
-        .devices
+        .nodes
         .iter()
+        .flat_map(|n| &n.devices)
         .flat_map(|d| &d.params)
         .flat_map(|p| &p.layers)
         .find(|(layer_id, _)| *layer_id == id)

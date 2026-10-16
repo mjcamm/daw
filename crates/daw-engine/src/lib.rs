@@ -24,19 +24,22 @@ pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
     Edit, Effect, EffectKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange,
-    Meter, MidiClip, MidiNote, NodeSnapshot, NotesSource, ParamId, ParamSnapshot, ParamState,
-    Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse,
-    Snapshot, TICKS_PER_BEAT, Ticks,
+    Meter, MidiClip, MidiNote, Node, NodeId, NodeSnapshot, NotesSource, ParamId, ParamSnapshot,
+    ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource,
+    SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
-pub use project::{DEFAULT_TEMPO_BPM, MAX_EFFECTS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Node, Project};
-pub use schedule::{EffectState, RenderState, ScheduledNote};
+pub use project::{
+    DEFAULT_TEMPO_BPM, FIRST_NODE, MAX_EFFECTS, MAX_NODES, MAX_TEMPO_BPM, MIN_TEMPO_BPM, NodeExt,
+    Project, song, synth_node,
+};
+pub use schedule::{EffectState, NodeRender, RenderState, ScheduledNote};
 
 use audio::{AudioMsg, SharedStatus};
 use daw_automation::{Automation, Signals};
 use devices::{ParamInfo, effect_name};
 use history::History;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 /// Capacity of each control/audio queue. Generous, because a full queue only
@@ -169,10 +172,9 @@ impl Engine {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let node = &self.project.node;
         let position_beats = self.status.position_beats();
-        let signals =
-            schedule::compile_signals(&self.project, &schedule::schedule_notes(&self.project));
+        let signals = schedule::compile_signals(&self.project);
+        let listeners = self.project.listeners();
         Snapshot {
             revision: self.revision,
             song_name: self.project.name.clone(),
@@ -180,27 +182,11 @@ impl Engine {
             playing: self.playing,
             position_beats,
             loop_range: self.loop_range,
-            devices: node
-                .devices()
-                .map(|(device, params)| {
-                    let infos = node.param_infos(device).unwrap_or(&[]);
-                    DeviceSnapshot {
-                        device,
-                        name: device_name(node, device).to_owned(),
-                        params: params
-                            .iter()
-                            .zip(infos)
-                            .enumerate()
-                            .map(|(index, (state, info))| {
-                                let id = ParamId {
-                                    device,
-                                    index: index as u32,
-                                };
-                                param_snapshot(id, state, info, &signals, position_beats)
-                            })
-                            .collect(),
-                    }
-                })
+            nodes: self
+                .project
+                .nodes()
+                .into_iter()
+                .map(|entry| node_snapshot(entry, &signals, position_beats))
                 .collect(),
             signals: self
                 .project
@@ -211,23 +197,12 @@ impl Engine {
                     name: signal.name.clone(),
                     color: signal.color,
                     source: signal.source.clone(),
-                    used_by: node
-                        .listeners()
+                    used_by: listeners
+                        .iter()
                         .filter(|(_, listened)| *listened == id)
-                        .map(|(used, _)| used)
+                        .map(|(used, _)| *used)
                         .collect(),
                 })
-                .collect(),
-            node: NodeSnapshot {
-                name: node.name.clone(),
-                color: node.color,
-                muted: node.muted,
-                soloed: node.soloed,
-            },
-            clips: node
-                .clips
-                .iter()
-                .map(|(&id, clip)| (id, clip.clone()))
                 .collect(),
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
@@ -257,6 +232,16 @@ impl Engine {
     pub fn take_meter(&self) -> Meter {
         let (left, right) = self.status.take_peaks();
         Meter { left, right }
+    }
+
+    /// Each node's peak output levels since the last call. Call once per UI
+    /// frame.
+    pub fn take_meters(&self) -> BTreeMap<NodeId, Meter> {
+        self.status
+            .take_node_peaks()
+            .into_iter()
+            .map(|(node, left, right)| (node, Meter { left, right }))
+            .collect()
     }
 
     /// Delivers queued messages to the audio side and frees retired state.
@@ -315,6 +300,52 @@ impl Engine {
             .retain(|msg| !matches!(msg, AudioMsg::SwapState(_)));
         let state = Box::new(RenderState::compile(&self.project));
         self.outbox.push_back(AudioMsg::SwapState(state));
+    }
+}
+
+fn node_snapshot(
+    entry: project::NodeEntry<'_>,
+    signals: &Signals,
+    position_beats: f64,
+) -> NodeSnapshot {
+    let node = entry.node;
+    NodeSnapshot {
+        id: entry.id,
+        parent: entry.parent,
+        depth: entry.depth,
+        children: node.children.iter().map(|(id, _)| *id).collect(),
+        name: node.name.clone(),
+        color: node.color,
+        muted: node.muted,
+        soloed: node.soloed,
+        clips: node
+            .clips
+            .iter()
+            .map(|(&id, clip)| (id, clip.clone()))
+            .collect(),
+        devices: node
+            .devices()
+            .map(|(device, params)| {
+                let infos = node.param_infos(device).unwrap_or(&[]);
+                DeviceSnapshot {
+                    device,
+                    name: device_name(node, device).to_owned(),
+                    params: params
+                        .iter()
+                        .zip(infos)
+                        .enumerate()
+                        .map(|(index, (state, info))| {
+                            let id = ParamId {
+                                node: entry.id,
+                                device,
+                                index: index as u32,
+                            };
+                            param_snapshot(id, state, info, signals, position_beats)
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
     }
 }
 

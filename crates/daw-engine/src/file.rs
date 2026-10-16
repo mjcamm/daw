@@ -6,10 +6,10 @@
 //! project. Undo history and transport position are not saved.
 
 use crate::devices::{CHANNEL_PARAMS, INSTRUMENT_PARAMS};
-use crate::project::{PALETTE_SIZE, Project};
+use crate::project::{Project, song};
 use daw_protocol::{
-    ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, LoopRange, MidiClip, ParamId,
-    ParamState, Signal, SignalId,
+    ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, LoopRange, MidiClip, Node, NodeId,
+    ParamId, ParamState, Signal, SignalId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -19,8 +19,10 @@ pub const FORMAT: &str = "daw-project";
 /// Bumped whenever the layout changes; older versions are converted on load.
 /// Version 2 added motion signals; version 3 centred the blend modes;
 /// version 4 moved listening to signals onto layers and made notes signals
-/// ADSR hits.
-pub const VERSION: u32 = 6;
+/// ADSR hits; version 5 made velocity a clamp; version 6 added switches for
+/// the pitch range and the clamp; version 7 made the nodes a tree under the
+/// Song.
+pub const VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -29,8 +31,8 @@ pub struct ProjectFile {
     pub name: String,
     pub tempo_bpm: f64,
     pub loop_range: Option<LoopRange>,
-    /// The project's nodes. Exactly one for now.
-    pub nodes: Vec<NodeFile>,
+    /// The Song and everything under it.
+    pub root: NodeFile,
     /// Motion signals. Missing in version 1 files.
     #[serde(default)]
     pub signals: Vec<SignalFile>,
@@ -45,15 +47,20 @@ pub struct SignalFile {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeFile {
+    pub id: NodeId,
     pub name: String,
     pub color: u8,
     pub muted: bool,
     pub soloed: bool,
-    pub instrument: InstrumentFile,
+    /// Missing for a node that plays no notes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<InstrumentFile>,
     pub effects: Vec<EffectFile>,
     /// Volume and pan, in parameter order.
     pub channel: Vec<ParamState>,
     pub clips: Vec<ClipFile>,
+    #[serde(default)]
+    pub children: Vec<NodeFile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,15 +98,14 @@ pub enum LoadError {
     WrongFormat(String),
     /// Saved by a newer version of the app.
     UnsupportedVersion(u32),
-    /// This version supports exactly one node.
-    NodeCount(usize),
+    /// The Song must have id 0.
+    RootId(NodeId),
     /// A device's parameter list does not match the device.
     ParamCount {
         device: &'static str,
         expected: usize,
         found: usize,
     },
-    BadColor(u8),
     /// The content breaks a project rule (overlapping blocks, bad ids, ...).
     Invalid(CommandError),
 }
@@ -115,13 +121,12 @@ impl fmt::Display for LoadError {
                 f,
                 "saved by a newer version of the app (file version {v}, this app reads up to {VERSION})"
             ),
-            Self::NodeCount(n) => write!(f, "expected one node, found {n}"),
+            Self::RootId(id) => write!(f, "the Song has id {}, expected 0", id.0),
             Self::ParamCount {
                 device,
                 expected,
                 found,
             } => write!(f, "{device} has {found} parameters, expected {expected}"),
-            Self::BadColor(c) => write!(f, "colour {c} is not in the palette"),
             Self::Invalid(e) => write!(f, "the project is damaged: {e}"),
         }
     }
@@ -135,43 +140,79 @@ impl From<CommandError> for LoadError {
     }
 }
 
+fn node_file(id: NodeId, node: &Node) -> NodeFile {
+    NodeFile {
+        id,
+        name: node.name.clone(),
+        color: node.color,
+        muted: node.muted,
+        soloed: node.soloed,
+        instrument: node.instrument.as_ref().map(|params| InstrumentFile {
+            kind: InstrumentKind::Synth,
+            params: params.clone(),
+        }),
+        effects: node
+            .effects
+            .iter()
+            .map(|(id, effect)| EffectFile {
+                id: *id,
+                effect: effect.clone(),
+            })
+            .collect(),
+        channel: node.channel.clone(),
+        clips: node
+            .clips
+            .iter()
+            .map(|(id, clip)| ClipFile {
+                id: *id,
+                clip: clip.clone(),
+            })
+            .collect(),
+        children: node
+            .children
+            .iter()
+            .map(|(id, child)| node_file(*id, child))
+            .collect(),
+    }
+}
+
+/// A node from the file, ready for [`Edit::AddNode`], which checks the
+/// rest. Clip ids are checked here, since a map would merge duplicates.
+fn file_node(file: NodeFile) -> Result<(NodeId, Node), LoadError> {
+    let mut clips = std::collections::BTreeMap::new();
+    for c in file.clips {
+        if clips.insert(c.id, c.clip).is_some() {
+            return Err(CommandError::DuplicateClip { id: c.id }.into());
+        }
+    }
+    let node = Node {
+        name: file.name,
+        color: file.color,
+        muted: file.muted,
+        soloed: file.soloed,
+        instrument: file.instrument.map(|i| i.params),
+        effects: file.effects.into_iter().map(|e| (e.id, e.effect)).collect(),
+        channel: file.channel,
+        clips,
+        children: file
+            .children
+            .into_iter()
+            .map(file_node)
+            .collect::<Result<_, _>>()?,
+    };
+    Ok((file.id, node))
+}
+
 impl ProjectFile {
     /// Captures a project and its loop region.
     pub fn new(project: &Project, loop_range: Option<LoopRange>) -> Self {
-        let node = &project.node;
         Self {
             format: FORMAT.to_owned(),
             version: VERSION,
             name: project.name.clone(),
             tempo_bpm: project.tempo_bpm,
             loop_range,
-            nodes: vec![NodeFile {
-                name: node.name.clone(),
-                color: node.color,
-                muted: node.muted,
-                soloed: node.soloed,
-                instrument: InstrumentFile {
-                    kind: InstrumentKind::Synth,
-                    params: node.instrument.clone(),
-                },
-                effects: node
-                    .effects
-                    .iter()
-                    .map(|(id, effect)| EffectFile {
-                        id: *id,
-                        effect: effect.clone(),
-                    })
-                    .collect(),
-                channel: node.channel.clone(),
-                clips: node
-                    .clips
-                    .iter()
-                    .map(|(id, clip)| ClipFile {
-                        id: *id,
-                        clip: clip.clone(),
-                    })
-                    .collect(),
-            }],
+            root: node_file(NodeId::ROOT, &project.root),
             signals: project
                 .signals
                 .iter()
@@ -188,9 +229,8 @@ impl ProjectFile {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
 
+    /// Reads a file, converting older versions first.
     pub fn from_json(json: &str) -> Result<Self, LoadError> {
-        // Check the header first, so a newer or foreign file gets a clear
-        // message instead of a confusing field error.
         #[derive(Deserialize)]
         struct Header {
             format: String,
@@ -215,7 +255,10 @@ impl ProjectFile {
             if header.version < 5 {
                 crate::upgrade::clamp_velocity(&mut value);
             }
-            crate::upgrade::notes_switches(&mut value);
+            if header.version < 6 {
+                crate::upgrade::notes_switches(&mut value);
+            }
+            crate::upgrade::nest_under_song(&mut value);
             return serde_json::from_value(value).map_err(LoadError::Json);
         }
         serde_json::from_str(json).map_err(LoadError::Json)
@@ -224,24 +267,26 @@ impl ProjectFile {
     /// Rebuilds the project through validated edits, returning it with its
     /// loop region.
     pub fn into_project(self) -> Result<(Project, Option<LoopRange>), LoadError> {
-        let [node]: [NodeFile; 1] = self
-            .nodes
-            .try_into()
-            .map_err(|nodes: Vec<NodeFile>| LoadError::NodeCount(nodes.len()))?;
-        check_count(
-            "Synth",
-            INSTRUMENT_PARAMS.len(),
-            node.instrument.params.len(),
-        )?;
-        check_count("Channel", CHANNEL_PARAMS.len(), node.channel.len())?;
-        if node.color >= PALETTE_SIZE {
-            return Err(LoadError::BadColor(node.color));
+        let root = self.root;
+        if root.id != NodeId::ROOT {
+            return Err(LoadError::RootId(root.id));
+        }
+        check_count("Channel", CHANNEL_PARAMS.len(), root.channel.len())?;
+        if let Some(instrument) = &root.instrument {
+            check_count("Synth", INSTRUMENT_PARAMS.len(), instrument.params.len())?;
         }
         if let Some(range) = self.loop_range {
             crate::check_loop(range)?;
         }
 
-        let mut project = Project::default();
+        let mut project = Project {
+            root: song(),
+            ..Project::default()
+        };
+        if root.instrument.is_some() {
+            project.root.instrument = Some(crate::project::default_params(&INSTRUMENT_PARAMS));
+        }
+        let song = NodeId::ROOT;
         // Signals first, so the layers that listen to them resolve.
         let mut edits: Vec<Edit> = self
             .signals
@@ -257,32 +302,55 @@ impl ProjectFile {
             Edit::SetTempo {
                 bpm: self.tempo_bpm,
             },
-            Edit::RenameNode { name: node.name },
-            Edit::SetMute { muted: node.muted },
+            Edit::RenameNode {
+                node: song,
+                name: root.name,
+            },
+            Edit::SetNodeColor {
+                node: song,
+                color: root.color,
+            },
+            Edit::SetMute {
+                node: song,
+                muted: root.muted,
+            },
             Edit::SetSolo {
-                soloed: node.soloed,
+                node: song,
+                soloed: root.soloed,
             },
         ]);
-        edits.extend(param_edits(DeviceRef::Instrument, node.instrument.params));
-        edits.extend(param_edits(DeviceRef::Channel, node.channel));
+        if let Some(instrument) = root.instrument {
+            edits.extend(param_edits(song, DeviceRef::Instrument, instrument.params));
+        }
+        edits.extend(param_edits(song, DeviceRef::Channel, root.channel));
         edits.extend(
-            node.effects
+            root.effects
                 .into_iter()
                 .enumerate()
                 .map(|(index, e)| Edit::AddEffect {
+                    node: song,
                     id: e.id,
                     index,
                     effect: e.effect,
                 }),
         );
-        edits.extend(node.clips.into_iter().map(|c| Edit::AddClip {
+        edits.extend(root.clips.into_iter().map(|c| Edit::AddClip {
+            node: song,
             id: c.id,
             clip: c.clip,
         }));
+        for (index, child) in root.children.into_iter().enumerate() {
+            let (id, node) = file_node(child)?;
+            edits.push(Edit::AddNode {
+                id,
+                parent: song,
+                index,
+                node,
+            });
+        }
         for edit in edits {
             project.apply(edit)?;
         }
-        project.node.color = node.color;
         Ok((project, self.loop_range))
     }
 }
@@ -300,12 +368,17 @@ fn check_count(device: &'static str, expected: usize, found: usize) -> Result<()
 }
 
 /// Edits that set each parameter's default state and rebuild its layers.
-fn param_edits(device: DeviceRef, params: Vec<ParamState>) -> impl Iterator<Item = Edit> {
+fn param_edits(
+    node: NodeId,
+    device: DeviceRef,
+    params: Vec<ParamState>,
+) -> impl Iterator<Item = Edit> {
     params
         .into_iter()
         .enumerate()
         .flat_map(move |(index, state)| {
             let param = ParamId {
+                node,
                 device,
                 index: index as u32,
             };
@@ -328,6 +401,7 @@ fn param_edits(device: DeviceRef, params: Vec<ParamState>) -> impl Iterator<Item
 mod tests {
     use super::*;
     use crate::devices::{filter, instrument};
+    use crate::project::FIRST_NODE;
     use daw_protocol::{
         BlendMode, Block, BlockId, EffectKind, Layer, LayerId, MidiNote, NotesSource, Segment,
         Shape, ShapePoint, SignalSource, Ticks,
@@ -371,6 +445,7 @@ mod tests {
                     name: "Kick duck".to_owned(),
                     color: 4,
                     source: SignalSource::Notes(NotesSource {
+                        node: FIRST_NODE,
                         pitch_range: true,
                         velocity_clamp: true,
                         lowest: 36,
@@ -402,16 +477,22 @@ mod tests {
             },
             Edit::SetTempo { bpm: 128.5 },
             Edit::RenameNode {
+                node: FIRST_NODE,
                 name: "Lead".to_owned(),
             },
-            Edit::SetMute { muted: true },
+            Edit::SetMute {
+                node: FIRST_NODE,
+                muted: true,
+            },
             Edit::AddEffect {
+                node: FIRST_NODE,
                 id: DeviceId(3),
                 index: 0,
                 effect: Effect::new(EffectKind::Filter),
             },
             Edit::SetParam {
                 param: ParamId {
+                    node: FIRST_NODE,
                     device: DeviceRef::Effect(DeviceId(3)),
                     index: filter::RESONANCE,
                 },
@@ -419,6 +500,7 @@ mod tests {
             },
             Edit::AddLayer {
                 param: ParamId {
+                    node: FIRST_NODE,
                     device: DeviceRef::Instrument,
                     index: instrument::CUTOFF,
                 },
@@ -428,6 +510,7 @@ mod tests {
             },
             Edit::AddLayer {
                 param: ParamId {
+                    node: FIRST_NODE,
                     device: DeviceRef::Channel,
                     index: crate::devices::channel::VOLUME,
                 },
@@ -436,6 +519,7 @@ mod tests {
                 layer: ducking,
             },
             Edit::AddClip {
+                node: FIRST_NODE,
                 id: ClipId(9),
                 clip: MidiClip {
                     start: Ticks::from_bars(1),
@@ -452,7 +536,23 @@ mod tests {
         for edit in edits {
             project.apply(edit).unwrap();
         }
-        project.node.color = 3;
+        project.node_mut(FIRST_NODE).unwrap().color = 3;
+        // A folder holding a muted node that plays notes through an effect.
+        let mut inner = Node::new("Hats", 1).with_instrument();
+        inner.muted = true;
+        inner
+            .effects
+            .push((DeviceId(12), Effect::new(EffectKind::Filter)));
+        let mut folder = Node::new("Drums", 0);
+        folder.children.push((NodeId(21), inner));
+        project
+            .apply(Edit::AddNode {
+                id: NodeId(20),
+                parent: NodeId::ROOT,
+                index: 1,
+                node: folder,
+            })
+            .unwrap();
         project
     }
 
@@ -492,6 +592,27 @@ mod tests {
         value.to_string()
     }
 
+    /// The rich project as a file from before version 7: one node in a
+    /// `nodes` list, and notes signals without a source node.
+    fn old_file_json(version: u32, change: impl FnOnce(&mut serde_json::Value)) -> String {
+        file_json(|v| {
+            v["version"] = version.into();
+            let mut node = v["root"]["children"][0].clone();
+            let node_object = node.as_object_mut().unwrap();
+            node_object.remove("id");
+            node_object.remove("children");
+            let object = v.as_object_mut().unwrap();
+            object.remove("root");
+            object.insert("nodes".to_owned(), json!([node]));
+            for signal in v["signals"].as_array_mut().unwrap() {
+                if let Some(notes) = signal["source"].get_mut("Notes") {
+                    notes.as_object_mut().unwrap().remove("node");
+                }
+            }
+            change(v);
+        })
+    }
+
     fn load(json: &str) -> Result<(Project, Option<LoopRange>), LoadError> {
         ProjectFile::from_json(json)?.into_project()
     }
@@ -516,27 +637,32 @@ mod tests {
             Err(LoadError::Invalid(CommandError::TempoOutOfRange { .. }))
         ));
         assert!(matches!(
-            load(&file_json(|v| v["nodes"][0]["name"] = " ".into())),
+            load(&file_json(|v| v["root"]["children"][0]["name"] = " ".into())),
             Err(LoadError::Invalid(CommandError::EmptyName))
         ));
         assert!(matches!(
-            load(&file_json(|v| v["nodes"][0]["color"] = 42.into())),
-            Err(LoadError::BadColor(42))
+            load(&file_json(|v| v["root"]["children"][0]["color"] = 42.into())),
+            Err(LoadError::Invalid(CommandError::ColorOutOfRange {
+                color: 42
+            }))
         ));
         assert!(matches!(
-            load(&file_json(|v| v["nodes"] = serde_json::json!([]))),
-            Err(LoadError::NodeCount(0))
+            load(&file_json(|v| v["root"]["id"] = 5.into())),
+            Err(LoadError::RootId(NodeId(5)))
         ));
         assert!(matches!(
             load(&file_json(|v| {
-                v["nodes"][0]["channel"].as_array_mut().unwrap().pop();
+                v["root"]["children"][0]["channel"]
+                    .as_array_mut()
+                    .unwrap()
+                    .pop();
             })),
-            Err(LoadError::ParamCount { .. })
+            Err(LoadError::Invalid(CommandError::WrongParamCount { .. }))
         ));
         // A duplicate clip id.
         assert!(matches!(
             load(&file_json(|v| {
-                let clips = v["nodes"][0]["clips"].as_array_mut().unwrap();
+                let clips = v["root"]["children"][0]["clips"].as_array_mut().unwrap();
                 let copy = clips[0].clone();
                 clips.push(copy);
             })),
@@ -545,8 +671,8 @@ mod tests {
         // A block shape value out of range.
         assert!(matches!(
             load(&file_json(|v| {
-                v["nodes"][0]["instrument"]["params"][0]["layers"][0][1]["blocks"][0][1]["shape"]
-                    ["points"][0]["value"] = 3.into();
+                v["root"]["children"][0]["instrument"]["params"][0]["layers"][0][1]["blocks"][0]
+                    [1]["shape"]["points"][0]["value"] = 3.into();
             })),
             Err(LoadError::Invalid(CommandError::InvalidBlock { .. }))
         ));
@@ -554,8 +680,7 @@ mod tests {
 
     #[test]
     fn version_1_files_without_signals_still_load() {
-        let json = file_json(|v| {
-            v["version"] = 1.into();
+        let json = old_file_json(1, |v| {
             v.as_object_mut().unwrap().remove("signals");
             // Version 1 had no listening layers either.
             let volume = crate::devices::channel::VOLUME as usize;
@@ -567,8 +692,7 @@ mod tests {
 
     #[test]
     fn version_3_links_load_as_listening_layers() {
-        let json = file_json(|v| {
-            v["version"] = 3.into();
+        let json = old_file_json(3, |v| {
             let volume = crate::devices::channel::VOLUME as usize;
             let layer = &mut v["nodes"][0]["channel"][volume]["layers"][0][1];
             layer.as_object_mut().unwrap().remove("signal");
@@ -579,7 +703,8 @@ mod tests {
             });
         });
         let (project, _) = load(&json).unwrap();
-        let volume = &project.node.channel[crate::devices::channel::VOLUME as usize];
+        let volume =
+            &project.node(FIRST_NODE).unwrap().channel[crate::devices::channel::VOLUME as usize];
         assert_eq!(volume.layers[0].1.signal, Some(SignalId(2)));
         let SignalSource::Notes(source) = &project.signals[&SignalId(2)].source else {
             panic!("expected a notes signal");
@@ -589,8 +714,7 @@ mod tests {
 
     #[test]
     fn older_files_load_with_their_blend_modes_centred() {
-        let json = file_json(|v| {
-            v["version"] = 2.into();
+        let json = old_file_json(2, |v| {
             let layer = &mut v["nodes"][0]["instrument"]["params"][0]["layers"][0][1];
             layer["mode"] = "Modulate".into();
         });
@@ -598,14 +722,23 @@ mod tests {
         // Modulate was already centred: it becomes Add with the same values
         // (invert folded into the points).
         let cutoff = |p: &Project| {
-            daw_automation::Automation::compile(&p.node.instrument[instrument::CUTOFF as usize])
+            daw_automation::Automation::compile(
+                &p.node(FIRST_NODE).unwrap().instrument.as_ref().unwrap()
+                    [instrument::CUTOFF as usize],
+            )
         };
         let (loaded, expected) = (cutoff(&project), cutoff(&rich_project()));
         for beat in [2.0, 2.1, 3.3, 5.9] {
             assert!((loaded.value_at(beat) - expected.value_at(beat)).abs() < 1e-9);
         }
         assert!(
-            project.node.instrument[0].layers[0]
+            project
+                .node(FIRST_NODE)
+                .unwrap()
+                .instrument
+                .as_ref()
+                .unwrap()[0]
+                .layers[0]
                 .1
                 .blocks
                 .iter()

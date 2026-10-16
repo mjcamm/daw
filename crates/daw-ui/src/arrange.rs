@@ -8,13 +8,13 @@ use crate::layout::{
 };
 use crate::menu::{self, OpenMenu};
 use crate::parameters::small_button;
-use crate::project::{ProjectView, RenameTarget};
+use crate::project::{ProjectView, RenameTarget, song_clips};
 use crate::scroll;
 use crate::signals::{node_has_notes, published_signals};
 use crate::theme::{ContentColor, Theme};
 use crate::tooltip;
 use crate::zoom::Zoom;
-use daw_engine::{ClipId, Command, Edit, MidiClip};
+use daw_engine::{ClipId, Command, Edit, MidiClip, NodeSnapshot, Snapshot};
 use gpui::{
     ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
 };
@@ -29,7 +29,7 @@ impl ProjectView {
     pub(crate) fn render_arrange(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.session.snapshot();
         let zoom = self.arrange_view.zoom;
-        let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
+        let bars = timeline_bars(song_clips(snapshot), snapshot.loop_range);
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
 
         // The ruler stays at the top and follows the lanes' sideways scroll.
@@ -108,60 +108,100 @@ impl ProjectView {
     }
 
     fn render_node_list(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let node = &self.session.snapshot().node;
-        let meter = self.session.meter();
+        let snapshot = self.session.snapshot();
+        div()
+            .w(px(NODE_LIST_WIDTH))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.edge)
+            .children(
+                arranged_nodes(snapshot)
+                    .map(|node| self.node_row(node, theme, cx))
+                    .collect::<Vec<_>>(),
+            )
+            .child(
+                // Clicking the empty space below the nodes clears the selection.
+                div()
+                    .id("node-list-space")
+                    .flex_1()
+                    .on_click(cx.listener(|this, _, _, _| this.selected_node = None)),
+            )
+    }
+
+    /// A node: colour, name and kind, meter, signal button, mute and solo.
+    fn node_row(
+        &self,
+        node: &NodeSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let id = node.id;
+        let meter = self.session.meter(id);
         let color = theme.content(node.color);
         let row_height = self.arrange_view.zoom.row_height;
         let meter_size = (row_height - 16.).clamp(10., METER_HEIGHT);
 
-        let toggle = |id: &'static str, label: &'static str, on: bool, on_bg: Hsla, on_fg: Hsla| {
-            div()
-                .id(id)
-                .w(px(20.))
-                .h(px(18.))
-                .rounded(px(4.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(10.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .bg(if on { on_bg } else { theme.control })
-                .text_color(if on { on_fg } else { theme.text_secondary })
-                .child(label)
-        };
+        let toggle =
+            |name: &'static str, label: &'static str, on: bool, on_bg: Hsla, on_fg: Hsla| {
+                div()
+                    .id((name, id.0))
+                    .w(px(20.))
+                    .h(px(18.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(10.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .bg(if on { on_bg } else { theme.control })
+                    .text_color(if on { on_fg } else { theme.text_secondary })
+                    .child(label)
+            };
         let (muted, soloed) = (node.muted, node.soloed);
         let mute = toggle("mute", "M", muted, theme.warning, theme.on_warning).on_click(
             cx.listener(move |this, _, _, _| {
-                this.session
-                    .apply(Command::Edit(Edit::SetMute { muted: !muted }));
+                this.session.apply(Command::Edit(Edit::SetMute {
+                    node: id,
+                    muted: !muted,
+                }));
             }),
         );
         let solo = toggle("solo", "S", soloed, theme.accent, theme.on_accent).on_click(
             cx.listener(move |this, _, _, _| {
-                this.session
-                    .apply(Command::Edit(Edit::SetSolo { soloed: !soloed }));
+                this.session.apply(Command::Edit(Edit::SetSolo {
+                    node: id,
+                    soloed: !soloed,
+                }));
             }),
         );
 
-        let publish = self.publish_button(theme, cx);
-        let node_name: gpui::AnyElement = match self.rename_input(RenameTarget::Node) {
+        let publish = self.publish_button(node, theme, cx);
+        let node_name: gpui::AnyElement = match self.rename_input(RenameTarget::Node(id)) {
             Some(input) => div().text_size(px(13.)).child(input).into_any_element(),
             None => div()
-                .id("node-name")
+                .id(("node-name", id.0))
                 .text_size(px(13.))
                 .child(node.name.clone())
-                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     if event.click_count() >= 2 {
-                        this.start_rename(RenameTarget::Node, window, cx);
+                        this.start_rename(RenameTarget::Node(id), window, cx);
                     }
                 }))
                 .into_any_element(),
         };
+        let kind = if node.has_instrument() {
+            "MIDI · Synth"
+        } else {
+            "Folder"
+        };
 
         let mut selected_bg = theme.accent;
         selected_bg.a = 0.16;
-        let row = div()
-            .id("node-row")
+        div()
+            .id(("node-row", id.0))
             .h(px(row_height))
             .flex_none()
             .flex()
@@ -170,8 +210,8 @@ impl ProjectView {
             .px(px(12.))
             .border_b_1()
             .border_color(theme.hairline)
-            .when(self.node_selected, |d| d.bg(selected_bg))
-            .on_click(cx.listener(|this, _, _, _| this.node_selected = true))
+            .when(self.selected_node == Some(id), |d| d.bg(selected_bg))
+            .on_click(cx.listener(move |this, _, _, _| this.selected_node = Some(id)))
             .child(
                 div()
                     .w(px(4.))
@@ -184,7 +224,7 @@ impl ProjectView {
                     div()
                         .text_size(px(11.))
                         .text_color(theme.text_secondary)
-                        .child("MIDI · Synth"),
+                        .child(kind),
                 ),
             )
             .child(
@@ -196,58 +236,53 @@ impl ProjectView {
             )
             .child(publish)
             .child(mute)
-            .child(solo);
-
-        div()
-            .w(px(NODE_LIST_WIDTH))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .bg(theme.sidebar)
-            .border_r_1()
-            .border_color(theme.edge)
-            .child(row)
-            .child(
-                // Clicking the empty space below the nodes clears the selection.
-                div()
-                    .id("node-list-space")
-                    .flex_1()
-                    .on_click(cx.listener(|this, _, _, _| this.node_selected = false)),
-            )
+            .child(solo)
     }
 
     /// The node's signal button: publish as a signal, and the signals it
     /// publishes, each with a go-to icon. Tinted in the first published
     /// signal's colour once it publishes any.
-    fn publish_button(&self, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+    fn publish_button(
+        &self,
+        node: &NodeSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let snapshot = self.session.snapshot();
-        let color = published_signals(snapshot)
+        let id = node.id;
+        let color = published_signals(snapshot, id)
             .next()
             .map_or(theme.text_secondary, |s| theme.content(s.color).detail);
-        let open = self.open_menu == Some(OpenMenu::NodeSignals);
+        let open = self.open_menu == Some(OpenMenu::NodeSignals(id));
         div()
             .relative()
             .flex()
             .flex_col()
             .child(
-                small_button("node-signals", theme)
+                small_button(("node-signals", id.0), theme)
                     .w(px(20.))
                     .h(px(18.))
                     .when(open, |d| d.bg(theme.control))
                     .child(icon(Icon::Signal, color, 13.))
                     // Hidden while the menu is open, so it never covers it.
                     .when(!open, |d| d.tooltip(tooltip::text("Publish as signal")))
-                    .on_click(cx.listener(|this, _, _, _| {
-                        this.toggle_menu(OpenMenu::NodeSignals);
+                    .on_click(cx.listener(move |this, _, _, _| {
+                        this.toggle_menu(OpenMenu::NodeSignals(id));
                     })),
             )
-            .when(open, |d| d.child(self.publish_menu(theme, cx)))
+            .when(open, |d| d.child(self.publish_menu(node, theme, cx)))
     }
 
     /// Publishing stays on Arrange with the menu open, so the new signal
     /// appears in it with its go-to icon.
-    fn publish_menu(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn publish_menu(
+        &self,
+        node: &NodeSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let snapshot = self.session.snapshot();
+        let node_id = node.id;
         let unavailable = |id: &'static str, label: &'static str, hint: &'static str| {
             div()
                 .id(id)
@@ -260,9 +295,9 @@ impl ProjectView {
                 .child(label)
                 .child(hint)
         };
-        let notes = if node_has_notes(snapshot) {
+        let notes = if node_has_notes(node) {
             menu::item(theme, "publish-notes", "Publish notes as motion signal", "")
-                .on_click(cx.listener(|this, _, _, _| this.publish_notes()))
+                .on_click(cx.listener(move |this, _, _, _| this.publish_notes(node_id)))
         } else {
             unavailable(
                 "publish-notes",
@@ -271,7 +306,7 @@ impl ProjectView {
             )
         };
         let hover = theme.hover;
-        let published: Vec<_> = published_signals(snapshot)
+        let published: Vec<_> = published_signals(snapshot, node_id)
             .map(|signal| {
                 let id = signal.id;
                 div()
@@ -322,24 +357,24 @@ impl ProjectView {
     fn render_timeline(&self, theme: &Theme, bars: u32, width: f32) -> impl IntoElement {
         let snapshot = self.session.snapshot();
         let zoom = self.arrange_view.zoom;
-        let color = if snapshot.node.muted {
-            theme.muted_content
-        } else {
-            theme.content(snapshot.node.color)
-        };
-
-        let lane = div()
-            .relative()
-            .h(px(zoom.row_height))
-            .flex_none()
-            .border_b_1()
-            .border_color(theme.hairline)
-            .children(
-                snapshot
-                    .clips
-                    .iter()
-                    .map(|(id, clip)| clip_view(*id, clip, &snapshot.node.name, color, zoom)),
-            );
+        let lanes = arranged_nodes(snapshot).map(|node| {
+            let color = if node.muted {
+                theme.muted_content
+            } else {
+                theme.content(node.color)
+            };
+            div()
+                .relative()
+                .h(px(zoom.row_height))
+                .flex_none()
+                .border_b_1()
+                .border_color(theme.hairline)
+                .children(
+                    node.clips
+                        .iter()
+                        .map(|(id, clip)| clip_view(*id, clip, &node.name, color, zoom)),
+                )
+        });
 
         let playhead = div()
             .absolute()
@@ -365,7 +400,7 @@ impl ProjectView {
                     .flex()
                     .flex_col()
                     .children(grid_lines(zoom, bars, theme))
-                    .child(lane)
+                    .children(lanes)
                     .child(playhead),
             )
     }
@@ -434,6 +469,12 @@ impl ProjectView {
                 }),
             )
     }
+}
+
+/// The nodes shown as rows, in tree order. The Song gets its own row with
+/// the nesting map.
+fn arranged_nodes(snapshot: &Snapshot) -> impl Iterator<Item = &NodeSnapshot> {
+    snapshot.nodes.iter().filter(|n| n.parent.is_some())
 }
 
 fn meter_bar(peak: f32, size: f32, theme: &Theme) -> impl IntoElement {

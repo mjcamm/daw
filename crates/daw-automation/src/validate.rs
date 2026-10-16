@@ -141,7 +141,7 @@ mod tests {
         let valid = NotesSource {
             lowest: 36,
             highest: 36,
-            ..NotesSource::new()
+            ..NotesSource::new(daw_protocol::NodeId(1))
         };
         assert_eq!(validate_notes_source(&valid), Ok(()));
         let with = |change: fn(&mut NotesSource)| {

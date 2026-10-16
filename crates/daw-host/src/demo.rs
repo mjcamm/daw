@@ -8,8 +8,8 @@
 use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, Edit, Effect,
-    EffectKind, Engine, Layer, LayerId, LoopRange, MidiClip, MidiNote, ParamId, Segment, Shape,
-    ShapePoint, Ticks,
+    EffectKind, Engine, FIRST_NODE, Layer, LayerId, LoopRange, MidiClip, MidiNote, ParamId,
+    Segment, Shape, ShapePoint, Ticks,
 };
 
 /// What to listen for, printed by the player.
@@ -55,6 +55,7 @@ pub fn add_starter_notes(engine: &mut Engine) -> Result<(), CommandError> {
 
 fn add(engine: &mut Engine, id: u64, notes: Vec<MidiNote>) -> Result<(), CommandError> {
     engine.apply(Command::Edit(Edit::AddClip {
+        node: FIRST_NODE,
         id: ClipId(id),
         clip: MidiClip {
             start: Ticks::ZERO,
@@ -100,6 +101,7 @@ fn arpeggio() -> Vec<MidiNote> {
 
 fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
     engine.apply(Command::Edit(Edit::AddEffect {
+        node: FIRST_NODE,
         id: FILTER,
         index: 0,
         effect: Effect::new(EffectKind::Filter),
@@ -108,6 +110,7 @@ fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
     // The filter rests low and opens slowly at first, then quickly, over the
     // whole loop: from the centre line (no change) up by 0.6.
     let filter_cutoff = ParamId {
+        node: FIRST_NODE,
         device: DeviceRef::Effect(FILTER),
         index: filter::CUTOFF,
     };
@@ -141,6 +144,7 @@ fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
     );
     pump.cycle = Some(Ticks::from_beats(1));
     let volume = ParamId {
+        node: FIRST_NODE,
         device: DeviceRef::Channel,
         index: channel::VOLUME,
     };
@@ -162,6 +166,7 @@ fn add_layers(engine: &mut Engine) -> Result<(), CommandError> {
     wobble.depth = 0.2;
     wobble.fade_in = Ticks::from_beats(1);
     let synth_cutoff = ParamId {
+        node: FIRST_NODE,
         device: DeviceRef::Instrument,
         index: instrument::CUTOFF,
     };

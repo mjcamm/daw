@@ -1,4 +1,8 @@
 //! Authoritative project state and the edits that change it.
+//!
+//! The project is a tree of nodes under the Song ([`NodeId::ROOT`]). Ids are
+//! project-wide: nodes, clips, effects, layers and blocks each have one id
+//! space across the whole tree, so edits find things by id alone.
 
 use crate::devices::{
     CHANNEL_PARAMS, INSTRUMENT_PARAMS, ParamInfo, effect_params, fixed_device_params,
@@ -6,7 +10,8 @@ use crate::devices::{
 use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
     Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, InvalidClip, Layer,
-    LayerId, MidiClip, ParamId, ParamState, Signal, SignalId, SignalSource, SignalUse,
+    LayerId, MidiClip, Node, NodeId, ParamId, ParamState, Signal, SignalId, SignalSource,
+    SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -15,58 +20,62 @@ pub const MAX_TEMPO_BPM: f64 = 999.0;
 pub const DEFAULT_TEMPO_BPM: f64 = 120.0;
 /// Most effects in one node's chain.
 pub const MAX_EFFECTS: usize = 16;
+/// Most nodes in a project, the Song included. The audio side keeps a
+/// player for each, made up front.
+pub const MAX_NODES: usize = 256;
 /// Number of colours in the content palette.
 pub const PALETTE_SIZE: u8 = 9;
+/// The Song's colour: grey.
+pub const SONG_COLOR: u8 = 8;
+/// The node a new project starts with, under the Song.
+pub const FIRST_NODE: NodeId = NodeId(1);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub name: String,
     pub tempo_bpm: f64,
-    pub node: Node,
+    /// The Song: the root of the node tree and the master output.
+    pub root: Node,
     /// Motion signals, by id.
     pub signals: BTreeMap<SignalId, Signal>,
 }
 
-/// A channel: clips playing through an instrument, then its effect chain,
-/// then its own volume and pan. Every device holds one [`ParamState`] per
-/// parameter.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Node {
-    pub name: String,
-    /// Index into the nine-colour content palette.
-    pub color: u8,
-    pub muted: bool,
-    pub soloed: bool,
-    pub instrument: Vec<ParamState>,
-    pub effects: Vec<(DeviceId, Effect)>,
-    pub channel: Vec<ParamState>,
-    pub clips: BTreeMap<ClipId, MidiClip>,
+/// A node as found by walking the tree.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeEntry<'a> {
+    pub id: NodeId,
+    pub parent: Option<NodeId>,
+    pub depth: usize,
+    pub node: &'a Node,
 }
 
 impl Default for Project {
+    /// A Song holding one node that plays notes: [`FIRST_NODE`].
     fn default() -> Self {
+        let mut root = song();
+        root.children.push((FIRST_NODE, synth_node()));
         Self {
             name: "Untitled".to_owned(),
             tempo_bpm: DEFAULT_TEMPO_BPM,
-            node: Node::default(),
+            root,
             signals: BTreeMap::new(),
         }
     }
 }
 
-impl Default for Node {
-    fn default() -> Self {
-        Self {
-            name: "Synth".to_owned(),
-            color: 6,
-            muted: false,
-            soloed: false,
-            instrument: default_params(&INSTRUMENT_PARAMS),
-            effects: Vec::new(),
-            channel: default_params(&CHANNEL_PARAMS),
-            clips: BTreeMap::new(),
-        }
-    }
+/// The Song with nothing in it: a plain bus at its defaults.
+pub fn song() -> Node {
+    let mut node = Node::new("Song", SONG_COLOR);
+    node.channel = default_params(&CHANNEL_PARAMS);
+    node
+}
+
+/// A node named "Synth" that plays notes, at its defaults.
+pub fn synth_node() -> Node {
+    let mut node = Node::new("Synth", 6);
+    node.instrument = Some(default_params(&INSTRUMENT_PARAMS));
+    node.channel = default_params(&CHANNEL_PARAMS);
+    node
 }
 
 pub fn default_params(infos: &[ParamInfo]) -> Vec<ParamState> {
@@ -79,10 +88,21 @@ pub fn default_params(infos: &[ParamInfo]) -> Vec<ParamState> {
         .collect()
 }
 
-impl Node {
+/// What the engine needs to know about one node, on its own.
+pub trait NodeExt {
     /// Every device on the node, in signal order, with its parameters.
-    pub fn devices(&self) -> impl Iterator<Item = (DeviceRef, &[ParamState])> {
-        std::iter::once((DeviceRef::Instrument, self.instrument.as_slice()))
+    fn devices(&self) -> impl Iterator<Item = (DeviceRef, &[ParamState])>;
+    fn param_infos(&self, device: DeviceRef) -> Option<&'static [ParamInfo]>;
+    fn params(&self, device: DeviceRef) -> Option<&Vec<ParamState>>;
+    fn params_mut(&mut self, device: DeviceRef) -> Option<&mut Vec<ParamState>>;
+    fn effect(&self, id: DeviceId) -> Option<(usize, &Effect)>;
+}
+
+impl NodeExt for Node {
+    fn devices(&self) -> impl Iterator<Item = (DeviceRef, &[ParamState])> {
+        self.instrument
+            .iter()
+            .map(|params| (DeviceRef::Instrument, params.as_slice()))
             .chain(
                 self.effects
                     .iter()
@@ -94,34 +114,32 @@ impl Node {
             )))
     }
 
-    pub fn param_infos(&self, device: DeviceRef) -> Option<&'static [ParamInfo]> {
+    fn param_infos(&self, device: DeviceRef) -> Option<&'static [ParamInfo]> {
         match device {
             DeviceRef::Effect(id) => self.effect(id).map(|(_, e)| effect_params(e.kind)),
+            DeviceRef::Instrument if self.instrument.is_none() => None,
             fixed => fixed_device_params(fixed),
         }
     }
 
-    pub fn param(&self, param: ParamId) -> Option<&ParamState> {
-        let params = match param.device {
-            DeviceRef::Instrument => &self.instrument,
-            DeviceRef::Channel => &self.channel,
-            DeviceRef::Effect(id) => &self.effect(id)?.1.params,
-        };
-        params.get(param.index as usize)
+    fn params(&self, device: DeviceRef) -> Option<&Vec<ParamState>> {
+        match device {
+            DeviceRef::Instrument => self.instrument.as_ref(),
+            DeviceRef::Channel => Some(&self.channel),
+            DeviceRef::Effect(id) => self.effect(id).map(|(_, e)| &e.params),
+        }
     }
 
-    fn param_mut(&mut self, param: ParamId) -> Result<&mut ParamState, CommandError> {
-        let params = match param.device {
-            DeviceRef::Instrument => &mut self.instrument,
-            DeviceRef::Channel => &mut self.channel,
-            DeviceRef::Effect(id) => match self.effects.iter_mut().find(|(e, _)| *e == id) {
-                Some((_, effect)) => &mut effect.params,
-                None => return Err(CommandError::UnknownParam { param }),
-            },
-        };
-        params
-            .get_mut(param.index as usize)
-            .ok_or(CommandError::UnknownParam { param })
+    fn params_mut(&mut self, device: DeviceRef) -> Option<&mut Vec<ParamState>> {
+        match device {
+            DeviceRef::Instrument => self.instrument.as_mut(),
+            DeviceRef::Channel => Some(&mut self.channel),
+            DeviceRef::Effect(id) => self
+                .effects
+                .iter_mut()
+                .find(|(e, _)| *e == id)
+                .map(|(_, e)| &mut e.params),
+        }
     }
 
     fn effect(&self, id: DeviceId) -> Option<(usize, &Effect)> {
@@ -131,17 +149,124 @@ impl Node {
             .find(|(_, (e, _))| *e == id)
             .map(|(i, (_, effect))| (i, effect))
     }
+}
+
+fn find_node(node: &Node, node_id: NodeId, id: NodeId) -> Option<&Node> {
+    if node_id == id {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|(child_id, child)| find_node(child, *child_id, id))
+}
+
+fn find_node_mut(node: &mut Node, node_id: NodeId, id: NodeId) -> Option<&mut Node> {
+    if node_id == id {
+        return Some(node);
+    }
+    node.children
+        .iter_mut()
+        .find_map(|(child_id, child)| find_node_mut(child, *child_id, id))
+}
+
+fn walk_into<'a>(
+    id: NodeId,
+    parent: Option<NodeId>,
+    depth: usize,
+    node: &'a Node,
+    out: &mut Vec<NodeEntry<'a>>,
+) {
+    out.push(NodeEntry {
+        id,
+        parent,
+        depth,
+        node,
+    });
+    for (child_id, child) in &node.children {
+        walk_into(*child_id, Some(id), depth + 1, child, out);
+    }
+}
+
+/// How many nodes are in `node`'s subtree, itself included.
+fn count_nodes(node: &Node) -> usize {
+    1 + node
+        .children
+        .iter()
+        .map(|(_, c)| count_nodes(c))
+        .sum::<usize>()
+}
+
+impl Project {
+    /// Every node in tree order: each parent before its children, the Song
+    /// first.
+    pub fn nodes(&self) -> Vec<NodeEntry<'_>> {
+        let mut out = Vec::new();
+        walk_into(NodeId::ROOT, None, 0, &self.root, &mut out);
+        out
+    }
+
+    pub fn node(&self, id: NodeId) -> Option<&Node> {
+        find_node(&self.root, NodeId::ROOT, id)
+    }
+
+    pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        find_node_mut(&mut self.root, NodeId::ROOT, id)
+    }
+
+    fn node_or_err(&mut self, id: NodeId) -> Result<&mut Node, CommandError> {
+        self.node_mut(id).ok_or(CommandError::UnknownNode { id })
+    }
+
+    /// A node's parent and its position among the parent's children.
+    pub fn parent_of(&self, id: NodeId) -> Option<(NodeId, usize)> {
+        self.nodes().into_iter().find_map(|entry| {
+            let index = entry.node.children.iter().position(|(c, _)| *c == id)?;
+            Some((entry.id, index))
+        })
+    }
+
+    pub fn param(&self, param: ParamId) -> Option<&ParamState> {
+        self.node(param.node)?
+            .params(param.device)?
+            .get(param.index as usize)
+    }
+
+    fn param_mut(&mut self, param: ParamId) -> Result<&mut ParamState, CommandError> {
+        self.node_mut(param.node)
+            .and_then(|node| node.params_mut(param.device))
+            .and_then(|params| params.get_mut(param.index as usize))
+            .ok_or(CommandError::UnknownParam { param })
+    }
+
+    /// The node holding a clip.
+    pub fn clip_node(&self, id: ClipId) -> Option<NodeId> {
+        self.nodes()
+            .into_iter()
+            .find(|e| e.node.clips.contains_key(&id))
+            .map(|e| e.id)
+    }
+
+    /// The node holding an effect.
+    pub fn effect_node(&self, id: DeviceId) -> Option<NodeId> {
+        self.nodes()
+            .into_iter()
+            .find(|e| e.node.effect(id).is_some())
+            .map(|e| e.id)
+    }
 
     /// Where a layer lives: its parameter and position in the stack.
-    fn find_layer(&self, id: LayerId) -> Option<(ParamId, usize)> {
-        self.devices().find_map(|(device, params)| {
-            params.iter().enumerate().find_map(|(index, state)| {
-                let position = state.layers.iter().position(|(l, _)| *l == id)?;
-                let param = ParamId {
-                    device,
-                    index: index as u32,
-                };
-                Some((param, position))
+    pub fn find_layer(&self, id: LayerId) -> Option<(ParamId, usize)> {
+        self.nodes().into_iter().find_map(|entry| {
+            entry.node.devices().find_map(|(device, params)| {
+                params.iter().enumerate().find_map(|(index, state)| {
+                    let position = state.layers.iter().position(|(l, _)| *l == id)?;
+                    let param = ParamId {
+                        node: entry.id,
+                        device,
+                        index: index as u32,
+                    };
+                    Some((param, position))
+                })
             })
         })
     }
@@ -149,20 +274,23 @@ impl Node {
     /// Where a block lives: its layer's parameter, the layer's position in
     /// the stack, the layer id and the block's position in the layer.
     fn find_block(&self, id: BlockId) -> Option<(ParamId, usize, LayerId, usize)> {
-        self.devices().find_map(|(device, params)| {
-            params.iter().enumerate().find_map(|(index, state)| {
-                state
-                    .layers
-                    .iter()
-                    .enumerate()
-                    .find_map(|(layer_pos, (layer_id, layer))| {
-                        let block_pos = layer.blocks.iter().position(|(b, _)| *b == id)?;
-                        let param = ParamId {
-                            device,
-                            index: index as u32,
-                        };
-                        Some((param, layer_pos, *layer_id, block_pos))
-                    })
+        self.nodes().into_iter().find_map(|entry| {
+            entry.node.devices().find_map(|(device, params)| {
+                params.iter().enumerate().find_map(|(index, state)| {
+                    state
+                        .layers
+                        .iter()
+                        .enumerate()
+                        .find_map(|(layer_pos, (layer_id, layer))| {
+                            let block_pos = layer.blocks.iter().position(|(b, _)| *b == id)?;
+                            let param = ParamId {
+                                node: entry.id,
+                                device,
+                                index: index as u32,
+                            };
+                            Some((param, layer_pos, *layer_id, block_pos))
+                        })
+                })
             })
         })
     }
@@ -175,45 +303,58 @@ impl Node {
     }
 
     /// Every layer that listens to a signal: where it is and which signal,
-    /// in device order.
-    pub fn listeners(&self) -> impl Iterator<Item = (SignalUse, SignalId)> + '_ {
-        self.devices().flat_map(|(device, params)| {
-            params.iter().enumerate().flat_map(move |(index, state)| {
-                let param = ParamId {
-                    device,
-                    index: index as u32,
-                };
-                state.layers.iter().filter_map(move |(layer, l)| {
-                    Some((
-                        SignalUse {
-                            param,
-                            layer: *layer,
-                        },
-                        l.signal?,
-                    ))
-                })
-            })
-        })
-    }
-}
-
-/// Every layer and block id in use, on the node and on signals.
-fn used_ids(node: &Node, signals: &BTreeMap<SignalId, Signal>) -> UsedIds {
-    let mut used = UsedIds::default();
-    for (_, params) in node.devices() {
-        for state in params {
-            for (layer_id, layer) in &state.layers {
-                used.layers.insert(*layer_id);
-                used.blocks.extend(layer.blocks.iter().map(|(b, _)| *b));
+    /// in tree order, then device order.
+    pub fn listeners(&self) -> Vec<(SignalUse, SignalId)> {
+        let mut out = Vec::new();
+        for entry in self.nodes() {
+            for (device, params) in entry.node.devices() {
+                for (index, state) in params.iter().enumerate() {
+                    let param = ParamId {
+                        node: entry.id,
+                        device,
+                        index: index as u32,
+                    };
+                    for (layer, l) in &state.layers {
+                        if let Some(signal) = l.signal {
+                            out.push((
+                                SignalUse {
+                                    param,
+                                    layer: *layer,
+                                },
+                                signal,
+                            ));
+                        }
+                    }
+                }
             }
         }
+        out
     }
-    for signal in signals.values() {
-        if let SignalSource::Drawn(blocks) = &signal.source {
-            used.blocks.extend(blocks.iter().map(|(b, _)| *b));
+
+    /// Every id in use anywhere in the project.
+    fn used_ids(&self) -> UsedIds {
+        let mut used = UsedIds::default();
+        for entry in self.nodes() {
+            used.nodes.insert(entry.id);
+            used.clips.extend(entry.node.clips.keys().copied());
+            used.devices
+                .extend(entry.node.effects.iter().map(|(id, _)| *id));
+            for (_, params) in entry.node.devices() {
+                for state in params {
+                    for (layer_id, layer) in &state.layers {
+                        used.layers.insert(*layer_id);
+                        used.blocks.extend(layer.blocks.iter().map(|(b, _)| *b));
+                    }
+                }
+            }
         }
+        for signal in self.signals.values() {
+            if let SignalSource::Drawn(blocks) = &signal.source {
+                used.blocks.extend(blocks.iter().map(|(b, _)| *b));
+            }
+        }
+        used
     }
-    used
 }
 
 /// Where a block on a signal's lane is: the signal and its position.
@@ -268,11 +409,38 @@ fn check_color(color: u8) -> Result<(), CommandError> {
 
 #[derive(Debug, Default)]
 struct UsedIds {
+    nodes: HashSet<NodeId>,
+    clips: HashSet<ClipId>,
+    devices: HashSet<DeviceId>,
     layers: HashSet<LayerId>,
     blocks: HashSet<BlockId>,
 }
 
 impl UsedIds {
+    fn claim_node(&mut self, id: NodeId) -> Result<(), CommandError> {
+        if self.nodes.insert(id) {
+            Ok(())
+        } else {
+            Err(CommandError::DuplicateNode { id })
+        }
+    }
+
+    fn claim_clip(&mut self, id: ClipId) -> Result<(), CommandError> {
+        if self.clips.insert(id) {
+            Ok(())
+        } else {
+            Err(CommandError::DuplicateClip { id })
+        }
+    }
+
+    fn claim_device(&mut self, id: DeviceId) -> Result<(), CommandError> {
+        if self.devices.insert(id) {
+            Ok(())
+        } else {
+            Err(CommandError::DuplicateDevice { id })
+        }
+    }
+
     fn claim_layer(&mut self, id: LayerId) -> Result<(), CommandError> {
         if self.layers.insert(id) {
             Ok(())
@@ -296,18 +464,88 @@ impl Project {
     /// A rejected edit leaves the project unchanged: every check happens
     /// before anything is modified.
     pub fn apply(&mut self, edit: Edit) -> Result<Edit, CommandError> {
-        let node = &mut self.node;
-        let signals = &mut self.signals;
         match edit {
             Edit::RenameSong { name } => {
                 let name = clean_name(&name)?;
                 let previous = std::mem::replace(&mut self.name, name);
                 Ok(Edit::RenameSong { name: previous })
             }
-            Edit::RenameNode { name } => {
+            Edit::RenameNode { node, name } => {
                 let name = clean_name(&name)?;
-                let previous = std::mem::replace(&mut node.name, name);
-                Ok(Edit::RenameNode { name: previous })
+                let target = self.node_or_err(node)?;
+                let previous = std::mem::replace(&mut target.name, name);
+                Ok(Edit::RenameNode {
+                    node,
+                    name: previous,
+                })
+            }
+            Edit::SetNodeColor { node, color } => {
+                check_color(color)?;
+                let target = self.node_or_err(node)?;
+                let previous = std::mem::replace(&mut target.color, color);
+                Ok(Edit::SetNodeColor {
+                    node,
+                    color: previous,
+                })
+            }
+            Edit::AddNode {
+                id,
+                parent,
+                index,
+                mut node,
+            } => {
+                let siblings = self
+                    .node(parent)
+                    .ok_or(CommandError::UnknownNode { id: parent })?
+                    .children
+                    .len();
+                check_index(index, siblings)?;
+                if count_nodes(&self.root) + count_nodes(&node) > MAX_NODES {
+                    return Err(CommandError::TooManyNodes { max: MAX_NODES });
+                }
+                let mut used = self.used_ids();
+                prepare_node(id, &mut node, &mut used, &self.signals)?;
+                self.node_or_err(parent)?.children.insert(index, (id, node));
+                Ok(Edit::RemoveNode { id })
+            }
+            Edit::RemoveNode { id } => {
+                if id == NodeId::ROOT {
+                    return Err(CommandError::RootNode);
+                }
+                let (parent, index) = self.parent_of(id).ok_or(CommandError::UnknownNode { id })?;
+                let (_, node) = self.node_or_err(parent)?.children.remove(index);
+                Ok(Edit::AddNode {
+                    id,
+                    parent,
+                    index,
+                    node,
+                })
+            }
+            Edit::MoveNode { id, parent, index } => {
+                if id == NodeId::ROOT {
+                    return Err(CommandError::RootNode);
+                }
+                let (from_parent, from_index) =
+                    self.parent_of(id).ok_or(CommandError::UnknownNode { id })?;
+                let moving = self.node(id).ok_or(CommandError::UnknownNode { id })?;
+                if find_node(moving, id, parent).is_some() {
+                    return Err(CommandError::NodeInsideItself { id });
+                }
+                let siblings = self
+                    .node(parent)
+                    .ok_or(CommandError::UnknownNode { id: parent })?
+                    .children
+                    .len();
+                // Counted after the node is taken out.
+                let siblings = siblings - usize::from(parent == from_parent);
+                check_index(index, siblings)?;
+                let entry = self.node_or_err(from_parent)?.children.remove(from_index);
+                self.node_or_err(parent)?.children.insert(index, entry);
+                Ok(Edit::MoveNode {
+                    id,
+                    parent: from_parent,
+                    index: from_index,
+                })
             }
             Edit::SetTempo { bpm } => {
                 if !(MIN_TEMPO_BPM..=MAX_TEMPO_BPM).contains(&bpm) {
@@ -320,32 +558,43 @@ impl Project {
                 let previous = std::mem::replace(&mut self.tempo_bpm, bpm);
                 Ok(Edit::SetTempo { bpm: previous })
             }
-            Edit::AddClip { id, clip } => {
-                if node.clips.contains_key(&id) {
-                    return Err(CommandError::DuplicateClip { id });
+            Edit::AddClip { node, id, clip } => {
+                if self.node(node).is_none() {
+                    return Err(CommandError::UnknownNode { id: node });
                 }
+                self.used_ids().claim_clip(id)?;
                 validate_clip(&clip).map_err(|reason| CommandError::InvalidClip { reason })?;
-                node.clips.insert(id, clip);
+                self.node_or_err(node)?.clips.insert(id, clip);
                 Ok(Edit::RemoveClip { id })
             }
             Edit::RemoveClip { id } => {
-                let clip = node
+                let node = self.clip_node(id).ok_or(CommandError::UnknownClip { id })?;
+                let clip = self
+                    .node_or_err(node)?
                     .clips
                     .remove(&id)
                     .ok_or(CommandError::UnknownClip { id })?;
-                Ok(Edit::AddClip { id, clip })
+                Ok(Edit::AddClip { node, id, clip })
             }
-            Edit::SetMute { muted } => {
-                let previous = std::mem::replace(&mut node.muted, muted);
-                Ok(Edit::SetMute { muted: previous })
+            Edit::SetMute { node, muted } => {
+                let target = self.node_or_err(node)?;
+                let previous = std::mem::replace(&mut target.muted, muted);
+                Ok(Edit::SetMute {
+                    node,
+                    muted: previous,
+                })
             }
-            Edit::SetSolo { soloed } => {
-                let previous = std::mem::replace(&mut node.soloed, soloed);
-                Ok(Edit::SetSolo { soloed: previous })
+            Edit::SetSolo { node, soloed } => {
+                let target = self.node_or_err(node)?;
+                let previous = std::mem::replace(&mut target.soloed, soloed);
+                Ok(Edit::SetSolo {
+                    node,
+                    soloed: previous,
+                })
             }
             Edit::SetParam { param, value } => {
                 check_normalized(value)?;
-                let state = node.param_mut(param)?;
+                let state = self.param_mut(param)?;
                 let previous = std::mem::replace(&mut state.base, value);
                 Ok(Edit::SetParam {
                     param,
@@ -353,41 +602,47 @@ impl Project {
                 })
             }
             Edit::AddEffect {
+                node,
                 id,
                 index,
                 mut effect,
             } => {
-                if node.effect(id).is_some() {
-                    return Err(CommandError::DuplicateDevice { id });
-                }
-                if node.effects.len() >= MAX_EFFECTS {
+                let target = self
+                    .node(node)
+                    .ok_or(CommandError::UnknownNode { id: node })?;
+                let len = target.effects.len();
+                let mut used = self.used_ids();
+                used.claim_device(id)?;
+                if len >= MAX_EFFECTS {
                     return Err(CommandError::TooManyEffects { max: MAX_EFFECTS });
                 }
-                check_index(index, node.effects.len())?;
-                let infos = effect_params(effect.kind);
-                if effect.params.is_empty() {
-                    effect.params = default_params(infos);
-                }
-                if effect.params.len() != infos.len() {
-                    return Err(CommandError::WrongParamCount {
-                        expected: infos.len(),
-                        found: effect.params.len(),
-                    });
-                }
-                let mut used = used_ids(node, signals);
-                for state in &mut effect.params {
-                    check_normalized(state.base)?;
-                    for (layer_id, layer) in &mut state.layers {
-                        prepare_layer(*layer_id, layer, &mut used, signals)?;
-                    }
-                }
-                node.effects.insert(index, (id, effect));
+                check_index(index, len)?;
+                prepare_params(
+                    &mut effect.params,
+                    effect_params(effect.kind),
+                    &mut used,
+                    &self.signals,
+                )?;
+                self.node_or_err(node)?.effects.insert(index, (id, effect));
                 Ok(Edit::RemoveEffect { id })
             }
             Edit::RemoveEffect { id } => {
-                let (index, _) = node.effect(id).ok_or(CommandError::UnknownDevice { id })?;
-                let (_, effect) = node.effects.remove(index);
-                Ok(Edit::AddEffect { id, index, effect })
+                let node = self
+                    .effect_node(id)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let target = self.node_or_err(node)?;
+                let index = target
+                    .effects
+                    .iter()
+                    .position(|(e, _)| *e == id)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let (_, effect) = target.effects.remove(index);
+                Ok(Edit::AddEffect {
+                    node,
+                    id,
+                    index,
+                    effect,
+                })
             }
             Edit::AddLayer {
                 param,
@@ -395,21 +650,21 @@ impl Project {
                 index,
                 mut layer,
             } => {
-                let stack_len = node
+                let stack_len = self
                     .param(param)
                     .ok_or(CommandError::UnknownParam { param })?
                     .layers
                     .len();
                 check_index(index, stack_len)?;
-                prepare_layer(id, &mut layer, &mut used_ids(node, signals), signals)?;
-                node.param_mut(param)?.layers.insert(index, (id, layer));
+                prepare_layer(id, &mut layer, &mut self.used_ids(), &self.signals)?;
+                self.param_mut(param)?.layers.insert(index, (id, layer));
                 Ok(Edit::RemoveLayer { id })
             }
             Edit::RemoveLayer { id } => {
-                let (param, index) = node
+                let (param, index) = self
                     .find_layer(id)
                     .ok_or(CommandError::UnknownLayer { id })?;
-                let (_, layer) = node.param_mut(param)?.layers.remove(index);
+                let (_, layer) = self.param_mut(param)?.layers.remove(index);
                 Ok(Edit::AddLayer {
                     param,
                     id,
@@ -418,10 +673,10 @@ impl Project {
                 })
             }
             Edit::MoveLayer { id, index } => {
-                let (param, from) = node
+                let (param, from) = self
                     .find_layer(id)
                     .ok_or(CommandError::UnknownLayer { id })?;
-                let stack = &mut node.param_mut(param)?.layers;
+                let stack = &mut self.param_mut(param)?.layers;
                 if index >= stack.len() {
                     return Err(CommandError::IndexOutOfRange {
                         index,
@@ -434,19 +689,19 @@ impl Project {
             }
             Edit::RenameLayer { id, name } => {
                 let name = clean_name(&name)?;
-                let layer = node.layer_mut(id)?;
+                let layer = self.layer_mut(id)?;
                 let previous = std::mem::replace(&mut layer.name, name);
                 Ok(Edit::RenameLayer { id, name: previous })
             }
             Edit::SetLayerMix { id, mix } => {
                 check_normalized(mix)?;
-                let layer = node.layer_mut(id)?;
+                let layer = self.layer_mut(id)?;
                 let previous = std::mem::replace(&mut layer.mix, mix);
                 Ok(Edit::SetLayerMix { id, mix: previous })
             }
             Edit::SetLayerSignal { id, signal } => {
-                check_signal(signal, signals)?;
-                let layer = node.layer_mut(id)?;
+                check_signal(signal, &self.signals)?;
+                let layer = self.layer_mut(id)?;
                 let previous = std::mem::replace(&mut layer.signal, signal);
                 Ok(Edit::SetLayerSignal {
                     id,
@@ -454,7 +709,7 @@ impl Project {
                 })
             }
             Edit::SetLayerOptions { id, mode, enabled } => {
-                let layer = node.layer_mut(id)?;
+                let layer = self.layer_mut(id)?;
                 let previous = Edit::SetLayerOptions {
                     id,
                     mode: layer.mode,
@@ -465,39 +720,39 @@ impl Project {
                 Ok(previous)
             }
             Edit::AddBlock { layer, id, block } => {
-                if node.find_layer(layer).is_none() {
+                if self.find_layer(layer).is_none() {
                     return Err(CommandError::UnknownLayer { id: layer });
                 }
-                used_ids(node, signals).claim_block(id)?;
+                self.used_ids().claim_block(id)?;
                 check_block(id, &block)?;
-                let target = node.layer_mut(layer)?;
+                let target = self.layer_mut(layer)?;
                 check_no_overlap(&target.blocks, id, &block)?;
                 insert_sorted(&mut target.blocks, id, block);
                 Ok(Edit::RemoveBlock { id })
             }
             Edit::RemoveBlock { id } => {
-                if let Some((param, layer_pos, layer, block_pos)) = node.find_block(id) {
-                    let state = node.param_mut(param)?;
+                if let Some((param, layer_pos, layer, block_pos)) = self.find_block(id) {
+                    let state = self.param_mut(param)?;
                     let (_, block) = state.layers[layer_pos].1.blocks.remove(block_pos);
                     return Ok(Edit::AddBlock { layer, id, block });
                 }
-                let (signal, position) =
-                    find_signal_block(signals, id).ok_or(CommandError::UnknownBlock { id })?;
-                let (_, block) = drawn_blocks(signals, signal)?.remove(position);
+                let (signal, position) = find_signal_block(&self.signals, id)
+                    .ok_or(CommandError::UnknownBlock { id })?;
+                let (_, block) = drawn_blocks(&mut self.signals, signal)?.remove(position);
                 Ok(Edit::AddSignalBlock { signal, id, block })
             }
             Edit::SetBlock { id, block } => {
                 check_block(id, &block)?;
                 let (blocks, position) =
-                    if let Some((param, layer_pos, _, position)) = node.find_block(id) {
+                    if let Some((param, layer_pos, _, position)) = self.find_block(id) {
                         (
-                            &mut node.param_mut(param)?.layers[layer_pos].1.blocks,
+                            &mut self.param_mut(param)?.layers[layer_pos].1.blocks,
                             position,
                         )
                     } else {
-                        let (signal, position) = find_signal_block(signals, id)
+                        let (signal, position) = find_signal_block(&self.signals, id)
                             .ok_or(CommandError::UnknownBlock { id })?;
-                        (drawn_blocks(signals, signal)?, position)
+                        (drawn_blocks(&mut self.signals, signal)?, position)
                     };
                 check_no_overlap(blocks, id, &block)?;
                 let (_, previous) = blocks.remove(position);
@@ -512,14 +767,14 @@ impl Project {
                 mut signal,
                 listeners,
             } => {
-                if signals.contains_key(&id) {
+                if self.signals.contains_key(&id) {
                     return Err(CommandError::DuplicateSignal { id });
                 }
                 signal.name = clean_name(&signal.name)?;
                 check_color(signal.color)?;
                 match &mut signal.source {
                     SignalSource::Drawn(blocks) => {
-                        let mut used = used_ids(node, signals);
+                        let mut used = self.used_ids();
                         blocks.sort_by_key(|(_, b)| b.start);
                         for (i, (block_id, block)) in blocks.iter().enumerate() {
                             used.claim_block(*block_id)?;
@@ -531,10 +786,10 @@ impl Project {
                         .map_err(|reason| CommandError::InvalidSignal { id, reason })?,
                 }
                 for &layer in &listeners {
-                    let (param, position) = node
+                    let (param, position) = self
                         .find_layer(layer)
                         .ok_or(CommandError::UnknownLayer { id: layer })?;
-                    let state = node
+                    let state = self
                         .param(param)
                         .ok_or(CommandError::UnknownParam { param })?;
                     if state.layers[position].1.signal.is_some() {
@@ -542,23 +797,25 @@ impl Project {
                     }
                 }
                 for layer in listeners {
-                    node.layer_mut(layer)?.signal = Some(id);
+                    self.layer_mut(layer)?.signal = Some(id);
                 }
-                signals.insert(id, signal);
+                self.signals.insert(id, signal);
                 Ok(Edit::RemoveSignal { id })
             }
             Edit::RemoveSignal { id } => {
-                let signal = signals
+                let signal = self
+                    .signals
                     .remove(&id)
                     .ok_or(CommandError::UnknownSignal { id })?;
                 // Listening layers go back to drawing their blocks.
-                let listeners: Vec<LayerId> = node
+                let listeners: Vec<LayerId> = self
                     .listeners()
+                    .into_iter()
                     .filter(|(_, signal)| *signal == id)
                     .map(|(used, _)| used.layer)
                     .collect();
                 for &layer in &listeners {
-                    node.layer_mut(layer)?.signal = None;
+                    self.layer_mut(layer)?.signal = None;
                 }
                 Ok(Edit::AddSignal {
                     id,
@@ -568,7 +825,8 @@ impl Project {
             }
             Edit::RenameSignal { id, name } => {
                 let name = clean_name(&name)?;
-                let signal = signals
+                let signal = self
+                    .signals
                     .get_mut(&id)
                     .ok_or(CommandError::UnknownSignal { id })?;
                 let previous = std::mem::replace(&mut signal.name, name);
@@ -576,7 +834,8 @@ impl Project {
             }
             Edit::SetSignalColor { id, color } => {
                 check_color(color)?;
-                let signal = signals
+                let signal = self
+                    .signals
                     .get_mut(&id)
                     .ok_or(CommandError::UnknownSignal { id })?;
                 let previous = std::mem::replace(&mut signal.color, color);
@@ -586,7 +845,8 @@ impl Project {
                 })
             }
             Edit::SetNotesSource { id, source } => {
-                let signal = signals
+                let signal = self
+                    .signals
                     .get_mut(&id)
                     .ok_or(CommandError::UnknownSignal { id })?;
                 let SignalSource::Notes(current) = &mut signal.source else {
@@ -601,16 +861,79 @@ impl Project {
                 })
             }
             Edit::AddSignalBlock { signal, id, block } => {
-                drawn_blocks(signals, signal)?;
-                used_ids(node, signals).claim_block(id)?;
+                drawn_blocks(&mut self.signals, signal)?;
+                self.used_ids().claim_block(id)?;
                 check_block(id, &block)?;
-                let blocks = drawn_blocks(signals, signal)?;
+                let blocks = drawn_blocks(&mut self.signals, signal)?;
                 check_no_overlap(blocks, id, &block)?;
                 insert_sorted(blocks, id, block);
                 Ok(Edit::RemoveBlock { id })
             }
         }
     }
+}
+
+/// Validates an incoming node and everything under it, claims its ids, and
+/// fills empty parameter lists with defaults.
+fn prepare_node(
+    id: NodeId,
+    node: &mut Node,
+    used: &mut UsedIds,
+    signals: &BTreeMap<SignalId, Signal>,
+) -> Result<(), CommandError> {
+    used.claim_node(id)?;
+    node.name = clean_name(&node.name)?;
+    check_color(node.color)?;
+    if let Some(instrument) = &mut node.instrument {
+        prepare_params(instrument, &INSTRUMENT_PARAMS, used, signals)?;
+    }
+    prepare_params(&mut node.channel, &CHANNEL_PARAMS, used, signals)?;
+    if node.effects.len() > MAX_EFFECTS {
+        return Err(CommandError::TooManyEffects { max: MAX_EFFECTS });
+    }
+    for (effect_id, effect) in &mut node.effects {
+        used.claim_device(*effect_id)?;
+        prepare_params(
+            &mut effect.params,
+            effect_params(effect.kind),
+            used,
+            signals,
+        )?;
+    }
+    for (clip_id, clip) in &node.clips {
+        used.claim_clip(*clip_id)?;
+        validate_clip(clip).map_err(|reason| CommandError::InvalidClip { reason })?;
+    }
+    for (child_id, child) in &mut node.children {
+        prepare_node(*child_id, child, used, signals)?;
+    }
+    Ok(())
+}
+
+/// Validates a device's incoming parameters (empty means defaults) and
+/// claims their layer and block ids.
+fn prepare_params(
+    params: &mut Vec<ParamState>,
+    infos: &[ParamInfo],
+    used: &mut UsedIds,
+    signals: &BTreeMap<SignalId, Signal>,
+) -> Result<(), CommandError> {
+    if params.is_empty() {
+        *params = default_params(infos);
+    }
+    if params.len() != infos.len() {
+        return Err(CommandError::WrongParamCount {
+            expected: infos.len(),
+            found: params.len(),
+        });
+    }
+    for state in params {
+        check_normalized(state.base)?;
+        for (layer_id, layer) in &mut state.layers {
+            prepare_layer(*layer_id, layer, used, signals)?;
+        }
+    }
+    Ok(())
 }
 
 /// A name with surrounding whitespace removed; empty names are rejected.
@@ -712,13 +1035,20 @@ mod tests {
     };
 
     const CUTOFF: ParamId = ParamId {
+        node: FIRST_NODE,
         device: DeviceRef::Instrument,
         index: instrument::CUTOFF,
     };
     const VOLUME: ParamId = ParamId {
+        node: FIRST_NODE,
         device: DeviceRef::Channel,
         index: channel::VOLUME,
     };
+
+    /// The node a new project starts with.
+    fn synth(project: &Project) -> &Node {
+        project.node(FIRST_NODE).unwrap()
+    }
 
     fn clip(notes: Vec<MidiNote>) -> MidiClip {
         MidiClip {
@@ -768,6 +1098,7 @@ mod tests {
         let mut project = Project::default();
         for edit in [
             Edit::AddEffect {
+                node: FIRST_NODE,
                 id: DeviceId(1),
                 index: 0,
                 effect: Effect::new(EffectKind::Filter),
@@ -805,7 +1136,7 @@ mod tests {
             pitch_range: true,
             lowest: 36,
             highest: 36,
-            ..NotesSource::new()
+            ..NotesSource::new(FIRST_NODE)
         }
     }
 
@@ -818,8 +1149,8 @@ mod tests {
     }
 
     fn listens_to(project: &Project, layer: u64) -> Option<SignalId> {
-        let (param, position) = project.node.find_layer(LayerId(layer)).unwrap();
-        project.node.param(param).unwrap().layers[position].1.signal
+        let (param, position) = project.find_layer(LayerId(layer)).unwrap();
+        project.param(param).unwrap().layers[position].1.signal
     }
 
     fn notes_signal() -> Signal {
@@ -943,8 +1274,8 @@ mod tests {
         let mut project = with_signals();
         let inverse = project.apply(Edit::RemoveSignal { id: DUCK }).unwrap();
         assert_eq!(listens_to(&project, 2), None);
-        let (param, position) = project.node.find_layer(LayerId(2)).unwrap();
-        let layer = &project.node.param(param).unwrap().layers[position].1;
+        let (param, position) = project.find_layer(LayerId(2)).unwrap();
+        let layer = &project.param(param).unwrap().layers[position].1;
         assert_eq!(layer.blocks.len(), 1, "blocks kept");
         project.apply(inverse).unwrap();
         assert_eq!(listens_to(&project, 2), Some(DUCK), "undo restores it");
@@ -1003,7 +1334,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(listens_to(&project, 1), Some(SWEEP));
-        let layer = &project.node.instrument[instrument::CUTOFF as usize].layers[0].1;
+        let layer =
+            &synth(&project).instrument.as_ref().unwrap()[instrument::CUTOFF as usize].layers[0].1;
         assert_eq!(layer.blocks[0].1, block(0, 4));
     }
 
@@ -1118,7 +1450,7 @@ mod tests {
                 signal: Some(DUCK),
             })
             .unwrap();
-        let listeners: Vec<_> = project.node.listeners().collect();
+        let listeners: Vec<_> = project.listeners();
         assert_eq!(
             listeners,
             [
@@ -1148,11 +1480,19 @@ mod tests {
                 name: "Night Drive".to_owned(),
             },
             Edit::RenameNode {
+                node: FIRST_NODE,
                 name: "Lead".to_owned(),
             },
-            Edit::SetMute { muted: true },
-            Edit::SetSolo { soloed: true },
+            Edit::SetMute {
+                node: FIRST_NODE,
+                muted: true,
+            },
+            Edit::SetSolo {
+                node: FIRST_NODE,
+                soloed: true,
+            },
             Edit::AddClip {
+                node: FIRST_NODE,
                 id: ClipId(1),
                 clip: clip(vec![note(60, 100, 240)]),
             },
@@ -1162,12 +1502,14 @@ mod tests {
             },
             Edit::SetParam {
                 param: ParamId {
+                    node: FIRST_NODE,
                     device: DeviceRef::Effect(DeviceId(1)),
                     index: filter::CUTOFF,
                 },
                 value: 0.2,
             },
             Edit::AddEffect {
+                node: FIRST_NODE,
                 id: DeviceId(2),
                 index: 1,
                 effect: Effect::new(EffectKind::Filter),
@@ -1204,6 +1546,7 @@ mod tests {
     fn removing_an_effect_takes_its_layers_and_undo_brings_them_back() {
         let mut project = populated();
         let filter_cutoff = ParamId {
+            node: FIRST_NODE,
             device: DeviceRef::Effect(DeviceId(1)),
             index: filter::CUTOFF,
         };
@@ -1211,18 +1554,15 @@ mod tests {
         let inverse = project
             .apply(Edit::RemoveEffect { id: DeviceId(1) })
             .unwrap();
-        assert_eq!(project.node.find_layer(LayerId(9)), None);
+        assert_eq!(project.find_layer(LayerId(9)), None);
         project.apply(inverse).unwrap();
-        assert_eq!(
-            project.node.find_layer(LayerId(9)),
-            Some((filter_cutoff, 0))
-        );
+        assert_eq!(project.find_layer(LayerId(9)), Some((filter_cutoff, 0)));
     }
 
     #[test]
     fn new_effects_start_at_their_defaults() {
         let project = populated();
-        let (_, effect) = &project.node.effects[0];
+        let (_, effect) = &synth(&project).effects[0];
         assert_eq!(effect.params.len(), 3);
         assert!(effect.params[filter::CUTOFF as usize].base > 0.99);
     }
@@ -1238,7 +1578,7 @@ mod tests {
                 layer: Layer::new(BlendMode::Add),
             })
             .unwrap();
-        let ids: Vec<_> = project.node.instrument[instrument::CUTOFF as usize]
+        let ids: Vec<_> = synth(&project).instrument.as_ref().unwrap()[instrument::CUTOFF as usize]
             .layers
             .iter()
             .map(|(id, _)| id.0)
@@ -1257,7 +1597,8 @@ mod tests {
                 block: block(20, 1),
             })
             .unwrap();
-        let layer = &project.node.instrument[instrument::CUTOFF as usize].layers[0].1;
+        let layer =
+            &synth(&project).instrument.as_ref().unwrap()[instrument::CUTOFF as usize].layers[0].1;
         let starts: Vec<_> = layer.blocks.iter().map(|(_, b)| b.start).collect();
         assert_eq!(
             starts,
@@ -1362,6 +1703,7 @@ mod tests {
             ),
             (
                 Edit::AddEffect {
+                    node: FIRST_NODE,
                     id: DeviceId(1),
                     index: 0,
                     effect: Effect::new(EffectKind::Filter),
@@ -1379,10 +1721,12 @@ mod tests {
         let mut project = populated();
         for param in [
             ParamId {
+                node: FIRST_NODE,
                 device: DeviceRef::Instrument,
                 index: 99,
             },
             ParamId {
+                node: FIRST_NODE,
                 device: DeviceRef::Effect(DeviceId(99)),
                 index: 0,
             },
@@ -1442,6 +1786,7 @@ mod tests {
         for i in 0..MAX_EFFECTS as u64 {
             project
                 .apply(Edit::AddEffect {
+                    node: FIRST_NODE,
                     id: DeviceId(i),
                     index: 0,
                     effect: Effect::new(EffectKind::Filter),
@@ -1452,6 +1797,7 @@ mod tests {
             assert_rejected(
                 &mut project,
                 Edit::AddEffect {
+                    node: FIRST_NODE,
                     id: DeviceId(99),
                     index: 0,
                     effect: Effect::new(EffectKind::Filter),
@@ -1473,6 +1819,7 @@ mod tests {
     fn clip_ids_must_be_unique_and_known() {
         let mut project = Project::default();
         let add = Edit::AddClip {
+            node: FIRST_NODE,
             id: ClipId(1),
             clip: clip(vec![]),
         };
@@ -1522,6 +1869,7 @@ mod tests {
             let err = assert_rejected(
                 &mut project,
                 Edit::AddClip {
+                    node: FIRST_NODE,
                     id: ClipId(1),
                     clip,
                 },
@@ -1552,12 +1900,13 @@ mod name_tests {
         for name in ["", "   "] {
             assert_eq!(
                 project.apply(Edit::RenameNode {
+                    node: FIRST_NODE,
                     name: name.to_owned()
                 }),
                 Err(CommandError::EmptyName)
             );
         }
-        assert_eq!(project.node.name, "Synth");
+        assert_eq!(project.node(FIRST_NODE).unwrap().name, "Synth");
     }
 }
 
@@ -1567,12 +1916,13 @@ mod move_layer_tests {
     use daw_protocol::BlendMode;
 
     const VOLUME: ParamId = ParamId {
+        node: FIRST_NODE,
         device: DeviceRef::Channel,
         index: 0,
     };
 
     fn stack(project: &Project) -> Vec<u64> {
-        project.node.channel[0]
+        project.node(FIRST_NODE).unwrap().channel[0]
             .layers
             .iter()
             .map(|(id, _)| id.0)
@@ -1619,5 +1969,202 @@ mod move_layer_tests {
             Err(CommandError::IndexOutOfRange { index: 3, len: 3 })
         );
         assert_eq!(stack(&project), [1, 2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod node_tests {
+    use super::*;
+    use daw_protocol::{EffectKind, Ticks};
+
+    const DRUMS: NodeId = NodeId(2);
+    const KICK: NodeId = NodeId(3);
+
+    /// Song › [Synth, Drums › [Kick]].
+    fn tree() -> Project {
+        let mut project = Project::default();
+        let mut drums = Node::new("Drums", 0);
+        drums
+            .children
+            .push((KICK, Node::new("Kick", 0).with_instrument()));
+        project
+            .apply(Edit::AddNode {
+                id: DRUMS,
+                parent: NodeId::ROOT,
+                index: 1,
+                node: drums,
+            })
+            .unwrap();
+        project
+    }
+
+    fn order(project: &Project) -> Vec<(u64, usize)> {
+        project.nodes().iter().map(|e| (e.id.0, e.depth)).collect()
+    }
+
+    fn round_trip(edit: Edit) {
+        let mut project = tree();
+        let original = project.clone();
+        let inverse = project.apply(edit).unwrap();
+        assert_ne!(project, original);
+        project.apply(inverse).unwrap();
+        assert_eq!(project, original);
+    }
+
+    #[test]
+    fn nodes_are_walked_parent_first() {
+        assert_eq!(order(&tree()), [(0, 0), (1, 1), (2, 1), (3, 2)]);
+        assert_eq!(tree().parent_of(KICK), Some((DRUMS, 0)));
+    }
+
+    #[test]
+    fn added_nodes_get_default_parameters() {
+        let project = tree();
+        let kick = project.node(KICK).unwrap();
+        assert_eq!(kick.channel.len(), CHANNEL_PARAMS.len());
+        assert_eq!(
+            kick.instrument.as_ref().map(Vec::len),
+            Some(INSTRUMENT_PARAMS.len())
+        );
+        assert!(project.node(DRUMS).unwrap().instrument.is_none());
+    }
+
+    #[test]
+    fn every_node_edit_is_reverted_by_its_inverse() {
+        round_trip(Edit::RemoveNode { id: DRUMS });
+        round_trip(Edit::MoveNode {
+            id: FIRST_NODE,
+            parent: DRUMS,
+            index: 1,
+        });
+        round_trip(Edit::MoveNode {
+            id: DRUMS,
+            parent: NodeId::ROOT,
+            index: 0,
+        });
+        round_trip(Edit::SetNodeColor {
+            node: KICK,
+            color: 5,
+        });
+        round_trip(Edit::SetMute {
+            node: DRUMS,
+            muted: true,
+        });
+    }
+
+    #[test]
+    fn moves_count_positions_after_taking_the_node_out() {
+        let mut project = tree();
+        project
+            .apply(Edit::MoveNode {
+                id: FIRST_NODE,
+                parent: NodeId::ROOT,
+                index: 1,
+            })
+            .unwrap();
+        assert_eq!(order(&project), [(0, 0), (2, 1), (3, 2), (1, 1)]);
+    }
+
+    #[test]
+    fn the_song_stays_put_and_nodes_never_move_inside_themselves() {
+        let mut project = tree();
+        let before = project.clone();
+        assert_eq!(
+            project.apply(Edit::RemoveNode { id: NodeId::ROOT }),
+            Err(CommandError::RootNode)
+        );
+        assert_eq!(
+            project.apply(Edit::MoveNode {
+                id: DRUMS,
+                parent: KICK,
+                index: 0
+            }),
+            Err(CommandError::NodeInsideItself { id: DRUMS })
+        );
+        assert_eq!(
+            project.apply(Edit::MoveNode {
+                id: DRUMS,
+                parent: DRUMS,
+                index: 0
+            }),
+            Err(CommandError::NodeInsideItself { id: DRUMS })
+        );
+        assert_eq!(
+            project.apply(Edit::MoveNode {
+                id: KICK,
+                parent: DRUMS,
+                index: 1
+            }),
+            Err(CommandError::IndexOutOfRange { index: 1, len: 0 })
+        );
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn ids_are_unique_across_the_whole_tree() {
+        let mut project = tree();
+        let clip = MidiClip {
+            start: Ticks::ZERO,
+            length: Ticks::from_beats(1),
+            notes: Vec::new(),
+        };
+        project
+            .apply(Edit::AddClip {
+                node: FIRST_NODE,
+                id: ClipId(1),
+                clip: clip.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            project.apply(Edit::AddClip {
+                node: KICK,
+                id: ClipId(1),
+                clip
+            }),
+            Err(CommandError::DuplicateClip { id: ClipId(1) })
+        );
+        project
+            .apply(Edit::AddEffect {
+                node: KICK,
+                id: DeviceId(4),
+                index: 0,
+                effect: Effect::new(EffectKind::Filter),
+            })
+            .unwrap();
+        let mut copy = Node::new("Copy", 0);
+        copy.effects
+            .push((DeviceId(4), Effect::new(EffectKind::Filter)));
+        assert_eq!(
+            project.apply(Edit::AddNode {
+                id: NodeId(9),
+                parent: NodeId::ROOT,
+                index: 0,
+                node: copy
+            }),
+            Err(CommandError::DuplicateDevice { id: DeviceId(4) })
+        );
+        assert_eq!(
+            project.apply(Edit::AddNode {
+                id: KICK,
+                parent: NodeId::ROOT,
+                index: 0,
+                node: Node::new("Again", 0)
+            }),
+            Err(CommandError::DuplicateNode { id: KICK })
+        );
+    }
+
+    #[test]
+    fn the_instrument_is_only_on_nodes_that_have_one() {
+        let mut project = tree();
+        let param = ParamId {
+            node: DRUMS,
+            device: DeviceRef::Instrument,
+            index: 0,
+        };
+        assert_eq!(
+            project.apply(Edit::SetParam { param, value: 0.5 }),
+            Err(CommandError::UnknownParam { param })
+        );
     }
 }

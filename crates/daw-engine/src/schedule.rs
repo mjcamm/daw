@@ -2,19 +2,37 @@
 
 use crate::project::Project;
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
-use daw_protocol::{DeviceId, EffectKind, ParamState};
+use daw_protocol::{DeviceId, EffectKind, Node, NodeId, ParamState, SignalSource};
+use std::collections::BTreeMap;
 
 /// Everything the audio thread needs to render, compiled from the project by
 /// the control side. Immutable once sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderState {
     pub tempo_bpm: f64,
-    /// False when muted, or when another node is soloed.
-    pub audible: bool,
-    /// Every note on the timeline, sorted by start.
+    /// Every node in render order: children before their parent, so each
+    /// node's bus holds all its children's sound when it renders. The Song
+    /// is last.
+    pub nodes: Vec<NodeRender>,
+}
+
+/// One node, ready to play.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeRender {
+    pub id: NodeId,
+    /// Position of the parent in [`RenderState::nodes`]; `None` for the Song.
+    pub parent: Option<usize>,
+    /// False when the node is muted. Muting a folder silences what is under
+    /// it, since its output carries their sound.
+    pub output_on: bool,
+    /// False while another node is soloed and neither this node nor any
+    /// node above it is.
+    pub instrument_on: bool,
+    /// Every note on the node's timeline, sorted by start.
     pub notes: Vec<ScheduledNote>,
-    /// One automation per instrument parameter, in index order.
-    pub instrument: Vec<Automation>,
+    /// One automation per instrument parameter, in index order; `None` for
+    /// a node that plays no notes.
+    pub instrument: Option<Vec<Automation>>,
     /// The effect chain in signal order.
     pub effects: Vec<EffectState>,
     /// One automation per channel parameter, in index order.
@@ -45,24 +63,36 @@ fn compile_params(params: &[ParamState], signals: &Signals) -> Vec<Automation> {
         .collect()
 }
 
-/// Every signal compiled, with notes signals reading the node's notes.
-pub fn compile_signals(project: &Project, notes: &[ScheduledNote]) -> Signals {
+/// Every signal compiled, each notes signal reading its source node's notes.
+/// A signal whose node no longer exists reads none.
+pub fn compile_signals(project: &Project) -> Signals {
+    let mut notes_of: BTreeMap<NodeId, Vec<SignalNote>> = BTreeMap::new();
     let mut signals = Signals::default();
     for (id, signal) in &project.signals {
-        let notes = notes.iter().map(|n| SignalNote {
-            start: n.start_beats,
-            end: n.end_beats,
-            pitch: n.pitch,
-            velocity: n.velocity,
-        });
-        signals.insert(*id, CompiledSignal::compile(signal, notes));
+        let notes: &[SignalNote] = match &signal.source {
+            SignalSource::Notes(source) => notes_of.entry(source.node).or_insert_with(|| {
+                project
+                    .node(source.node)
+                    .map(schedule_notes)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|n| SignalNote {
+                        start: n.start_beats,
+                        end: n.end_beats,
+                        pitch: n.pitch,
+                        velocity: n.velocity,
+                    })
+                    .collect()
+            }),
+            SignalSource::Drawn(_) => &[],
+        };
+        signals.insert(*id, CompiledSignal::compile(signal, notes.iter().copied()));
     }
     signals
 }
 
-/// Every note on the node's timeline, sorted by start.
-pub fn schedule_notes(project: &Project) -> Vec<ScheduledNote> {
-    let node = &project.node;
+/// Every note on a node's timeline, sorted by start.
+pub fn schedule_notes(node: &Node) -> Vec<ScheduledNote> {
     let mut notes: Vec<ScheduledNote> = node
         .clips
         .values()
@@ -85,35 +115,79 @@ pub fn schedule_notes(project: &Project) -> Vec<ScheduledNote> {
     notes
 }
 
+/// Compiles `node` and its subtree into `out`, children first, and returns
+/// the node's position.
+fn compile_node(
+    id: NodeId,
+    node: &Node,
+    soloed_above: bool,
+    any_soloed: bool,
+    signals: &Signals,
+    out: &mut Vec<NodeRender>,
+) -> usize {
+    let soloed = soloed_above || node.soloed;
+    let children: Vec<usize> = node
+        .children
+        .iter()
+        .map(|(child_id, child)| compile_node(*child_id, child, soloed, any_soloed, signals, out))
+        .collect();
+    let index = out.len();
+    out.push(NodeRender {
+        id,
+        parent: None,
+        output_on: !node.muted,
+        instrument_on: !any_soloed || soloed,
+        notes: schedule_notes(node),
+        instrument: node
+            .instrument
+            .as_ref()
+            .map(|params| compile_params(params, signals)),
+        effects: node
+            .effects
+            .iter()
+            .map(|(id, effect)| EffectState {
+                id: *id,
+                kind: effect.kind,
+                params: compile_params(&effect.params, signals),
+            })
+            .collect(),
+        channel: compile_params(&node.channel, signals),
+    });
+    for child in children {
+        out[child].parent = Some(index);
+    }
+    index
+}
+
 impl RenderState {
     pub fn compile(project: &Project) -> Self {
-        let node = &project.node;
-        let notes = schedule_notes(project);
-        let signals = compile_signals(project, &notes);
-        // With a single node, "another node is soloed" never applies yet.
-        let any_soloed = node.soloed;
+        let signals = compile_signals(project);
+        let any_soloed = project.nodes().iter().any(|e| e.node.soloed);
+        let mut nodes = Vec::new();
+        compile_node(
+            NodeId::ROOT,
+            &project.root,
+            false,
+            any_soloed,
+            &signals,
+            &mut nodes,
+        );
         Self {
             tempo_bpm: project.tempo_bpm,
-            audible: !node.muted && (node.soloed || !any_soloed),
-            notes,
-            instrument: compile_params(&node.instrument, &signals),
-            effects: node
-                .effects
-                .iter()
-                .map(|(id, effect)| EffectState {
-                    id: *id,
-                    kind: effect.kind,
-                    params: compile_params(&effect.params, &signals),
-                })
-                .collect(),
-            channel: compile_params(&node.channel, &signals),
+            nodes,
         }
+    }
+
+    /// A node's compiled form.
+    pub fn node(&self, id: NodeId) -> Option<&NodeRender> {
+        self.nodes.iter().find(|n| n.id == id)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::FIRST_NODE;
     use daw_protocol::{ClipId, MidiClip, MidiNote, Ticks};
 
     fn note(start: i64, length: i64, pitch: u8) -> MidiNote {
@@ -127,15 +201,19 @@ mod tests {
 
     fn project_with(clips: Vec<MidiClip>) -> Project {
         let mut project = Project::default();
+        let node = project.node_mut(FIRST_NODE).unwrap();
         for (i, clip) in clips.into_iter().enumerate() {
-            project.node.clips.insert(ClipId(i as u64), clip);
+            node.clips.insert(ClipId(i as u64), clip);
         }
         project
     }
 
+    fn notes(state: &RenderState) -> &[ScheduledNote] {
+        &state.node(FIRST_NODE).unwrap().notes
+    }
+
     fn starts(state: &RenderState) -> Vec<(f64, u8)> {
-        state
-            .notes
+        notes(state)
             .iter()
             .map(|n| (n.start_beats, n.pitch))
             .collect()
@@ -150,7 +228,7 @@ mod tests {
         }]);
         let state = RenderState::compile(&project);
         assert_eq!(
-            state.notes,
+            notes(&state),
             [ScheduledNote {
                 start_beats: 4.5,
                 end_beats: 5.5,
@@ -190,11 +268,72 @@ mod tests {
             ],
         }]);
         let state = RenderState::compile(&project);
-        let spans: Vec<_> = state
-            .notes
+        let spans: Vec<_> = notes(&state)
             .iter()
             .map(|n| (n.pitch, n.start_beats, n.end_beats))
             .collect();
         assert_eq!(spans, [(64, 0.0, 0.5), (60, 0.5, 1.0)]);
+    }
+
+    /// Song › [Drums › [Kick, Hats], Bass]: ids 1 to 4.
+    fn tree() -> Project {
+        let mut project = Project::default();
+        project.root.children.clear();
+        let mut drums = daw_protocol::Node::new("Drums", 0);
+        drums.children = vec![
+            (NodeId(2), crate::project::synth_node()),
+            (NodeId(3), crate::project::synth_node()),
+        ];
+        project.root.children = vec![
+            (NodeId(1), drums),
+            (NodeId(4), crate::project::synth_node()),
+        ];
+        project
+    }
+
+    fn order(state: &RenderState) -> Vec<(u64, Option<u64>)> {
+        state
+            .nodes
+            .iter()
+            .map(|n| (n.id.0, n.parent.map(|p| state.nodes[p].id.0)))
+            .collect()
+    }
+
+    #[test]
+    fn children_render_before_their_parent_and_the_song_last() {
+        let state = RenderState::compile(&tree());
+        assert_eq!(
+            order(&state),
+            [
+                (2, Some(1)),
+                (3, Some(1)),
+                (1, Some(0)),
+                (4, Some(0)),
+                (0, None)
+            ]
+        );
+    }
+
+    #[test]
+    fn solo_keeps_instruments_under_a_soloed_node() {
+        let mut project = tree();
+        project.node_mut(NodeId(1)).unwrap().soloed = true;
+        let state = RenderState::compile(&project);
+        let on = |id| state.node(NodeId(id)).unwrap().instrument_on;
+        assert!(on(2) && on(3), "under the soloed folder");
+        assert!(!on(4), "another branch is silenced");
+        assert!(state.nodes.iter().all(|n| n.output_on), "nothing is muted");
+    }
+
+    #[test]
+    fn mute_turns_off_only_the_node_itself() {
+        let mut project = tree();
+        project.node_mut(NodeId(1)).unwrap().muted = true;
+        let state = RenderState::compile(&project);
+        assert!(!state.node(NodeId(1)).unwrap().output_on);
+        assert!(
+            state.node(NodeId(2)).unwrap().output_on,
+            "its children are silenced through it"
+        );
     }
 }

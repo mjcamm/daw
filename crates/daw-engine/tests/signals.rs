@@ -6,8 +6,8 @@
 use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
     AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
-    EffectKind, Engine, EngineConfig, Layer, LayerId, LoopRange, MidiClip, MidiNote, NotesSource,
-    ParamId, Shape, Signal, SignalId, SignalSource, SignalUse, Ticks,
+    EffectKind, Engine, EngineConfig, FIRST_NODE, Layer, LayerId, LoopRange, MidiClip, MidiNote,
+    NotesSource, ParamId, Shape, Signal, SignalId, SignalSource, SignalUse, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, render};
 
@@ -18,14 +18,17 @@ const DUCK: SignalId = SignalId(1);
 const KICK: u8 = 36;
 
 const VOLUME: ParamId = ParamId {
+    node: FIRST_NODE,
     device: DeviceRef::Channel,
     index: channel::VOLUME,
 };
 const SYNTH_CUTOFF: ParamId = ParamId {
+    node: FIRST_NODE,
     device: DeviceRef::Instrument,
     index: instrument::CUTOFF,
 };
 const FILTER_CUTOFF: ParamId = ParamId {
+    node: FIRST_NODE,
     device: DeviceRef::Effect(FILTER),
     index: filter::CUTOFF,
 };
@@ -41,6 +44,7 @@ fn apply(engine: &mut Engine, edit: Edit) {
 /// Kicks hit straight up and fall back over `decay` beats.
 fn kick_envelope(decay: f64) -> NotesSource {
     NotesSource {
+        node: FIRST_NODE,
         pitch_range: true,
         velocity_clamp: true,
         lowest: KICK,
@@ -84,6 +88,7 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
     apply(
         &mut engine,
         Edit::AddClip {
+            node: FIRST_NODE,
             id: ClipId(1),
             clip: MidiClip {
                 start: Ticks::ZERO,
@@ -95,6 +100,7 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
     apply(
         &mut engine,
         Edit::AddEffect {
+            node: FIRST_NODE,
             id: FILTER,
             index: 0,
             effect: Effect::new(EffectKind::Filter),
@@ -149,6 +155,8 @@ fn values_at(
         .into_iter()
         .map(|id| {
             let param = snapshot
+                .node(FIRST_NODE)
+                .unwrap()
                 .devices
                 .iter()
                 .flat_map(|d| &d.params)

@@ -436,7 +436,12 @@ impl ProjectView {
         let id = signal.id;
         let source = self.shown_notes(id, source);
         let colors = theme.content(signal.color);
-        let node = self.session.snapshot().node.name.clone();
+        let node = self.session.snapshot().node(source.node);
+        let node_id = source.node;
+        let from = node.map_or_else(
+            || "Notes from a removed node".to_owned(),
+            |n| format!("Notes from {}", n.name),
+        );
 
         let header = div()
             .px(px(12.))
@@ -467,12 +472,12 @@ impl ProjectView {
                     .gap(px(2.))
                     .text_size(px(11.))
                     .text_color(theme.text_secondary)
-                    .child(format!("Notes from {node}"))
+                    .child(from)
                     .child(
                         small_button("inspector-source", theme)
                             .size(px(16.))
                             .child(icon(Icon::GoTo, theme.text_secondary, 11.))
-                            .on_click(cx.listener(|this, _, _, _| this.go_to_node())),
+                            .on_click(cx.listener(move |this, _, _, _| this.go_to_node(node_id))),
                     ),
             );
 
@@ -804,7 +809,7 @@ mod tests {
             highest: 38,
             velocity_min: 0.2,
             velocity_max: 0.6,
-            ..NotesSource::new()
+            ..NotesSource::new(daw_engine::FIRST_NODE)
         };
         let lowest = NotesField::Lowest.dragged(&source, 600., false);
         assert_eq!(lowest.lowest, 38, "stops at the highest");
@@ -834,7 +839,7 @@ mod tests {
         let source = NotesSource {
             lowest: 36,
             highest: 36,
-            ..NotesSource::new()
+            ..NotesSource::new(daw_engine::FIRST_NODE)
         };
         let on = NotesSwitch::PitchRange.flipped(&source);
         assert!(on.pitch_range && !on.velocity_clamp);
@@ -858,7 +863,7 @@ mod tests {
             decay: Ticks(960),
             sustain: 0.5,
             release: Ticks(960),
-            ..NotesSource::new()
+            ..NotesSource::new(daw_engine::FIRST_NODE)
         };
         let (level, span) = envelope_shape(&source);
         assert!((level(1.0) - 1.0).abs() < 1e-9, "peak after the attack");

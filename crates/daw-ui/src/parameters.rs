@@ -23,7 +23,7 @@ use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
 use crate::menu::{self, OpenMenu};
-use crate::project::{Page, ProjectView, RenameTarget};
+use crate::project::{Page, ProjectView, RenameTarget, song_clips};
 use crate::scroll;
 use crate::slider;
 use crate::theme::{ContentColor, MONO_FONT, Theme};
@@ -31,8 +31,8 @@ use crate::tooltip;
 use crate::zoom::Zoom;
 use daw_automation::{Automation, CompiledBlock, Signals};
 use daw_engine::{
-    BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId, ParamId,
-    ParamSnapshot, SignalId, SignalSource, Snapshot, Ticks,
+    BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId,
+    NodeSnapshot, ParamId, ParamSnapshot, SignalId, SignalSource, Snapshot, Ticks,
 };
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, Div, FontWeight, Hsla, Modifiers, MouseButton,
@@ -105,9 +105,9 @@ impl Row<'_> {
 }
 
 /// The rows for a node, in display order.
-fn rows(snapshot: &Snapshot) -> Vec<Row<'_>> {
+fn rows(node: &NodeSnapshot) -> Vec<Row<'_>> {
     let mut rows = Vec::new();
-    let find = |device| snapshot.devices.iter().find(|d| d.device == device);
+    let find = |device| node.devices.iter().find(|d| d.device == device);
     rows.push(Row::Section("Global"));
     if let Some(channel) = find(DeviceRef::Channel) {
         push_device(&mut rows, channel);
@@ -117,7 +117,7 @@ fn rows(snapshot: &Snapshot) -> Vec<Row<'_>> {
         push_device(&mut rows, instrument);
     }
     rows.push(Row::Section("Effects"));
-    let effects: Vec<_> = snapshot
+    let effects: Vec<_> = node
         .devices
         .iter()
         .filter(|d| matches!(d.device, DeviceRef::Effect(_)))
@@ -152,8 +152,9 @@ fn push_device<'a>(rows: &mut Vec<Row<'a>>, device: &'a DeviceSnapshot) {
 /// Every layer in the project.
 fn all_layers(snapshot: &Snapshot) -> impl Iterator<Item = &(LayerId, Layer)> {
     snapshot
-        .devices
+        .nodes
         .iter()
+        .flat_map(|n| &n.devices)
         .flat_map(|d| &d.params)
         .flat_map(|p| &p.layers)
 }
@@ -373,8 +374,9 @@ fn row_slider_length(row_height: f32) -> f32 {
 /// An id no layer in the project uses yet.
 fn next_layer_id(snapshot: &Snapshot) -> LayerId {
     let highest = snapshot
-        .devices
+        .nodes
         .iter()
+        .flat_map(|n| &n.devices)
         .flat_map(|d| &d.params)
         .flat_map(|p| &p.layers)
         .map(|(id, _)| id.0)
@@ -388,15 +390,18 @@ impl ProjectView {
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
         let pointer = window.mouse_position();
         let snapshot = self.session.snapshot();
-        let color = theme.content(snapshot.node.color);
-        let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
+        let Some(node) = self.shown_node() else {
+            return div().into_any_element();
+        };
+        let color = theme.content(node.color);
+        let bars = timeline_bars(song_clips(snapshot), snapshot.loop_range);
         let zoom = self.parameters_view.zoom;
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
         let position = self.session.position_beats();
-        let rows = rows(snapshot);
+        let rows = rows(node);
 
         let left = div()
             .w(px(LEFT_WIDTH))
@@ -478,7 +483,7 @@ impl ProjectView {
                     .child(
                         div()
                             .text_color(theme.text_secondary)
-                            .child(snapshot.node.name.clone()),
+                            .child(node.name.clone()),
                     ),
             )
             .child(
@@ -537,6 +542,7 @@ impl ProjectView {
                 ),
             )
             .children(settings)
+            .into_any_element()
     }
 
     /// The selected block, if it still exists and is on the current page:
@@ -566,11 +572,19 @@ impl ProjectView {
     /// Shows a layer on the Parameters page: scrolled into view and
     /// highlighted for a moment.
     pub(crate) fn go_to_layer(&mut self, layer: LayerId) {
-        self.page = Page::Parameters;
-        self.node_selected = true;
         let snapshot = self.session.snapshot();
+        let Some(node) = snapshot.nodes.iter().find(|n| {
+            n.devices
+                .iter()
+                .flat_map(|d| &d.params)
+                .any(|p| p.layers.iter().any(|(id, _)| *id == layer))
+        }) else {
+            return;
+        };
+        self.page = Page::Parameters;
+        self.selected_node = Some(node.id);
         let lane = self.parameters_view.zoom.row_height;
-        let top: f32 = rows(snapshot)
+        let top: f32 = rows(node)
             .iter()
             .take_while(|row| !matches!(row, Row::Layer { id, .. } if *id == layer))
             .map(|row| row.height(lane))
@@ -2126,7 +2140,7 @@ pub(crate) fn paint_curve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daw_engine::{Engine, EngineConfig, Shape, Ticks};
+    use daw_engine::{Engine, EngineConfig, FIRST_NODE, Shape, Ticks};
 
     fn snapshot_with(edits: Vec<Edit>) -> Snapshot {
         let (mut engine, _processor) = Engine::new(EngineConfig::default());
@@ -2151,6 +2165,7 @@ mod tests {
     }
 
     const VOLUME: ParamId = ParamId {
+        node: FIRST_NODE,
         device: DeviceRef::Channel,
         index: 0,
     };
@@ -2159,7 +2174,7 @@ mod tests {
     fn an_untouched_node_lists_its_devices_only() {
         let snapshot = snapshot_with(vec![]);
         assert_eq!(
-            describe(&rows(&snapshot)),
+            describe(&rows(snapshot.node(FIRST_NODE).unwrap())),
             [
                 "section Global",
                 "device Channel",
@@ -2182,7 +2197,7 @@ mod tests {
             layer: Layer::named(name, BlendMode::Add),
         };
         let snapshot = snapshot_with(vec![add(1, 0, "Bottom"), add(2, 1, "Top")]);
-        let described = describe(&rows(&snapshot));
+        let described = describe(&rows(snapshot.node(FIRST_NODE).unwrap()));
         assert_eq!(
             &described[1..6],
             [
@@ -2273,7 +2288,7 @@ mod tests {
     #[test]
     fn result_rows_and_layer_rows_share_the_lane_height() {
         let snapshot = snapshot_with(layer_with_block());
-        let heights: Vec<f32> = rows(&snapshot)
+        let heights: Vec<f32> = rows(snapshot.node(FIRST_NODE).unwrap())
             .iter()
             .filter(|r| matches!(r, Row::Set(_) | Row::Layer { .. }))
             .map(|r| r.height(55.))
@@ -2291,7 +2306,14 @@ mod tests {
     #[test]
     fn a_drag_previews_only_its_own_block() {
         let snapshot = snapshot_with(layer_with_block());
-        let layers = &snapshot.devices.last().unwrap().params[0].layers;
+        let layers = &snapshot
+            .node(FIRST_NODE)
+            .unwrap()
+            .devices
+            .last()
+            .unwrap()
+            .params[0]
+            .layers;
         let original = layers[0].1.blocks[0].1.clone();
         let mut preview = original.clone();
         preview.start = Ticks::from_beats(2);
@@ -2322,7 +2344,14 @@ mod tests {
     #[test]
     fn a_mix_drag_previews_only_its_own_layer() {
         let snapshot = snapshot_with(layer_with_block());
-        let layers = &snapshot.devices.last().unwrap().params[0].layers;
+        let layers = &snapshot
+            .node(FIRST_NODE)
+            .unwrap()
+            .devices
+            .last()
+            .unwrap()
+            .params[0]
+            .layers;
         let drag = MixDrag {
             layer: LayerId(1),
             origin_y: px(0.),

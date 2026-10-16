@@ -27,6 +27,11 @@
 //! Version 6 added switches for the pitch range and the velocity clamp. A
 //! range or clamp that does something is switched on; one that lets
 //! everything through (all pitches, a clamp of `0..=1`) is switched off.
+//!
+//! Version 7 made the nodes a tree under the Song. The single node of an
+//! older file becomes the Song's first child (id 1), and every notes signal
+//! reads its notes. The Song is a plain bus at 0 dB, centred, so old songs
+//! sound exactly as before.
 
 use serde_json::Value;
 
@@ -175,6 +180,50 @@ pub fn notes_switches(file: &mut Value) {
         let clamped = number("velocity_min", 0.0) > 0.0 || number("velocity_max", 1.0) < 1.0;
         notes.insert("pitch_range".to_owned(), ranged.into());
         notes.insert("velocity_clamp".to_owned(), clamped.into());
+    }
+}
+
+/// Puts an older file's nodes under a new Song, and points every notes
+/// signal at the first of them.
+pub fn nest_under_song(file: &mut Value) {
+    let Some(object) = file.as_object_mut() else {
+        return;
+    };
+    let nodes = match object.remove("nodes") {
+        Some(Value::Array(nodes)) => nodes,
+        _ => Vec::new(),
+    };
+    let children: Vec<Value> = nodes
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut node)| {
+            if let Some(node) = node.as_object_mut() {
+                node.insert("id".to_owned(), (i as u64 + 1).into());
+            }
+            node
+        })
+        .collect();
+    let channel: Vec<Value> = crate::devices::CHANNEL_PARAMS
+        .iter()
+        .map(|info| serde_json::json!({ "base": info.default_normalized(), "layers": [] }))
+        .collect();
+    object.insert(
+        "root".to_owned(),
+        serde_json::json!({
+            "id": 0, "name": "Song", "color": crate::project::SONG_COLOR,
+            "muted": false, "soloed": false,
+            "effects": [], "channel": channel, "clips": [], "children": children
+        }),
+    );
+    let signals = object.get_mut("signals").and_then(Value::as_array_mut);
+    for signal in signals.into_iter().flatten() {
+        let notes = signal
+            .get_mut("source")
+            .and_then(|s| s.get_mut("Notes"))
+            .and_then(Value::as_object_mut);
+        if let Some(notes) = notes {
+            notes.entry("node").or_insert(1.into());
+        }
     }
 }
 
@@ -358,6 +407,7 @@ mod tests {
         listen_to_signals(&mut file);
         clamp_velocity(&mut file);
         notes_switches(&mut file);
+        nest_under_song(&mut file);
         let source: daw_protocol::NotesSource =
             serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
         assert_eq!(source.decay, daw_protocol::Ticks(480));
@@ -380,6 +430,7 @@ mod tests {
             });
             clamp_velocity(&mut file);
             notes_switches(&mut file);
+            nest_under_song(&mut file);
             let source: daw_protocol::NotesSource =
                 serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
             (source.velocity_min, source.velocity_max)
@@ -404,6 +455,7 @@ mod tests {
                 }]
             });
             notes_switches(&mut file);
+            nest_under_song(&mut file);
             let source: daw_protocol::NotesSource =
                 serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
             (source.pitch_range, source.velocity_clamp)
@@ -411,6 +463,25 @@ mod tests {
         assert_eq!(switches(0, 127, 0.0, 1.0), (false, false));
         assert_eq!(switches(36, 36, 0.0, 1.0), (true, false));
         assert_eq!(switches(0, 127, 1.0, 1.0), (false, true));
+    }
+
+    #[test]
+    fn old_nodes_go_under_a_new_song() {
+        let mut file = json!({
+            "nodes": [{ "name": "Lead", "color": 3 }],
+            "signals": [{ "id": 1, "name": "Kick", "color": 0, "source": { "Notes": { "lowest": 36 } } }]
+        });
+        nest_under_song(&mut file);
+        assert!(file.get("nodes").is_none());
+        let root = &file["root"];
+        assert_eq!(
+            (root["id"].clone(), root["name"].clone()),
+            (json!(0), json!("Song"))
+        );
+        assert_eq!(root["children"][0]["id"], 1);
+        assert_eq!(root["children"][0]["name"], "Lead");
+        assert_eq!(root["channel"].as_array().unwrap().len(), 2);
+        assert_eq!(file["signals"][0]["source"]["Notes"]["node"], 1);
     }
 
     #[test]

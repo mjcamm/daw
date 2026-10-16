@@ -14,6 +14,18 @@ use crate::Ticks;
 )]
 pub struct DeviceId(pub u64);
 
+/// Identifies a node anywhere in the project. Chosen by its creator; the
+/// Song, the root of the tree, is always [`NodeId::ROOT`].
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct NodeId(pub u64);
+
+impl NodeId {
+    /// The Song: the root of the tree and the master output.
+    pub const ROOT: Self = Self(0);
+}
+
 /// Identifies a layer anywhere in the project. Chosen by its creator.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -43,9 +55,11 @@ pub enum DeviceRef {
     Effect(DeviceId),
 }
 
-/// A parameter: the device it belongs to and its index on that device.
+/// A parameter: its node, the device it belongs to and its index on that
+/// device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParamId {
+    pub node: NodeId,
     pub device: DeviceRef,
     pub index: u32,
 }
@@ -196,9 +210,12 @@ pub enum SignalSource {
 /// `sustain · peak` over `decay`, held while the note is held, then back to
 /// 0 over `release`. Between hits the signal rests at 0, which has no
 /// effect; a new note starts from wherever the line is, so it never jumps.
-/// The notes come from the project's node.
+/// The notes come from one node, `node`; if it is removed, the signal is
+/// silent until it comes back.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NotesSource {
+    /// The node whose notes make the hits.
+    pub node: NodeId,
     /// Whether only notes in `lowest..=highest` hit. Off, every note hits;
     /// the range is kept for when it is switched back on.
     pub pitch_range: bool,
@@ -222,8 +239,9 @@ impl NotesSource {
     /// Every note, as a short, snappy hit: straight up as high as its
     /// velocity, then back down over half a beat. The pitch range and the
     /// velocity clamp start off.
-    pub fn new() -> Self {
+    pub fn new(node: NodeId) -> Self {
         Self {
+            node,
             pitch_range: false,
             velocity_clamp: false,
             lowest: 0,
@@ -235,12 +253,6 @@ impl NotesSource {
             velocity_min: 0.0,
             velocity_max: 1.0,
         }
-    }
-}
-
-impl Default for NotesSource {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

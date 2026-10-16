@@ -17,7 +17,8 @@ use crate::theme::{ContentColor, Theme};
 use crate::zoom::Zoom;
 use daw_automation::{CompiledSignal, SignalNote, Signals};
 use daw_engine::{
-    Command, Edit, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot,
+    Command, Edit, NodeId, NodeSnapshot, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse,
+    Snapshot,
 };
 use gpui::{AnyElement, ClickEvent, Context, Div, FontWeight, Window, canvas, div, prelude::*, px};
 use std::rc::Rc;
@@ -58,26 +59,28 @@ fn next_signal_color(snapshot: &Snapshot) -> u8 {
 }
 
 /// "<node> notes", numbered if that name is taken.
-fn notes_signal_name(snapshot: &Snapshot) -> String {
-    let base = format!("{} notes", snapshot.node.name);
+fn notes_signal_name(snapshot: &Snapshot, node: &NodeSnapshot) -> String {
+    let base = format!("{} notes", node.name);
     std::iter::once(base.clone())
         .chain((2..).map(|n| format!("{base} {n}")))
         .find(|name| !snapshot.signals.iter().any(|s| &s.name == name))
         .unwrap_or(base)
 }
 
-/// The signals the node publishes. Until the node tree there is one node,
-/// so these are all the notes signals.
-pub(crate) fn published_signals(snapshot: &Snapshot) -> impl Iterator<Item = &SignalSnapshot> {
+/// The signals a node publishes: the notes signals reading its notes.
+pub(crate) fn published_signals(
+    snapshot: &Snapshot,
+    node: NodeId,
+) -> impl Iterator<Item = &SignalSnapshot> {
     snapshot
         .signals
         .iter()
-        .filter(|s| matches!(s.source, SignalSource::Notes(_)))
+        .filter(move |s| matches!(&s.source, SignalSource::Notes(n) if n.node == node))
 }
 
-/// Whether the node has any notes to publish.
-pub(crate) fn node_has_notes(snapshot: &Snapshot) -> bool {
-    snapshot.clips.iter().any(|(_, c)| !c.notes.is_empty())
+/// Whether a node has any notes to publish.
+pub(crate) fn node_has_notes(node: &NodeSnapshot) -> bool {
+    node.clips.iter().any(|(_, c)| !c.notes.is_empty())
 }
 
 /// The chip text for how many layers listen to a signal.
@@ -89,17 +92,16 @@ fn uses_label(count: usize) -> String {
     }
 }
 
-/// Where a listening layer is: "Device › Parameter › Layer".
+/// Where a listening layer is: "Node › Device › Parameter › Layer".
 fn use_label(snapshot: &Snapshot, used: SignalUse) -> String {
-    let device = snapshot
-        .devices
-        .iter()
-        .find(|d| d.device == used.param.device);
+    let node = snapshot.node(used.param.node);
+    let device = node.and_then(|n| n.devices.iter().find(|d| d.device == used.param.device));
     let param = device.and_then(|d| d.params.iter().find(|p| p.id == used.param));
     let layer = param
         .and_then(|p| p.layers.iter().find(|(id, _)| *id == used.layer))
         .map(|(_, l)| if l.name.is_empty() { "Layer" } else { &l.name });
     [
+        node.map(|n| n.name.as_str()),
         device.map(|d| d.name.as_str()),
         param.map(|p| p.name.as_str()),
         layer,
@@ -110,11 +112,13 @@ fn use_label(snapshot: &Snapshot, used: SignalUse) -> String {
     .join(" › ")
 }
 
-/// Every note on the node, as a notes signal reads them.
-fn signal_notes(snapshot: &Snapshot) -> Vec<SignalNote> {
+/// Every note on a node, as a notes signal reads them; none if the node
+/// is gone.
+fn signal_notes(snapshot: &Snapshot, node: NodeId) -> Vec<SignalNote> {
     snapshot
-        .clips
-        .iter()
+        .node(node)
+        .into_iter()
+        .flat_map(|n| &n.clips)
         .flat_map(|(_, clip)| {
             clip.notes.iter().filter_map(move |note| {
                 // Only the part of a note inside its clip plays.
@@ -131,9 +135,16 @@ fn signal_notes(snapshot: &Snapshot) -> Vec<SignalNote> {
         .collect()
 }
 
+/// The notes a signal reads: its source node's, for a notes signal.
+fn notes_for(snapshot: &Snapshot, source: &SignalSource) -> Vec<SignalNote> {
+    match source {
+        SignalSource::Notes(notes) => signal_notes(snapshot, notes.node),
+        SignalSource::Drawn(_) => Vec::new(),
+    }
+}
+
 /// Every signal compiled, as the engine plays them.
 fn compile_all(snapshot: &Snapshot) -> Signals {
-    let notes = signal_notes(snapshot);
     let mut signals = Signals::default();
     for signal in &snapshot.signals {
         let source = Signal {
@@ -141,10 +152,8 @@ fn compile_all(snapshot: &Snapshot) -> Signals {
             color: signal.color,
             source: signal.source.clone(),
         };
-        signals.insert(
-            signal.id,
-            CompiledSignal::compile(&source, notes.iter().copied()),
-        );
+        let notes = notes_for(snapshot, &signal.source);
+        signals.insert(signal.id, CompiledSignal::compile(&source, notes));
     }
     signals
 }
@@ -180,7 +189,7 @@ impl ProjectView {
         let mut signals = (*signals).clone();
         signals.insert(
             drag.signal,
-            CompiledSignal::compile(&preview, signal_notes(snapshot)),
+            CompiledSignal::compile(&preview, notes_for(snapshot, &preview.source)),
         );
         Rc::new(signals)
     }
@@ -221,7 +230,7 @@ impl ProjectView {
         let pointer = window.mouse_position();
         let snapshot = self.session.snapshot();
         let zoom = self.signals_view.zoom;
-        let bars = timeline_bars(snapshot.clips.iter().map(|(_, c)| c), snapshot.loop_range);
+        let bars = timeline_bars(crate::project::song_clips(snapshot), snapshot.loop_range);
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
         let compiled = self.compiled_signals();
 
@@ -471,21 +480,26 @@ impl ProjectView {
         };
         let source: AnyElement = match &signal.source {
             SignalSource::Drawn(_) => div().child("Drawn").into_any_element(),
-            SignalSource::Notes(_) => {
-                let node = self.session.snapshot().node.name.clone();
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .child(format!("from {node}"))
-                    .child(
-                        small_button(("signal-source", id.0), theme)
-                            .size(px(16.))
-                            .child(icon(Icon::GoTo, theme.text_secondary, 11.))
-                            .on_click(cx.listener(|this, _, _, _| this.go_to_node())),
-                    )
-                    .into_any_element()
-            }
+            SignalSource::Notes(notes) => match self.session.snapshot().node(notes.node) {
+                Some(node) => {
+                    let node_id = node.id;
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(format!("from {}", node.name))
+                        .child(
+                            small_button(("signal-source", id.0), theme)
+                                .size(px(16.))
+                                .child(icon(Icon::GoTo, theme.text_secondary, 11.))
+                                .on_click(
+                                    cx.listener(move |this, _, _, _| this.go_to_node(node_id)),
+                                ),
+                        )
+                        .into_any_element()
+                }
+                None => div().child("source removed").into_any_element(),
+            },
         };
 
         let uses_open = self.open_menu == Some(OpenMenu::SignalUses(id));
@@ -647,26 +661,29 @@ impl ProjectView {
         self.session.apply(Command::Edit(edit));
     }
 
-    /// Publishes the node's notes as a new motion signal: every note, a
-    /// short snappy hit.
-    pub(crate) fn publish_notes(&mut self) {
+    /// Publishes a node's notes as a new motion signal: every note, a short
+    /// snappy hit.
+    pub(crate) fn publish_notes(&mut self, node: NodeId) {
         let snapshot = self.session.snapshot();
+        let Some(source) = snapshot.node(node) else {
+            return;
+        };
         let edit = Edit::AddSignal {
             id: next_signal_id(snapshot),
             signal: Signal {
-                name: notes_signal_name(snapshot),
+                name: notes_signal_name(snapshot, source),
                 color: next_signal_color(snapshot),
-                source: SignalSource::Notes(daw_engine::NotesSource::new()),
+                source: SignalSource::Notes(daw_engine::NotesSource::new(node)),
             },
             listeners: Vec::new(),
         };
         self.session.apply(Command::Edit(edit));
     }
 
-    /// Shows the node on the Arrange page, selected.
-    pub(crate) fn go_to_node(&mut self) {
+    /// Shows a node on the Arrange page, selected.
+    pub(crate) fn go_to_node(&mut self, node: NodeId) {
         self.page = crate::project::Page::Arrange;
-        self.node_selected = true;
+        self.selected_node = Some(node);
     }
 }
 
@@ -709,8 +726,8 @@ fn notes_lane(
 mod tests {
     use super::*;
     use daw_engine::{
-        BlendMode, DeviceRef, Engine, EngineConfig, Layer, LayerId, NotesSource, ParamId,
-        devices::channel,
+        BlendMode, DeviceRef, Engine, EngineConfig, FIRST_NODE, Layer, LayerId, NodeId,
+        NotesSource, ParamId, devices::channel,
     };
 
     fn snapshot_with(edits: Vec<Edit>) -> Snapshot {
@@ -759,20 +776,28 @@ mod tests {
     #[test]
     fn published_notes_signals_are_named_after_the_node() {
         let snapshot = snapshot_with(vec![]);
-        let node = snapshot.node.name.clone();
-        assert_eq!(notes_signal_name(&snapshot), format!("{node} notes"));
-        let notes = |name: String| Signal {
+        let synth = snapshot.node(FIRST_NODE).unwrap();
+        let node = synth.name.clone();
+        assert_eq!(notes_signal_name(&snapshot, synth), format!("{node} notes"));
+        let notes = |name: String, from: NodeId| Signal {
             name,
             color: 0,
-            source: SignalSource::Notes(NotesSource::new()),
+            source: SignalSource::Notes(NotesSource::new(from)),
         };
         let snapshot = snapshot_with(vec![
-            add(1, notes(format!("{node} notes"))),
+            add(1, notes(format!("{node} notes"), FIRST_NODE)),
             add(2, drawn("Sweep", 1)),
+            add(3, notes("Elsewhere".to_owned(), NodeId(9))),
         ]);
-        assert_eq!(notes_signal_name(&snapshot), format!("{node} notes 2"));
-        let published: Vec<SignalId> = published_signals(&snapshot).map(|s| s.id).collect();
-        assert_eq!(published, [SignalId(1)], "drawn signals are not the node's");
+        let synth = snapshot.node(FIRST_NODE).unwrap();
+        assert_eq!(
+            notes_signal_name(&snapshot, synth),
+            format!("{node} notes 2")
+        );
+        let published: Vec<SignalId> = published_signals(&snapshot, FIRST_NODE)
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(published, [SignalId(1)], "only this node's notes signals");
     }
 
     #[test]
@@ -785,6 +810,7 @@ mod tests {
     #[test]
     fn a_use_names_its_device_parameter_and_layer() {
         let volume = ParamId {
+            node: FIRST_NODE,
             device: DeviceRef::Channel,
             index: channel::VOLUME,
         };
@@ -794,7 +820,7 @@ mod tests {
                 Signal {
                     name: "Kick".to_owned(),
                     color: 0,
-                    source: SignalSource::Notes(NotesSource::new()),
+                    source: SignalSource::Notes(NotesSource::new(FIRST_NODE)),
                 },
             ),
             Edit::AddLayer {
@@ -808,6 +834,9 @@ mod tests {
             panic!("expected one use");
         };
         assert_eq!(used.param, volume);
-        assert_eq!(use_label(&snapshot, used), "Channel › Volume › Duck");
+        assert_eq!(
+            use_label(&snapshot, used),
+            "Synth › Channel › Volume › Duck"
+        );
     }
 }

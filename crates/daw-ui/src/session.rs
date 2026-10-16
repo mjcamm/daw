@@ -4,8 +4,9 @@
 //! [`Snapshot`] and send [`Command`]s through here.
 
 use crate::layout::METER_FALL_PER_FRAME;
-use daw_engine::{Command, Edit, Engine, EngineConfig, Meter, Snapshot};
+use daw_engine::{Command, Edit, Engine, EngineConfig, Meter, NodeId, Snapshot};
 use daw_host::{AudioOutput, OutputDevice, demo, projects};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -17,8 +18,8 @@ pub struct Session {
     /// Kept alive so audio keeps playing; `None` if no device opened.
     _output: Option<AudioOutput>,
     snapshot: Snapshot,
-    /// Meter levels as displayed: peaks that fall back smoothly.
-    meter: Meter,
+    /// Each node's meter as displayed: peaks that fall back smoothly.
+    meters: BTreeMap<NodeId, Meter>,
     folder: PathBuf,
     /// Content revision at the last save.
     saved_revision: u64,
@@ -77,7 +78,7 @@ impl Session {
             snapshot: engine.snapshot(),
             engine,
             _output: output,
-            meter: Meter::default(),
+            meters: BTreeMap::new(),
             folder,
             saved_revision: revision,
             autosaved_revision: revision,
@@ -92,11 +93,13 @@ impl Session {
         if self.engine.revision() != self.snapshot.revision {
             self.snapshot = self.engine.snapshot();
         }
-        let peak = self.engine.take_meter();
-        self.meter = Meter {
-            left: peak.left.max(self.meter.left * METER_FALL_PER_FRAME),
-            right: peak.right.max(self.meter.right * METER_FALL_PER_FRAME),
-        };
+        for (node, peak) in self.engine.take_meters() {
+            let shown = self.meters.entry(node).or_default();
+            *shown = Meter {
+                left: peak.left.max(shown.left * METER_FALL_PER_FRAME),
+                right: peak.right.max(shown.right * METER_FALL_PER_FRAME),
+            };
+        }
         self.autosave_if_due();
     }
 
@@ -138,8 +141,9 @@ impl Session {
         self.engine.position_beats()
     }
 
-    pub fn meter(&self) -> Meter {
-        self.meter
+    /// A node's meter as displayed.
+    pub fn meter(&self, node: NodeId) -> Meter {
+        self.meters.get(&node).copied().unwrap_or_default()
     }
 
     /// Sends a command. Rejected commands change nothing, so the UI just

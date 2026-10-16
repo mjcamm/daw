@@ -7,6 +7,7 @@
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
 - **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to) and **listening layers on Parameters** (type picked when adding, then fixed; chip with hover explanation and go-to; windows show the signal). Driven and checked by Claude via `scripts/ui-drive.ps1`; not yet tried by the user. Layer rows are two lines (name; type chip and blend mode) and rows on every timeline page are at least 44 px; not yet seen running.
+- **Phase 5 (node tree): engine done** (2026-10-16, `docs/design/node-tree.md`): nodes form a tree under the Song (the master), folders have no instrument, sound sums up through folders (a centred folder passes sound unchanged; existing songs render bit-for-bit the same), mute and solo work across the tree, per-node meters, project-wide ids, notes signals name their source node, file version 7 (older files nest their node under the Song). The UI still shows one flat row per node; next comes the Arrange tree with its nesting map. Mixer layout agreed (`docs/design/mixer.md`).
 - **Publish as signal and the inspector** (2026-10-16): the node row on Arrange publishes its notes as a signal; the **inspector** (right panel, folding into a tray, `docs/design/inspector.md`) configures a selected notes signal: an optional pitch range, ADSR envelope with a live graph, and an optional velocity clamp (Min/Max). The two optional parts have on/off switches, off by default (file version 6). Driven and checked by Claude; tried by the user ("feels great").
 
 ## In the app (`cargo run -p daw-ui`)
@@ -34,9 +35,8 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Next up
 
-1. Phase 4's "done when": build a kick ducking several parameters, all in the UI, and see what is missing. The demo song has no kick (one synth node), so the synth's notes stand in until Phase 5. (Showing a node's pitches on notes lanes is deferred by the user; the range picker is enough for now.)
-2. **Milestone gate** (after Phase 4, as `build-plan.md` has it): the user says shaping movement feels great, so it passes once the walkthrough finds nothing missing. Then Phase 5 (node tree).
-3. **Mixer layout is agreed** (`docs/design/mixer.md`): a flat, aligned desk with a nesting map along the bottom. Built with the node tree in Phase 5.
+1. **Phase 5, Arrange tree** (`docs/design/node-tree.md`, UI steps): flat aligned rows with folders below their children, the vertical nesting map (up to 4 columns, then scrolls; width from the timeline), folding, "+ Add node", "Group into folder", "Duplicate node", drag a row onto a bar to nest, drag clips between nodes. Then Parameters per node, the mixer (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song.
+2. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI) is still to run; the user chose to start Phase 5 first. Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
 
 ## Design rules the user has set
 
@@ -54,7 +54,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Known gaps
 
-- One node only (node tree is Phase 5). No adding effects in the UI yet (engine has a Filter).
+- The engine has the node tree, but the UI cannot add nodes yet. No adding effects in the UI yet (engine has a Filter).
 - Parameters update every 32 samples (gains ramp, others step); revisit if anything sounds zippery.
 - Reference WAVs in `crates/daw-engine/tests/references/` total about 4 MB; keep new ones short.
 - `docs/gpui-notes.md` holds hard-won GPUI knowledge; add to it.

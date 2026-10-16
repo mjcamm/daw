@@ -5,8 +5,8 @@
 use daw_engine::devices::{FILTER_PARAMS, channel, filter, instrument};
 use daw_engine::{
     AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
-    EffectKind, Engine, EngineConfig, Layer, LayerId, LoopRange, MidiClip, MidiNote, ParamId,
-    Shape, ShapePoint, Ticks,
+    EffectKind, Engine, EngineConfig, FIRST_NODE, Layer, LayerId, LoopRange, MidiClip, MidiNote,
+    ParamId, Shape, ShapePoint, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, assert_reference, render};
 
@@ -15,14 +15,17 @@ const FRAMES_PER_BEAT: usize = 24_000;
 const FILTER: DeviceId = DeviceId(1);
 
 const VOLUME: ParamId = ParamId {
+    node: FIRST_NODE,
     device: DeviceRef::Channel,
     index: channel::VOLUME,
 };
 const SYNTH_CUTOFF: ParamId = ParamId {
+    node: FIRST_NODE,
     device: DeviceRef::Instrument,
     index: instrument::CUTOFF,
 };
 const FILTER_CUTOFF: ParamId = ParamId {
+    node: FIRST_NODE,
     device: DeviceRef::Effect(FILTER),
     index: filter::CUTOFF,
 };
@@ -41,6 +44,7 @@ fn held_note() -> (Engine, AudioProcessor) {
     apply(
         &mut engine,
         Edit::AddClip {
+            node: FIRST_NODE,
             id: ClipId(1),
             clip: MidiClip {
                 start: Ticks::ZERO,
@@ -61,6 +65,7 @@ fn add_filter(engine: &mut Engine) {
     apply(
         engine,
         Edit::AddEffect {
+            node: FIRST_NODE,
             id: FILTER,
             index: 0,
             effect: Effect::new(EffectKind::Filter),
@@ -204,6 +209,7 @@ fn moving_the_filter_mode_knob_changes_the_sound() {
         &mut engine,
         Edit::SetParam {
             param: ParamId {
+                node: FIRST_NODE,
                 device: DeviceRef::Effect(FILTER),
                 index: filter::MODE,
             },
@@ -355,7 +361,7 @@ fn snapshot_shows_the_value_at_the_playhead() {
         .unwrap();
     render(&mut engine, &mut processor, 1, &[1]);
     let snapshot = engine.snapshot();
-    let cutoff = &snapshot.devices[0].params[instrument::CUTOFF as usize];
+    let cutoff = &snapshot.node(FIRST_NODE).unwrap().devices[0].params[instrument::CUTOFF as usize];
     assert_eq!(cutoff.name, "Cutoff");
     // Three quarters of the way up the ramp: a quarter of the range above
     // the centre line, so a push of +0.5.
@@ -379,6 +385,7 @@ fn render_automated_pattern(blocks: &[usize], frames: usize) -> Rendered {
     apply(
         &mut engine,
         Edit::AddClip {
+            node: FIRST_NODE,
             id: ClipId(1),
             clip: MidiClip {
                 start: Ticks::ZERO,
@@ -460,6 +467,7 @@ fn constant_layer_editing_during_playback_stays_realtime_safe() {
         apply(
             &mut engine,
             Edit::AddEffect {
+                node: FIRST_NODE,
                 id: device,
                 index: 0,
                 effect: Effect::new(EffectKind::Filter),
@@ -468,6 +476,7 @@ fn constant_layer_editing_during_playback_stays_realtime_safe() {
         add_layer(
             &mut engine,
             ParamId {
+                node: FIRST_NODE,
                 device: DeviceRef::Effect(device),
                 index: filter::CUTOFF,
             },
@@ -481,8 +490,9 @@ fn constant_layer_editing_during_playback_stays_realtime_safe() {
         if i % 7 == 0 {
             engine.apply(Command::Undo).unwrap();
         }
-        if engine.project().node.effects.len() > 12 {
-            let id = engine.project().node.effects[0].0;
+        let synth = engine.project().node(FIRST_NODE).unwrap();
+        if synth.effects.len() > 12 {
+            let id = synth.effects[0].0;
             apply(&mut engine, Edit::RemoveEffect { id });
         }
         render(&mut engine, &mut processor, 97, &[13, 31]);
