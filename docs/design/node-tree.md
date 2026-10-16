@@ -1,6 +1,6 @@
 # Node Tree (Phase 5 design)
 
-*Status: agreed with the user 2026-10-16. **Engine built** (everything above "UI"): tree, edits, audio, meters, file version 7; the UI shows each node as a flat row and the selected node on Parameters. The UI steps are not started. UI layout for the mixer: `mixer.md`. Sketches: https://claude.ai/artifact/4xzV4YFut9r4ovpByU7qFT*
+*Status: agreed with the user 2026-10-16. **Engine built** (everything above "UI"): tree, edits, audio, meters, file version 7; **Arrange tree built** (UI steps 1 and 2, `crates/daw-ui/src/tree.rs`, `arrange.rs`). Still to do: dragging clips between nodes, the mixer, the inspector's channel strip, a richer demo song. UI layout for the mixer: `mixer.md`. Sketches: https://claude.ai/artifact/4xzV4YFut9r4ovpByU7qFT*
 
 ## Model
 
@@ -35,6 +35,14 @@
 ## File
 
 Version 7 stores the tree: `root` holds the Song, each node lists its `children`. Older files load with their single node as the Song's first child; the Song is a plain bus at 0 dB, centre, so old songs sound bit-for-bit the same.
+
+## Arrange as built
+
+- **Rows** in display order: each folder after its children, the Song last ("Master"; no signal button, no rename, no drag). Kinds read "MIDI · Synth", "Folder", "Master".
+- **Toolbar** in the NODES heading, acting on the selected node: **+** (menu: "Instrument (Synth)" or "Folder"; goes just after the selected node in its folder, or at the end of the Song, and is selected), **group into a folder** (one undo step via `Edit::Batch`; the folder takes the node's colour), **duplicate** (the whole subtree with fresh ids, clips and layers included, named "X 2", placed just after), **delete** (also the Delete key). Greyed when nothing (or the Song) is selected. New nodes take the first palette colour no node uses.
+- **Nesting map** left of the rows, 18 px per column, the Song in column 0. A folder's bar runs beside its visible children with a chevron at the top (fold, UI state shared later with the mixer), and an arrow (Lucide `corner-down-right`) points into the folder's row. A folded or empty folder shows a short pill on its own row. GPUI cannot rotate text, so bars carry no names; hovering a bar names it. Up to 4 columns show, then the map scrolls sideways (Shift+wheel).
+- **Moving:** drag a row onto another row to put it just after that node in its folder (onto the Song: last in the Song); drag onto a bar to put it last in that folder. Pure logic and tests in `tree.rs` (`move_edit`).
+- **Not yet:** folder lanes show nothing (a summary of what is inside is still to design), and folded folders hide their children's clips.
 
 ## UI (steps after the engine)
 

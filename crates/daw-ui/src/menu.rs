@@ -23,6 +23,8 @@ pub enum OpenMenu {
     SignalColor(daw_engine::SignalId),
     /// The layers listening to a signal.
     SignalUses(daw_engine::SignalId),
+    /// Adding a node: an instrument or a folder.
+    AddNode,
     /// Publishing a node as a signal, and the signals it publishes.
     NodeSignals(daw_engine::NodeId),
 }

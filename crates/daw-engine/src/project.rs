@@ -465,6 +465,26 @@ impl Project {
     /// before anything is modified.
     pub fn apply(&mut self, edit: Edit) -> Result<Edit, CommandError> {
         match edit {
+            Edit::Batch(edits) => {
+                let mut inverses = Vec::with_capacity(edits.len());
+                for edit in edits {
+                    match self.apply(edit) {
+                        Ok(inverse) => inverses.push(inverse),
+                        Err(e) => {
+                            // Undo what was applied, newest first: each
+                            // inverse restores exactly what came before.
+                            for inverse in inverses.into_iter().rev() {
+                                if let Err(undo) = self.apply(inverse) {
+                                    unreachable!("an inverse edit was rejected: {undo}");
+                                }
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                inverses.reverse();
+                Ok(Edit::Batch(inverses))
+            }
             Edit::RenameSong { name } => {
                 let name = clean_name(&name)?;
                 let previous = std::mem::replace(&mut self.name, name);
@@ -2152,6 +2172,39 @@ mod node_tests {
             }),
             Err(CommandError::DuplicateNode { id: KICK })
         );
+    }
+
+    #[test]
+    fn a_batch_is_one_step_and_all_or_nothing() {
+        // Group the Synth into a new folder: add the folder, move it in.
+        let group = Edit::Batch(vec![
+            Edit::AddNode {
+                id: NodeId(7),
+                parent: NodeId::ROOT,
+                index: 0,
+                node: Node::new("Folder", 0),
+            },
+            Edit::MoveNode {
+                id: FIRST_NODE,
+                parent: NodeId(7),
+                index: 0,
+            },
+        ]);
+        round_trip(group);
+        let mut project = tree();
+        project
+            .apply(Edit::Batch(vec![Edit::Batch(Vec::new())]))
+            .unwrap();
+        let before = project.clone();
+        let failing = Edit::Batch(vec![
+            Edit::RemoveNode { id: KICK },
+            Edit::RemoveNode { id: KICK },
+        ]);
+        assert_eq!(
+            project.apply(failing),
+            Err(CommandError::UnknownNode { id: KICK })
+        );
+        assert_eq!(project, before, "the first removal was undone");
     }
 
     #[test]

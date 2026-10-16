@@ -81,6 +81,8 @@ pub struct ProjectView {
     dismissed_menu: Option<OpenMenu>,
     /// The node selected on Arrange; the Parameters page shows it.
     pub(crate) selected_node: Option<NodeId>,
+    /// Folders folded in the nesting map. UI state, not saved.
+    pub(crate) folded: std::collections::HashSet<NodeId>,
     /// Where the Parameters page lanes were last drawn: the top-left is
     /// beat 0 of the first row.
     pub(crate) lanes_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -158,6 +160,7 @@ impl ProjectView {
             open_menu: None,
             dismissed_menu: None,
             selected_node: None,
+            folded: std::collections::HashSet::new(),
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
             selected_block: None,

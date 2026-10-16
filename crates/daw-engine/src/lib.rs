@@ -329,6 +329,10 @@ fn node_snapshot(
                 let infos = node.param_infos(device).unwrap_or(&[]);
                 DeviceSnapshot {
                     device,
+                    effect: match device {
+                        DeviceRef::Effect(id) => node.effect(id).map(|(_, e)| e.kind),
+                        _ => None,
+                    },
                     name: device_name(node, device).to_owned(),
                     params: params
                         .iter()

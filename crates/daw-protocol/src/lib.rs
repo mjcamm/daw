@@ -191,6 +191,9 @@ pub enum Edit {
         id: BlockId,
         block: Block,
     },
+    /// Several edits as one step, applied in order: one undo reverts them
+    /// all. If any is rejected, none take effect.
+    Batch(Vec<Edit>),
 }
 
 /// A node and everything in it, as sent in [`Edit::AddNode`]: one node
@@ -344,6 +347,8 @@ pub struct Meter {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceSnapshot {
     pub device: DeviceRef,
+    /// The kind, for an effect.
+    pub effect: Option<EffectKind>,
     pub name: String,
     pub params: Vec<ParamSnapshot>,
 }

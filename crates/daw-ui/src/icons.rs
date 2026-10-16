@@ -28,10 +28,14 @@ pub enum Icon {
     ChevronRight,
     Signal,
     Panel,
+    FolderPlus,
+    Copy,
+    Trash,
+    IntoFolder,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 19] = [
+const ICONS: [(Icon, &str, &[u8]); 23] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -126,6 +130,26 @@ const ICONS: [(Icon, &str, &[u8]); 19] = [
         Icon::Panel,
         "icons/panel-right.svg",
         include_bytes!("../assets/icons/panel-right.svg"),
+    ),
+    (
+        Icon::FolderPlus,
+        "icons/folder-plus.svg",
+        include_bytes!("../assets/icons/folder-plus.svg"),
+    ),
+    (
+        Icon::Copy,
+        "icons/copy.svg",
+        include_bytes!("../assets/icons/copy.svg"),
+    ),
+    (
+        Icon::Trash,
+        "icons/trash-2.svg",
+        include_bytes!("../assets/icons/trash-2.svg"),
+    ),
+    (
+        Icon::IntoFolder,
+        "icons/corner-down-right.svg",
+        include_bytes!("../assets/icons/corner-down-right.svg"),
     ),
 ];
 

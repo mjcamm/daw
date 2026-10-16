@@ -7,7 +7,7 @@
 - **Phases 0–2 done:** foundations, headless engine, parameters and layers.
 - **Phase 3 (core-loop UI): built and tried by the user**, who is happy with it. Decisions: `docs/design/core-loop-ui.md`.
 - **Phase 4 (motion signals): engine done to the revised design** (2026-10-15, `docs/design/motion-signals.md`): layers (not blocks) listen to signals, signals are centred, notes are ADSR hits, removing a signal sends its listeners back to drawing. File version 4. **Signals page built** (drawn signals, colour, rename, delete, uses list with go-to) and **listening layers on Parameters** (type picked when adding, then fixed; chip with hover explanation and go-to; windows show the signal). Driven and checked by Claude via `scripts/ui-drive.ps1`; not yet tried by the user. Layer rows are two lines (name; type chip and blend mode) and rows on every timeline page are at least 44 px; not yet seen running.
-- **Phase 5 (node tree): engine done** (2026-10-16, `docs/design/node-tree.md`): nodes form a tree under the Song (the master), folders have no instrument, sound sums up through folders (a centred folder passes sound unchanged; existing songs render bit-for-bit the same), mute and solo work across the tree, per-node meters, project-wide ids, notes signals name their source node, file version 7 (older files nest their node under the Song). The UI still shows one flat row per node; next comes the Arrange tree with its nesting map. Mixer layout agreed (`docs/design/mixer.md`).
+- **Phase 5 (node tree): engine done** (2026-10-16, `docs/design/node-tree.md`): nodes form a tree under the Song (the master), folders have no instrument, sound sums up through folders (a centred folder passes sound unchanged; existing songs render bit-for-bit the same), mute and solo work across the tree, per-node meters, project-wide ids, notes signals name their source node, file version 7 (older files nest their node under the Song). **Arrange tree built** (2026-10-16): flat rows with folders after their children and the Song last, the vertical nesting map with folding, a toolbar (add instrument or folder, group, duplicate, delete; Delete key too), and drag to move or nest. Driven and checked by Claude; not yet tried by the user. Mixer layout agreed (`docs/design/mixer.md`).
 - **Publish as signal and the inspector** (2026-10-16): the node row on Arrange publishes its notes as a signal; the **inspector** (right panel, folding into a tray, `docs/design/inspector.md`) configures a selected notes signal: an optional pitch range, ADSR envelope with a live graph, and an optional velocity clamp (Min/Max). The two optional parts have on/off switches, off by default (file version 6). Driven and checked by Claude; tried by the user ("feels great").
 
 ## In the app (`cargo run -p daw-ui`)
@@ -35,7 +35,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Next up
 
-1. **Phase 5, Arrange tree** (`docs/design/node-tree.md`, UI steps): flat aligned rows with folders below their children, the vertical nesting map (up to 4 columns, then scrolls; width from the timeline), folding, "+ Add node", "Group into folder", "Duplicate node", drag a row onto a bar to nest, drag clips between nodes. Then Parameters per node, the mixer (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song.
+1. **Phase 5, rest** (`docs/design/node-tree.md`): dragging clips between nodes, what a folder's lane shows (summary of its contents: ask), the mixer (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song (drums with a separate kick, music folder).
 2. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI) is still to run; the user chose to start Phase 5 first. Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
 
 ## Design rules the user has set
@@ -54,7 +54,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Known gaps
 
-- The engine has the node tree, but the UI cannot add nodes yet. No adding effects in the UI yet (engine has a Filter).
+- No way to give a new node notes yet except Duplicate (MIDI editing is Phase 9). No adding effects in the UI yet (engine has a Filter). No node colour picker yet.
 - Parameters update every 32 samples (gains ramp, others step); revisit if anything sounds zippery.
 - Reference WAVs in `crates/daw-engine/tests/references/` total about 4 MB; keep new ones short.
 - `docs/gpui-notes.md` holds hard-won GPUI knowledge; add to it.

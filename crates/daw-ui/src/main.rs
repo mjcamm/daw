@@ -19,6 +19,7 @@ mod slider;
 mod text_input;
 mod theme;
 mod tooltip;
+mod tree;
 mod zoom;
 
 use app::{AppView, OpenPreferences, Quit};

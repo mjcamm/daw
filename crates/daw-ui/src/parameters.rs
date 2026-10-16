@@ -996,9 +996,16 @@ impl ProjectView {
             )
     }
 
-    /// Deletes the selected block (Delete or Backspace).
+    /// Deletes the selected block (Delete or Backspace); on Arrange, the
+    /// selected node.
     pub(crate) fn delete_selection(&mut self) {
         if self.block_drag.is_some() {
+            return;
+        }
+        if self.page == Page::Arrange {
+            if let Some(id) = self.selected_node {
+                self.delete_node(id);
+            }
             return;
         }
         if let Some((id, _, _)) = self.selected_block(self.session.snapshot()) {

@@ -13,8 +13,9 @@ use crate::scroll;
 use crate::signals::{node_has_notes, published_signals};
 use crate::theme::{ContentColor, Theme};
 use crate::tooltip;
+use crate::tree::{self, Bar, Drop, display_order};
 use crate::zoom::Zoom;
-use daw_engine::{ClipId, Command, Edit, MidiClip, NodeSnapshot, Snapshot};
+use daw_engine::{ClipId, Command, Edit, MidiClip, Node, NodeId, NodeSnapshot};
 use gpui::{
     ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
 };
@@ -24,6 +25,11 @@ const NODE_LIST_WIDTH: f32 = 260.;
 const CLIP_INSET: f32 = 4.;
 const CLIP_LABEL_HEIGHT: f32 = 16.;
 const METER_HEIGHT: f32 = 32.;
+/// Width of one column of the nesting map, and its padding.
+const MAP_COLUMN: f32 = 18.;
+const MAP_PAD: f32 = 4.;
+/// Columns the map shows before it scrolls sideways.
+const MAP_VISIBLE_COLUMNS: usize = 4;
 
 impl ProjectView {
     pub(crate) fn render_arrange(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -31,6 +37,10 @@ impl ProjectView {
         let zoom = self.arrange_view.zoom;
         let bars = timeline_bars(song_clips(snapshot), snapshot.loop_range);
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
+        let rows = display_order(snapshot, &self.folded);
+        let map_bars = tree::bars(&rows);
+        let map_width = map_width(tree::columns(&map_bars));
+        let left_width = map_width + NODE_LIST_WIDTH;
 
         // The ruler stays at the top and follows the lanes' sideways scroll.
         let scroll_x = self.arrange_view.x.offset().x;
@@ -38,22 +48,7 @@ impl ProjectView {
             .h(px(RULER_HEIGHT))
             .flex_none()
             .flex()
-            .child(
-                div()
-                    .w(px(NODE_LIST_WIDTH))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px(px(12.))
-                    .bg(theme.sidebar)
-                    .border_r_1()
-                    .border_b_1()
-                    .border_color(theme.edge)
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_tertiary)
-                    .child("NODES"),
-            )
+            .child(self.node_toolbar(left_width, theme, cx))
             .child(
                 div().flex_1().min_w_0().overflow_hidden().child(
                     div()
@@ -88,8 +83,9 @@ impl ProjectView {
                     .flex()
                     .flex_grow()
                     .flex_shrink_0()
-                    .child(self.render_node_list(theme, cx))
-                    .child(self.render_timeline(theme, bars, width)),
+                    .child(self.render_map(&rows, &map_bars, map_width, theme, cx))
+                    .child(self.render_node_list(&rows, theme, cx))
+                    .child(self.render_timeline(&rows, theme, bars, width)),
             );
 
         div()
@@ -101,14 +97,18 @@ impl ProjectView {
             .child(self.timeline_frame(
                 Timeline::Arrange,
                 body.into_any_element(),
-                NODE_LIST_WIDTH,
+                left_width,
                 theme,
                 cx,
             ))
     }
 
-    fn render_node_list(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let snapshot = self.session.snapshot();
+    fn render_node_list(
+        &self,
+        rows: &[&NodeSnapshot],
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .w(px(NODE_LIST_WIDTH))
             .flex_none()
@@ -118,7 +118,7 @@ impl ProjectView {
             .border_r_1()
             .border_color(theme.edge)
             .children(
-                arranged_nodes(snapshot)
+                rows.iter()
                     .map(|node| self.node_row(node, theme, cx))
                     .collect::<Vec<_>>(),
             )
@@ -178,7 +178,8 @@ impl ProjectView {
             }),
         );
 
-        let publish = self.publish_button(node, theme, cx);
+        let song = id == NodeId::ROOT;
+        let publish = (!song).then(|| self.publish_button(node, theme, cx));
         let node_name: gpui::AnyElement = match self.rename_input(RenameTarget::Node(id)) {
             Some(input) => div().text_size(px(13.)).child(input).into_any_element(),
             None => div()
@@ -186,16 +187,24 @@ impl ProjectView {
                 .text_size(px(13.))
                 .child(node.name.clone())
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    if event.click_count() >= 2 {
+                    if event.click_count() >= 2 && !song {
                         this.start_rename(RenameTarget::Node(id), window, cx);
                     }
                 }))
                 .into_any_element(),
         };
-        let kind = if node.has_instrument() {
+        let kind = if song {
+            "Master"
+        } else if node.has_instrument() {
             "MIDI · Synth"
         } else {
             "Folder"
+        };
+        let mut drop_highlight = theme.accent;
+        drop_highlight.a = 0.18;
+        let dragged = DraggedNode {
+            id,
+            name: node.name.clone(),
         };
 
         let mut selected_bg = theme.accent;
@@ -212,6 +221,22 @@ impl ProjectView {
             .border_color(theme.hairline)
             .when(self.selected_node == Some(id), |d| d.bg(selected_bg))
             .on_click(cx.listener(move |this, _, _, _| this.selected_node = Some(id)))
+            .when(!song, |d| {
+                d.on_drag(dragged, |dragged: &DraggedNode, _, _, cx| {
+                    cx.new(|_| dragged.clone())
+                })
+            })
+            // Dropped on a row: just after it (on the Song's: last in it).
+            .drag_over::<DraggedNode>(move |style, dragged, _, _| {
+                if dragged.id == id {
+                    style
+                } else {
+                    style.bg(drop_highlight)
+                }
+            })
+            .on_drop(cx.listener(move |this, dragged: &DraggedNode, _, _| {
+                this.move_node(dragged.id, Drop::After(id));
+            }))
             .child(
                 div()
                     .w(px(4.))
@@ -234,9 +259,261 @@ impl ProjectView {
                     .child(meter_bar(meter.left, meter_size, theme))
                     .child(meter_bar(meter.right, meter_size, theme)),
             )
-            .child(publish)
+            .children(publish)
             .child(mute)
             .child(solo)
+    }
+
+    /// The heading over the node list: "NODES", then the actions on the
+    /// selected node: add, group into a folder, duplicate, delete.
+    fn node_toolbar(&self, width: f32, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let selected = self.shown_node().map(|n| n.id);
+        let movable = selected.filter(|id| *id != NodeId::ROOT);
+        let open = self.open_menu == Some(OpenMenu::AddNode);
+        // Tooltips hide while a menu hangs below, so they never cover it.
+        let action = |name: &'static str, kind: Icon, hint: &'static str, enabled: bool| {
+            let color = if enabled {
+                theme.text_secondary
+            } else {
+                theme.text_tertiary
+            };
+            small_button(name, theme)
+                .child(icon(kind, color, 14.))
+                .when(!open, |d| d.tooltip(tooltip::text(hint)))
+        };
+        let add = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(
+                action("node-add", Icon::Plus, "Add a node", true)
+                    .when(open, |d| d.bg(theme.control))
+                    .on_click(cx.listener(|this, _, _, _| this.toggle_menu(OpenMenu::AddNode))),
+            )
+            .when(open, |d| {
+                d.child(menu::float(
+                    menu::panel(theme)
+                        .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
+                        .child(
+                            menu::item(theme, "add-instrument", "Instrument (Synth)", "")
+                                .on_click(cx.listener(|this, _, _, _| this.add_node(true))),
+                        )
+                        .child(
+                            menu::item(theme, "add-folder", "Folder", "")
+                                .on_click(cx.listener(|this, _, _, _| this.add_node(false))),
+                        ),
+                ))
+            });
+        let group = action(
+            "node-group",
+            Icon::FolderPlus,
+            "Group into a folder",
+            movable.is_some(),
+        )
+        .when_some(movable, |d, id| {
+            d.on_click(cx.listener(move |this, _, _, _| this.group_node(id)))
+        });
+        let duplicate = action(
+            "node-duplicate",
+            Icon::Copy,
+            "Duplicate, with its clips",
+            movable.is_some(),
+        )
+        .when_some(movable, |d, id| {
+            d.on_click(cx.listener(move |this, _, _, _| this.duplicate_node(id)))
+        });
+        let delete = action("node-delete", Icon::Trash, "Delete", movable.is_some())
+            .when_some(movable, |d, id| {
+                d.on_click(cx.listener(move |this, _, _, _| this.delete_node(id)))
+            });
+        div()
+            .w(px(width))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .pl(px(12.))
+            .pr(px(6.))
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_b_1()
+            .border_color(theme.edge)
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_tertiary)
+                    .child("NODES"),
+            )
+            .child(add)
+            .child(group)
+            .child(duplicate)
+            .child(delete)
+    }
+
+    /// The nesting map: a column per level, the Song at the far left. Each
+    /// folder's bar runs beside what is under it, and an arrow points into
+    /// the folder's own row. The chevron folds a folder; dropping a node on
+    /// a bar puts it last in that folder.
+    fn render_map(
+        &self,
+        rows: &[&NodeSnapshot],
+        bars: &[Bar],
+        width: f32,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let row_height = self.arrange_view.zoom.row_height;
+        let snapshot = self.session.snapshot();
+        let content_width = tree::columns(bars) as f32 * MAP_COLUMN + 2. * MAP_PAD;
+        let hover = theme.hover;
+        let marks = bars.iter().filter_map(|bar| {
+            let node = snapshot.node(bar.node)?;
+            let id = bar.node;
+            let colors = theme.content(node.color);
+            let x = MAP_PAD + bar.column as f32 * MAP_COLUMN;
+            let folded = self.folded.contains(&id);
+            let foldable = id != NodeId::ROOT && !node.children.is_empty();
+            let mut drop_fill = colors.detail;
+            drop_fill.a = 0.35;
+            let chevron = foldable.then(|| {
+                div()
+                    .id(("map-fold", id.0))
+                    .size(px(14.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.))
+                    .hover(move |s| s.bg(hover))
+                    .child(icon(
+                        if folded {
+                            Icon::ChevronRight
+                        } else {
+                            Icon::ChevronDown
+                        },
+                        colors.detail,
+                        11.,
+                    ))
+                    .tooltip(tooltip::text(if folded { "Unfold" } else { "Fold" }))
+                    .on_click(cx.listener(move |this, _, _, _| this.toggle_fold(id)))
+            });
+            // The bar: beside what is under the folder, or (folded, empty)
+            // a short pill on its own row.
+            let (top, height) = if bar.first < bar.row {
+                (
+                    bar.first as f32 * row_height + 4.,
+                    (bar.row - bar.first) as f32 * row_height - 8.,
+                )
+            } else {
+                (bar.row as f32 * row_height + 6., 14.)
+            };
+            let body = div()
+                .id(("map-bar", id.0))
+                .absolute()
+                .left(px(x + 1.))
+                .top(px(top))
+                .w(px(MAP_COLUMN - 4.))
+                .h(px(height))
+                .rounded(px(4.))
+                .bg(colors.fill)
+                .border_1()
+                .border_color(colors.outline)
+                .flex()
+                .flex_col()
+                .items_center()
+                .pt(px(1.))
+                .children(chevron)
+                .tooltip(tooltip::text(node.name.clone()))
+                .drag_over::<DraggedNode>(move |style, _, _, _| style.bg(drop_fill))
+                .on_drop(cx.listener(move |this, dragged: &DraggedNode, _, _| {
+                    this.move_node(dragged.id, Drop::Into(id));
+                }));
+            // The arrow into the folder's row.
+            let arrow = (bar.first < bar.row).then(|| {
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .top(px(bar.row as f32 * row_height + row_height / 2. - 8.))
+                    .child(icon(Icon::IntoFolder, colors.detail, 14.))
+            });
+            Some([
+                Some(body.into_any_element()),
+                arrow.map(|a| a.into_any_element()),
+            ])
+        });
+        let content = div()
+            .relative()
+            .w(px(content_width))
+            .h(px(rows.len() as f32 * row_height))
+            .flex_shrink_0()
+            .children(marks.flatten().flatten().collect::<Vec<_>>());
+        scroll::axis_locked(div())
+            .id("node-map")
+            .w(px(width))
+            .flex_none()
+            .flex()
+            .overflow_x_scroll()
+            .bg(theme.sidebar)
+            .border_r_1()
+            .border_color(theme.hairline)
+            .child(content)
+    }
+
+    fn toggle_fold(&mut self, node: NodeId) {
+        if !self.folded.remove(&node) {
+            self.folded.insert(node);
+        }
+    }
+
+    /// Adds a node that plays notes, or a folder, after the selected node,
+    /// and selects it.
+    fn add_node(&mut self, instrument: bool) {
+        self.open_menu = None;
+        let snapshot = self.session.snapshot();
+        let (parent, index) = tree::new_node_place(snapshot, self.selected_node);
+        let id = tree::next_node_id(snapshot);
+        let color = tree::next_color(snapshot);
+        let node = if instrument {
+            Node::new(&tree::next_name(snapshot, "Synth"), color).with_instrument()
+        } else {
+            Node::new(&tree::next_name(snapshot, "Folder"), color)
+        };
+        self.session.apply(Command::Edit(Edit::AddNode {
+            id,
+            parent,
+            index,
+            node,
+        }));
+        self.selected_node = Some(id);
+    }
+
+    fn group_node(&mut self, id: NodeId) {
+        if let Some(edit) = tree::group_edit(self.session.snapshot(), id) {
+            self.session.apply(Command::Edit(edit));
+        }
+    }
+
+    fn duplicate_node(&mut self, id: NodeId) {
+        if let Some((copy, edit)) = tree::duplicate_edit(self.session.snapshot(), id) {
+            self.session.apply(Command::Edit(edit));
+            self.selected_node = Some(copy);
+        }
+    }
+
+    /// Deletes a node and everything under it (undo brings it back).
+    pub(crate) fn delete_node(&mut self, id: NodeId) {
+        if id == NodeId::ROOT {
+            return;
+        }
+        self.session.apply(Command::Edit(Edit::RemoveNode { id }));
+        self.selected_node = None;
+    }
+
+    fn move_node(&mut self, id: NodeId, drop: Drop) {
+        if let Some(edit) = tree::move_edit(self.session.snapshot(), id, drop) {
+            self.session.apply(Command::Edit(edit));
+        }
     }
 
     /// The node's signal button: publish as a signal, and the signals it
@@ -354,10 +631,15 @@ impl ProjectView {
     }
 
     /// The lanes: sideways-scrolling, as wide as the song.
-    fn render_timeline(&self, theme: &Theme, bars: u32, width: f32) -> impl IntoElement {
-        let snapshot = self.session.snapshot();
+    fn render_timeline(
+        &self,
+        rows: &[&NodeSnapshot],
+        theme: &Theme,
+        bars: u32,
+        width: f32,
+    ) -> impl IntoElement {
         let zoom = self.arrange_view.zoom;
-        let lanes = arranged_nodes(snapshot).map(|node| {
+        let lanes = rows.iter().map(|node| {
             let color = if node.muted {
                 theme.muted_content
             } else {
@@ -471,10 +753,34 @@ impl ProjectView {
     }
 }
 
-/// The nodes shown as rows, in tree order. The Song gets its own row with
-/// the nesting map.
-fn arranged_nodes(snapshot: &Snapshot) -> impl Iterator<Item = &NodeSnapshot> {
-    snapshot.nodes.iter().filter(|n| n.parent.is_some())
+/// Width of the nesting map: up to [`MAP_VISIBLE_COLUMNS`] columns show;
+/// more scroll sideways inside it.
+fn map_width(columns: usize) -> f32 {
+    columns.min(MAP_VISIBLE_COLUMNS) as f32 * MAP_COLUMN + 2. * MAP_PAD
+}
+
+/// A node being dragged to a new place in the tree.
+#[derive(Debug, Clone)]
+struct DraggedNode {
+    id: NodeId,
+    name: String,
+}
+
+impl Render for DraggedNode {
+    fn render(&mut self, _: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::get(cx);
+        div()
+            .px(px(8.))
+            .py(px(3.))
+            .rounded(px(5.))
+            .bg(theme.group)
+            .border_1()
+            .border_color(theme.edge)
+            .shadow_md()
+            .text_size(px(12.))
+            .text_color(theme.text)
+            .child(self.name.clone())
+    }
 }
 
 fn meter_bar(peak: f32, size: f32, theme: &Theme) -> impl IntoElement {
