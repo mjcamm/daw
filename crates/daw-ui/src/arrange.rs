@@ -7,6 +7,7 @@ use crate::layout::{
     BEATS_PER_BAR, meter_height, note_rows, ruler_label_step, timeline_bars, x_to_snapped_position,
 };
 use crate::menu::{self, OpenMenu};
+use crate::motion::RowLayout;
 use crate::parameters::small_button;
 use crate::project::{ProjectView, RenameTarget, song_clips};
 use crate::scroll;
@@ -19,6 +20,7 @@ use daw_engine::{ClipId, Command, Edit, MidiClip, Node, NodeId, NodeSnapshot};
 use gpui::{
     ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
 };
+use std::time::Instant;
 
 const RULER_HEIGHT: f32 = 28.;
 const NODE_LIST_WIDTH: f32 = 260.;
@@ -37,7 +39,16 @@ impl ProjectView {
         let zoom = self.arrange_view.zoom;
         let bars = timeline_bars(song_clips(snapshot), snapshot.loop_range);
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
-        let rows = display_order(snapshot, &self.folded);
+        let shown = display_order(snapshot, &self.folded);
+        let layout = self
+            .row_motion
+            .layout(&shown, zoom.row_height, Instant::now());
+        // Rows as drawn this frame, ghosts of departing rows included.
+        let placed: Vec<(&NodeSnapshot, &RowLayout)> = layout
+            .iter()
+            .filter_map(|l| Some((l.ghost.as_deref().or_else(|| snapshot.node(l.id))?, l)))
+            .collect();
+        let rows: Vec<&NodeSnapshot> = placed.iter().map(|(n, _)| *n).collect();
         let map_bars = tree::bars(&rows);
         let map_width = map_width(tree::columns(&map_bars));
         let left_width = map_width + NODE_LIST_WIDTH;
@@ -83,9 +94,9 @@ impl ProjectView {
                     .flex()
                     .flex_grow()
                     .flex_shrink_0()
-                    .child(self.render_map(&rows, &map_bars, map_width, theme, cx))
-                    .child(self.render_node_list(&rows, theme, cx))
-                    .child(self.render_timeline(&rows, theme, bars, width)),
+                    .child(self.render_map(&placed, &map_bars, map_width, theme, cx))
+                    .child(self.render_node_list(&placed, theme, cx))
+                    .child(self.render_timeline(&placed, theme, bars, width)),
             );
 
         div()
@@ -105,10 +116,11 @@ impl ProjectView {
 
     fn render_node_list(
         &self,
-        rows: &[&NodeSnapshot],
+        rows: &[(&NodeSnapshot, &RowLayout)],
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let row_height = self.arrange_view.zoom.row_height;
         div()
             .w(px(NODE_LIST_WIDTH))
             .flex_none()
@@ -119,7 +131,9 @@ impl ProjectView {
             .border_color(theme.edge)
             .children(
                 rows.iter()
-                    .map(|node| self.node_row(node, theme, cx))
+                    .map(|(node, layout)| {
+                        animated(layout, row_height, self.node_row(node, theme, cx))
+                    })
                     .collect::<Vec<_>>(),
             )
             .child(
@@ -358,18 +372,25 @@ impl ProjectView {
     /// a bar puts it last in that folder.
     fn render_map(
         &self,
-        rows: &[&NodeSnapshot],
+        rows: &[(&NodeSnapshot, &RowLayout)],
         bars: &[Bar],
         width: f32,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let row_height = self.arrange_view.zoom.row_height;
-        let snapshot = self.session.snapshot();
+        // Where each row is drawn this frame, so bars follow moving rows.
+        let mut tops = Vec::with_capacity(rows.len());
+        let mut y = 0.;
+        for (_, layout) in rows {
+            tops.push(y + layout.offset);
+            y += layout.height;
+        }
+        let total_height = y;
+        let height_of = |row: usize| rows[row].1.height;
         let content_width = tree::columns(bars) as f32 * MAP_COLUMN + 2. * MAP_PAD;
         let hover = theme.hover;
-        let marks = bars.iter().filter_map(|bar| {
-            let node = snapshot.node(bar.node)?;
+        let marks = bars.iter().map(|bar| {
+            let node = rows[bar.row].0;
             let id = bar.node;
             let colors = theme.content(node.color);
             let x = MAP_PAD + bar.column as f32 * MAP_COLUMN;
@@ -399,15 +420,19 @@ impl ProjectView {
                     .on_click(cx.listener(move |this, _, _, _| this.toggle_fold(id)))
             });
             // The bar: beside what is under the folder, or (folded, empty)
-            // a short pill on its own row.
-            let (top, height) = if bar.first < bar.row {
-                (
-                    bar.first as f32 * row_height + 4.,
-                    (bar.row - bar.first) as f32 * row_height - 8.,
-                )
-            } else {
-                (bar.row as f32 * row_height + 6., 14.)
-            };
+            // a short pill on its own row. While children close up into the
+            // folder, the bar shrinks with them into the pill.
+            const PILL: f32 = 14.;
+            let span = (bar.first < bar.row).then(|| {
+                let top = tops[bar.first];
+                let bottom = tops[bar.row - 1] + height_of(bar.row - 1);
+                (top + 4., bottom - top - 8.)
+            });
+            let pill = (
+                tops[bar.row] + height_of(bar.row) / 2. - PILL / 2.,
+                PILL.min(height_of(bar.row)),
+            );
+            let (top, height) = span.filter(|(_, h)| *h >= PILL).unwrap_or(pill);
             let body = div()
                 .id(("map-bar", id.0))
                 .absolute()
@@ -430,22 +455,23 @@ impl ProjectView {
                     this.move_node(dragged.id, Drop::Into(id));
                 }));
             // The arrow into the folder's row.
-            let arrow = (bar.first < bar.row).then(|| {
+            let arrow = span.filter(|(_, h)| *h >= PILL).map(|_| {
                 div()
                     .absolute()
                     .left(px(x))
-                    .top(px(bar.row as f32 * row_height + row_height / 2. - 8.))
+                    .top(px(tops[bar.row] + height_of(bar.row) / 2. - 8.))
+                    .opacity(rows[bar.row].1.opacity)
                     .child(icon(Icon::IntoFolder, colors.detail, 14.))
             });
-            Some([
+            [
                 Some(body.into_any_element()),
                 arrow.map(|a| a.into_any_element()),
-            ])
+            ]
         });
         let content = div()
             .relative()
             .w(px(content_width))
-            .h(px(rows.len() as f32 * row_height))
+            .h(px(total_height))
             .flex_shrink_0()
             .children(marks.flatten().flatten().collect::<Vec<_>>());
         scroll::axis_locked(div())
@@ -633,19 +659,19 @@ impl ProjectView {
     /// The lanes: sideways-scrolling, as wide as the song.
     fn render_timeline(
         &self,
-        rows: &[&NodeSnapshot],
+        rows: &[(&NodeSnapshot, &RowLayout)],
         theme: &Theme,
         bars: u32,
         width: f32,
     ) -> impl IntoElement {
         let zoom = self.arrange_view.zoom;
-        let lanes = rows.iter().map(|node| {
+        let lanes = rows.iter().map(|(node, layout)| {
             let color = if node.muted {
                 theme.muted_content
             } else {
                 theme.content(node.color)
             };
-            div()
+            let lane = div()
                 .relative()
                 .h(px(zoom.row_height))
                 .flex_none()
@@ -655,7 +681,8 @@ impl ProjectView {
                     node.clips
                         .iter()
                         .map(|(id, clip)| clip_view(*id, clip, &node.name, color, zoom)),
-                )
+                );
+            animated(layout, zoom.row_height, lane)
         });
 
         let playhead = div()
@@ -751,6 +778,29 @@ impl ProjectView {
                 }),
             )
     }
+}
+
+/// A row (or its lane) as it is drawn this frame: as tall as it has grown,
+/// shifted while it glides, and faded in or out. Its content stays full
+/// height, anchored at the bottom edge, so a closing row slides down into
+/// what is below it (a folder's row) and an opening one rises out of it.
+fn animated(layout: &RowLayout, row_height: f32, content: impl IntoElement) -> gpui::Div {
+    div()
+        .relative()
+        .flex_none()
+        .h(px(layout.height))
+        .top(px(layout.offset))
+        .opacity(layout.opacity)
+        .overflow_hidden()
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(row_height))
+                .child(content),
+        )
 }
 
 /// Width of the nesting map: up to [`MAP_VISIBLE_COLUMNS`] columns show;

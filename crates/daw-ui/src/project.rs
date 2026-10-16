@@ -83,6 +83,8 @@ pub struct ProjectView {
     pub(crate) selected_node: Option<NodeId>,
     /// Folders folded in the nesting map. UI state, not saved.
     pub(crate) folded: std::collections::HashSet<NodeId>,
+    /// Arrange's rows as they animate in, out and around.
+    pub(crate) row_motion: crate::motion::RowMotion,
     /// Where the Parameters page lanes were last drawn: the top-left is
     /// beat 0 of the first row.
     pub(crate) lanes_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -161,6 +163,7 @@ impl ProjectView {
             dismissed_menu: None,
             selected_node: None,
             folded: std::collections::HashSet::new(),
+            row_motion: crate::motion::RowMotion::default(),
             lanes_bounds: Rc::default(),
             snap: Snap::default(),
             selected_block: None,
@@ -324,6 +327,19 @@ impl Render for ProjectView {
             self.window_title = title;
         }
         let theme = Theme::get(cx);
+        if self.page == Page::Arrange {
+            let snapshot = self.session.snapshot();
+            let previous = self.session.previous_snapshot();
+            let rows = crate::tree::display_order(snapshot, &self.folded);
+            let last = |id| {
+                snapshot
+                    .node(id)
+                    .or_else(|| previous.and_then(|p| p.node(id)))
+                    .cloned()
+            };
+            self.row_motion
+                .update(&rows, last, std::time::Instant::now());
+        }
 
         let page = match self.page {
             Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),

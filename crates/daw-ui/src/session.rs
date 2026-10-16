@@ -18,6 +18,9 @@ pub struct Session {
     /// Kept alive so audio keeps playing; `None` if no device opened.
     _output: Option<AudioOutput>,
     snapshot: Snapshot,
+    /// The snapshot before the current one, so a view can still draw what
+    /// an edit just removed while it animates away.
+    previous: Option<Snapshot>,
     /// Each node's meter as displayed: peaks that fall back smoothly.
     meters: BTreeMap<NodeId, Meter>,
     folder: PathBuf,
@@ -76,6 +79,7 @@ impl Session {
         let revision = engine.content_revision();
         Ok(Self {
             snapshot: engine.snapshot(),
+            previous: None,
             engine,
             _output: output,
             meters: BTreeMap::new(),
@@ -91,7 +95,8 @@ impl Session {
     pub fn tick(&mut self) {
         self.engine.maintain();
         if self.engine.revision() != self.snapshot.revision {
-            self.snapshot = self.engine.snapshot();
+            let current = std::mem::replace(&mut self.snapshot, self.engine.snapshot());
+            self.previous = Some(current);
         }
         for (node, peak) in self.engine.take_meters() {
             let shown = self.meters.entry(node).or_default();
@@ -135,6 +140,11 @@ impl Session {
 
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
+    }
+
+    /// The snapshot before the current one, if any.
+    pub fn previous_snapshot(&self) -> Option<&Snapshot> {
+        self.previous.as_ref()
     }
 
     pub fn position_beats(&self) -> f64 {

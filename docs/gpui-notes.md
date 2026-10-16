@@ -110,6 +110,12 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 - Launch with `Start-Process target\debug\daw.exe`; quit with `type "^q"` so it saves and frees the exe for the next build.
 - Test in a throwaway project, not the user's own songs. Remember that every `^z` really undoes.
 - To look mid-drag: `down x y`, one or more `move x y`, `shot`, then `up x y`.
+- Separate script calls take hundreds of milliseconds each, too slow to catch a 200 ms animation. Copy the script's Win32 preamble into a scratch script that clicks, then takes a burst of shots a few tens of milliseconds apart.
+
+## Animating rows
+
+- GPUI's layout is recomputed every frame, so a row animates by setting its height (and `top` offset, `opacity`) from a progress value each frame; nothing else is needed while the view redraws every frame.
+- To make a row slide into or out of the edge below it, give the outer element the animated height with `.overflow_hidden()`, and put the content in an absolutely positioned full-height child anchored with `.bottom_0()`.
 
 ## Gotchas
 

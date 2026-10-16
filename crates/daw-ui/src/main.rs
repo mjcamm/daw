@@ -10,6 +10,7 @@ mod inspector;
 mod launch;
 mod layout;
 mod menu;
+mod motion;
 mod parameters;
 mod project;
 mod scroll;
