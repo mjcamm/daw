@@ -21,7 +21,8 @@
 |---|---|---|
 | Signals | A notes signal | Envelope (graph and sliders), then Pitch range and Velocity clamp, each with a switch (`motion-signals.md`) |
 | Signals | A drawn signal | Nothing yet |
-| Arrange, Parameters | | Nothing yet (later: the node's channel strip; maybe block settings) |
+| Arrange | A node | Its mixer strip, the very same element as on the mixer (`StripPlace::Panel`), as wide and tall as the panel (the user's call: "just render that element") |
+| Parameters | | Nothing yet |
 
 ## Optional sections
 

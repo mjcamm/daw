@@ -264,6 +264,12 @@ impl ProjectView {
     fn has_inspector_content(&self) -> bool {
         self.inspected_signal()
             .is_some_and(|s| matches!(s.source, SignalSource::Notes(_)))
+            || self.strip_node().is_some()
+    }
+
+    /// The node whose strip the panel shows: the selection on Arrange.
+    fn strip_node(&self) -> Option<&daw_engine::NodeSnapshot> {
+        self.shown_node().filter(|_| self.page == Page::Arrange)
     }
 
     /// A notes signal's settings as shown: the preview while dragging.
@@ -369,7 +375,7 @@ impl ProjectView {
             .child(button)
     }
 
-    fn inspector_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn inspector_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let resizing = self.inspector_resize.is_some();
         let mut handle_color = theme.accent;
         handle_color.a = if resizing { 0.6 } else { 0. };
@@ -397,6 +403,23 @@ impl ProjectView {
                     });
                 }),
             );
+        // On Arrange: the selected node's strip, the same element as on the
+        // mixer, filling the panel's height.
+        if let Some(node) = self.strip_node() {
+            let strip = self.panel_strip(node, theme, cx);
+            return div()
+                .w(px(self.inspector_width))
+                .flex_none()
+                .relative()
+                .flex()
+                .flex_col()
+                .bg(theme.sidebar)
+                .border_l_1()
+                .border_color(theme.edge)
+                .child(div().flex_1().min_h_0().flex().flex_col().child(strip))
+                .child(handle)
+                .into_any_element();
+        }
         let body = match self.inspected_signal() {
             Some(signal) => match &signal.source {
                 SignalSource::Notes(source) => self
@@ -404,6 +427,7 @@ impl ProjectView {
                     .into_any_element(),
                 SignalSource::Drawn(_) => empty(theme, "A drawn signal has no settings here yet."),
             },
+            None if self.page == Page::Arrange => empty(theme, "Select a node to see its strip."),
             None => empty(theme, "Select a signal to see its settings."),
         };
         div()
@@ -424,6 +448,7 @@ impl ProjectView {
                     .child(body),
             )
             .child(handle)
+            .into_any_element()
     }
 
     fn notes_settings(

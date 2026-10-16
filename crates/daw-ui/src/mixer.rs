@@ -61,6 +61,8 @@ pub struct MixerView {
     pub map_y: ScrollHandle,
     /// The first strip's fader area, to size every fader.
     fader_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The fader area of the strip in the side panel on Arrange.
+    panel_fader_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Where the horizontal scrollbar's track was drawn.
     track: Rc<Cell<Bounds<Pixels>>>,
     /// The map's height, easing as levels come and go.
@@ -76,11 +78,20 @@ impl Default for MixerView {
             x: ScrollHandle::new(),
             map_y: ScrollHandle::new(),
             fader_bounds: Rc::default(),
+            panel_fader_bounds: Rc::default(),
             track: Rc::default(),
             map_height: crate::motion::Eased::default(),
             peaks: std::cell::RefCell::default(),
         }
     }
+}
+
+/// Where a strip is drawn: on the mixer desk, or alone in the side panel
+/// on Arrange (the same element, as wide as the panel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripPlace {
+    Mixer { first: bool },
+    Panel,
 }
 
 /// A drag on the mixer other than a fader (faders use the resting-value
@@ -197,7 +208,8 @@ impl ProjectView {
             .iter()
             .enumerate()
             .map(|(i, (node, layout))| {
-                let strip = self.strip(node, instrument_slots, slots, i == 0, theme, cx);
+                let place = StripPlace::Mixer { first: i == 0 };
+                let strip = self.strip(node, instrument_slots, slots, place, theme, cx);
                 animated_strip(layout, widths[i], self.strip_width(node.id), strip)
             })
             .collect::<Vec<_>>();
@@ -247,14 +259,19 @@ impl ProjectView {
         node: &NodeSnapshot,
         instrument_slots: usize,
         slots: usize,
-        first: bool,
+        place: StripPlace,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let id = node.id;
         let song = id == NodeId::ROOT;
         let colors = theme.content(node.color);
-        let selected = self.selected_node == Some(id);
+        // In the panel the strip is the selection itself: no highlight.
+        let selected = self.selected_node == Some(id) && place != StripPlace::Panel;
+        let measure = match place {
+            StripPlace::Mixer { first } => first.then(|| self.mixer_view.fader_bounds.clone()),
+            StripPlace::Panel => Some(self.mixer_view.panel_fader_bounds.clone()),
+        };
         let mut selected_bg = theme.accent;
         selected_bg.a = 0.12;
 
@@ -265,8 +282,7 @@ impl ProjectView {
             .justify_center()
             .gap(px(6.))
             .py(px(6.))
-            .when(first, |d| {
-                let cell = self.mixer_view.fader_bounds.clone();
+            .when_some(measure, |d, cell| {
                 d.child(
                     canvas(move |bounds, _, _| cell.set(bounds), |_, (), _, _| {})
                         .absolute()
@@ -274,8 +290,8 @@ impl ProjectView {
                 )
             })
             .relative()
-            .child(self.fader(node, theme, cx))
-            .child(self.meters(id, theme));
+            .child(self.fader(node, place, theme, cx))
+            .child(self.meters(id, place, theme));
 
         let volume = channel_param(node, channel::VOLUME);
         let base = volume.map_or(0., |p| self.fader_value(id, p.base));
@@ -366,7 +382,7 @@ impl ProjectView {
             .on_click(cx.listener(move |this, _, _, _| this.selected_node = Some(id)))
             .child(self.instrument_slots(node, instrument_slots, theme, cx))
             .child(self.effect_slots(node, slots, theme, cx))
-            .child(self.pan(node, theme, cx))
+            .child(self.pan(node, place, theme, cx))
             .child(fader_area)
             .child(readout)
             .child(buttons)
@@ -672,6 +688,41 @@ impl ProjectView {
             .child(add)
     }
 
+    /// The node's strip, alone, for the side panel on Arrange.
+    pub(crate) fn panel_strip(
+        &self,
+        node: &NodeSnapshot,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let count = |instrument: bool| {
+            node.devices
+                .iter()
+                .filter(|d| {
+                    if instrument {
+                        d.instrument.is_some()
+                    } else {
+                        d.effect.is_some()
+                    }
+                })
+                .count()
+        };
+        let instrument_slots = if node.takes_midi() {
+            count(true) + 1
+        } else {
+            0
+        };
+        self.strip(
+            node,
+            instrument_slots,
+            count(false) + 1,
+            StripPlace::Panel,
+            theme,
+            cx,
+        )
+        .into_any_element()
+    }
+
     /// Adds an effect at the end of a node's chain and selects it.
     fn add_effect(&mut self, node: NodeId, kind: EffectKind) {
         self.open_menu = None;
@@ -691,7 +742,13 @@ impl ProjectView {
     }
 
     /// The pan slider: centre-detented, double-click to centre.
-    fn pan(&self, node: &NodeSnapshot, theme: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+    fn pan(
+        &self,
+        node: &NodeSnapshot,
+        place: StripPlace,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let param = pan_id(node.id);
         let resting = channel_param(node, channel::PAN).map_or(0.5, |p| p.base);
         let shown = match self.mixer_drag {
@@ -701,7 +758,11 @@ impl ProjectView {
             _ => resting,
         };
         let active = matches!(self.mixer_drag, Some(MixerDrag::Pan { param: p, .. }) if p == param);
-        let length = (self.strip_width(node.id) - 16.).max(30.);
+        let width = match place {
+            StripPlace::Mixer { .. } => self.strip_width(node.id),
+            StripPlace::Panel => self.inspector_width.min(220.),
+        };
+        let length = (width - 16.).max(30.);
         let centre = CHANNEL_PARAMS[channel::PAN as usize].default_normalized();
         div()
             .h(px(PAN_HEIGHT))
@@ -747,14 +808,29 @@ impl ProjectView {
 
     /// The fader: the volume's resting value, with a marker where layers
     /// have moved it at the playhead. Double-click for 0 dB.
-    fn fader(&self, node: &NodeSnapshot, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// How long faders and meters are where `place` draws them.
+    fn fader_length(&self, place: StripPlace) -> f32 {
+        let cell = match place {
+            StripPlace::Mixer { .. } => &self.mixer_view.fader_bounds,
+            StripPlace::Panel => &self.mixer_view.panel_fader_bounds,
+        };
+        (cell.get().size.height / px(1.) - 12.).max(40.)
+    }
+
+    fn fader(
+        &self,
+        node: &NodeSnapshot,
+        place: StripPlace,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(volume) = channel_param(node, channel::VOLUME) else {
             return div().into_any_element();
         };
         let param = volume.id;
         let resting = volume.base;
         let shown = self.fader_value(node.id, resting);
-        let length = (self.mixer_view.fader_bounds.get().size.height / px(1.) - 12.).max(40.);
+        let length = self.fader_length(place);
         let active = self.base_preview(param).is_some();
         let unity = CHANNEL_PARAMS[channel::VOLUME as usize].default_normalized();
         // Where the layers have it now, if they move it.
@@ -809,9 +885,9 @@ impl ProjectView {
     }
 
     /// Stereo meters with a peak line that holds, then falls.
-    fn meters(&self, node: NodeId, theme: &Theme) -> gpui::Div {
+    fn meters(&self, node: NodeId, place: StripPlace, theme: &Theme) -> gpui::Div {
         let meter = self.session.meter(node);
-        let length = (self.mixer_view.fader_bounds.get().size.height / px(1.) - 12.).max(40.);
+        let length = self.fader_length(place);
         let level = meter.left.max(meter.right);
         let held = {
             let mut peaks = self.mixer_view.peaks.borrow_mut();

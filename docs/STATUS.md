@@ -39,7 +39,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Next up
 
-1. **Phase 5, rest** (`docs/design/node-tree.md`): the node's channel strip in the inspector on Arrange (next, agreed with the user; ask about its layout first). An effect's or instrument's settings in the inspector are on hold (the user's call). (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song (drums with a separate kick, music folder).
+1. **Phase 5, rest** (`docs/design/node-tree.md`): a richer demo song (drums with a separate kick, a music folder). An effect's or instrument's settings in the inspector are on hold (the user's call). The node's strip shows in the panel on Arrange (built 2026-10-16). (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song (drums with a separate kick, music folder).
 2. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI) is still to run; the user chose to start Phase 5 first. Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
 
 ## Design rules the user has set
