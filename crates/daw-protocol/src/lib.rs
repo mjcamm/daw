@@ -208,17 +208,31 @@ pub enum Edit {
     Batch(Vec<Edit>),
 }
 
-/// A node and everything in it, as sent in [`Edit::AddNode`]: one node
-/// type for instruments, folders and the Song alike.
+/// What a node's clips are. Any node can hold other nodes (a folder is
+/// just a node with children).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum NodeKind {
+    /// MIDI clips, played through the node's instrument if it has one.
+    #[default]
+    Midi,
+    /// Audio clips (coming with audio import). Never has an instrument.
+    Audio,
+}
+
+/// A node and everything in it, as sent in [`Edit::AddNode`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub name: String,
+    pub kind: NodeKind,
     /// Index into the nine-colour content palette.
     pub color: u8,
     pub muted: bool,
     pub soloed: bool,
     /// The instrument's parameters in index order, or `None` for a node
-    /// that plays no notes (a folder). An empty list means all defaults.
+    /// without one. Only MIDI nodes can have one. An empty list means all
+    /// defaults.
     pub instrument: Option<Vec<ParamState>>,
     pub effects: Vec<(DeviceId, Effect)>,
     /// Volume and pan in index order. An empty list means the defaults.
@@ -229,11 +243,12 @@ pub struct Node {
 }
 
 impl Node {
-    /// A node with nothing in it and default settings: a folder, or with
-    /// [`Node::with_instrument`] a node that plays notes.
+    /// A MIDI node with nothing in it, no instrument and default settings;
+    /// see [`Node::with_instrument`] and [`Node::with_kind`].
     pub fn new(name: &str, color: u8) -> Self {
         Self {
             name: name.to_owned(),
+            kind: NodeKind::Midi,
             color,
             muted: false,
             soloed: false,
@@ -243,6 +258,11 @@ impl Node {
             clips: std::collections::BTreeMap::new(),
             children: Vec::new(),
         }
+    }
+
+    /// The same node as another kind.
+    pub fn with_kind(self, kind: NodeKind) -> Self {
+        Self { kind, ..self }
     }
 
     /// The same node with an instrument at its defaults.
@@ -312,6 +332,7 @@ pub struct Snapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeSnapshot {
     pub id: NodeId,
+    pub kind: NodeKind,
     /// `None` for the Song.
     pub parent: Option<NodeId>,
     /// 0 for the Song, 1 for its children, and so on.
@@ -329,7 +350,13 @@ pub struct NodeSnapshot {
 }
 
 impl NodeSnapshot {
-    /// Whether the node plays notes.
+    /// Whether MIDI clips can go on the node: a MIDI node other than the
+    /// Song.
+    pub fn takes_midi(&self) -> bool {
+        self.kind == NodeKind::Midi && self.parent.is_some()
+    }
+
+    /// Whether the node has an instrument to play its notes.
     pub fn has_instrument(&self) -> bool {
         self.devices
             .iter()
@@ -508,8 +535,12 @@ pub enum CommandError {
     TooManyNodes {
         max: usize,
     },
-    /// Clips play through an instrument; this node has none.
-    NoInstrument {
+    /// MIDI clips go on MIDI nodes, never an audio node or the Song.
+    NotMidi {
+        node: NodeId,
+    },
+    /// Only MIDI nodes have instruments.
+    InstrumentOnAudio {
         node: NodeId,
     },
     /// Colours index the nine-colour content palette.
@@ -635,8 +666,9 @@ impl fmt::Display for CommandError {
                 write!(f, "node {} cannot move inside itself", id.0)
             }
             Self::TooManyNodes { max } => write!(f, "a project holds at most {max} nodes"),
-            Self::NoInstrument { node } => {
-                write!(f, "node {} has no instrument to play clips", node.0)
+            Self::NotMidi { node } => write!(f, "node {} cannot hold MIDI clips", node.0),
+            Self::InstrumentOnAudio { node } => {
+                write!(f, "node {} is an audio node and has no instrument", node.0)
             }
             Self::ColorOutOfRange { color } => write!(f, "colour {color} is not in the palette"),
             Self::EmptyName => f.write_str("names cannot be empty"),

@@ -98,6 +98,8 @@ pub struct ProjectView {
     pub(crate) strip_motion: crate::motion::RowMotion,
     /// The effect selected in a mixer strip.
     pub(crate) selected_effect: Option<daw_engine::DeviceId>,
+    /// The width of Arrange's nesting map, easing as levels come and go.
+    pub(crate) map_width: crate::motion::Eased,
     /// Arrange's rows as they animate in, out and around.
     pub(crate) row_motion: crate::motion::RowMotion,
     /// Where the Parameters page lanes were last drawn: the top-left is
@@ -179,6 +181,7 @@ impl ProjectView {
             selected_node: None,
             folded: std::collections::HashSet::new(),
             row_motion: crate::motion::RowMotion::default(),
+            map_width: crate::motion::Eased::default(),
             mixer_view: crate::mixer::MixerView::default(),
             mixer_drag: None,
             strip_motion: crate::motion::RowMotion::default(),

@@ -9,7 +9,7 @@ use crate::devices::{CHANNEL_PARAMS, INSTRUMENT_PARAMS};
 use crate::project::{Project, song};
 use daw_protocol::{
     ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, LoopRange, MidiClip, Node, NodeId,
-    ParamId, ParamState, Signal, SignalId,
+    NodeKind, ParamId, ParamState, Signal, SignalId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -49,6 +49,9 @@ pub struct SignalFile {
 pub struct NodeFile {
     pub id: NodeId,
     pub name: String,
+    /// Missing before node kinds existed: those nodes are all MIDI.
+    #[serde(default)]
+    pub kind: NodeKind,
     pub color: u8,
     pub muted: bool,
     pub soloed: bool,
@@ -144,6 +147,7 @@ fn node_file(id: NodeId, node: &Node) -> NodeFile {
     NodeFile {
         id,
         name: node.name.clone(),
+        kind: node.kind,
         color: node.color,
         muted: node.muted,
         soloed: node.soloed,
@@ -187,6 +191,7 @@ fn file_node(file: NodeFile) -> Result<(NodeId, Node), LoadError> {
     }
     let node = Node {
         name: file.name,
+        kind: file.kind,
         color: file.color,
         muted: file.muted,
         soloed: file.soloed,

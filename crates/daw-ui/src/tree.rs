@@ -1,7 +1,7 @@
-//! The node tree as Arrange (and later the mixer) shows it: flat, aligned
-//! rows with each folder after its children, the Song last, and a nesting
-//! map beside them. Pure functions over the snapshot, so they are tested
-//! without a window.
+//! The node tree as Arrange and the mixer show it: flat, aligned rows (or
+//! strips) with each parent before its children, the Song first, and a
+//! nesting map beside them. Pure functions over the snapshot, so they are
+//! tested without a window.
 
 use daw_engine::{
     BlockId, ClipId, DeviceId, DeviceRef, Edit, Effect, Layer, LayerId, Node, NodeId, NodeSnapshot,
@@ -9,14 +9,14 @@ use daw_engine::{
 };
 use std::collections::{BTreeMap, HashSet};
 
-/// Whether a node gets a bar in the nesting map: anything that can hold
-/// other nodes' sound (folders, the Song) or already does.
+/// Whether a node gets a bar in the nesting map: a node with children (a
+/// folder), and the Song.
 pub fn is_folder(node: &NodeSnapshot) -> bool {
-    !node.has_instrument() || !node.children.is_empty()
+    node.parent.is_none() || !node.children.is_empty()
 }
 
-/// The rows in display order: children before their parent, the Song last.
-/// The children of folded nodes are left out.
+/// The rows in display order: each parent before its children, the Song
+/// first. The children of folded nodes are left out.
 pub fn display_order<'a>(
     snapshot: &'a Snapshot,
     folded: &HashSet<NodeId>,
@@ -27,29 +27,30 @@ pub fn display_order<'a>(
         folded: &HashSet<NodeId>,
         out: &mut Vec<&'a NodeSnapshot>,
     ) {
+        out.push(node);
         if !folded.contains(&node.id) {
             for child in node.children.iter().filter_map(|id| snapshot.node(*id)) {
                 visit(snapshot, child, folded, out);
             }
         }
-        out.push(node);
     }
     let mut out = Vec::new();
     visit(snapshot, snapshot.root(), folded, &mut out);
     out
 }
 
-/// A folder's bar in the nesting map.
+/// A folder's bar in the nesting map: from its own row down beside what
+/// is under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bar {
     pub node: NodeId,
     /// Its depth: the Song is column 0, at the far left.
     pub column: usize,
-    /// The first row of what is under it; equal to `row` when nothing
-    /// under it shows (empty or folded).
-    pub first: usize,
-    /// The folder's own row, which its arrow points into.
+    /// The folder's own row, where the bar starts with its chevron.
     pub row: usize,
+    /// The last row under it; equal to `row` when nothing under it shows
+    /// (folded).
+    pub last: usize,
 }
 
 /// Every folder's bar, for rows in display order.
@@ -59,16 +60,16 @@ pub fn bars(rows: &[&NodeSnapshot]) -> Vec<Bar> {
         if !is_folder(node) {
             continue;
         }
-        // Its descendants come just before it, deeper than it.
-        let first = rows[..row]
+        // Its descendants follow it, deeper than it.
+        let last = rows[row + 1..]
             .iter()
-            .rposition(|r| r.depth <= node.depth)
-            .map_or(0, |i| i + 1);
+            .position(|r| r.depth <= node.depth)
+            .map_or(rows.len() - 1, |i| row + i);
         bars.push(Bar {
             node: node.id,
             column: node.depth,
-            first,
             row,
+            last,
         });
     }
     bars
@@ -196,7 +197,7 @@ pub fn group_edit(snapshot: &Snapshot, id: NodeId) -> Option<Edit> {
             id: folder,
             parent,
             index,
-            node: Node::new(&next_name(snapshot, "Folder"), node.color),
+            node: Node::new(&next_name(snapshot, "Folder"), node.color).with_kind(node.kind),
         },
         Edit::MoveNode {
             id,
@@ -282,7 +283,7 @@ fn copy_params(params: &[daw_engine::ParamSnapshot], ids: &mut FreshIds) -> Vec<
 }
 
 fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> Node {
-    let mut copy = Node::new(&node.name, node.color);
+    let mut copy = Node::new(&node.name, node.color).with_kind(node.kind);
     copy.muted = node.muted;
     copy.soloed = node.soloed;
     for device in &node.devices {
@@ -380,17 +381,17 @@ mod tests {
     }
 
     #[test]
-    fn folders_come_after_their_children_and_the_song_last() {
+    fn parents_come_before_their_children_and_the_song_first() {
         let snapshot = engine().snapshot();
         let rows = display_order(&snapshot, &HashSet::new());
-        assert_eq!(names(&rows), ["Synth", "Kick", "Hats", "Drums", "Song"]);
+        assert_eq!(names(&rows), ["Song", "Synth", "Drums", "Kick", "Hats"]);
         let folded = HashSet::from([DRUMS]);
         let rows = display_order(&snapshot, &folded);
-        assert_eq!(names(&rows), ["Synth", "Drums", "Song"]);
+        assert_eq!(names(&rows), ["Song", "Synth", "Drums"]);
     }
 
     #[test]
-    fn bars_run_beside_each_folders_children_into_its_row() {
+    fn bars_run_from_each_folder_down_beside_its_children() {
         let snapshot = engine().snapshot();
         let rows = display_order(&snapshot, &HashSet::new());
         let bars = bars(&rows);
@@ -398,16 +399,16 @@ mod tests {
             bars,
             [
                 Bar {
-                    node: DRUMS,
-                    column: 1,
-                    first: 1,
-                    row: 3
-                },
-                Bar {
                     node: NodeId::ROOT,
                     column: 0,
-                    first: 0,
-                    row: 4
+                    row: 0,
+                    last: 4
+                },
+                Bar {
+                    node: DRUMS,
+                    column: 1,
+                    row: 2,
+                    last: 4
                 },
             ]
         );
@@ -416,12 +417,12 @@ mod tests {
         let folded = HashSet::from([DRUMS]);
         let rows = display_order(&snapshot, &folded);
         assert_eq!(
-            super::bars(&rows)[0],
+            super::bars(&rows)[1],
             Bar {
                 node: DRUMS,
                 column: 1,
-                first: 1,
-                row: 1
+                row: 2,
+                last: 2
             },
             "a folded folder's bar is just its row"
         );
@@ -475,12 +476,12 @@ mod tests {
         let edit = move_edit(&snapshot, KICK, Drop::After(NodeId::ROOT)).unwrap();
         let moved = apply(&mut engine, edit);
         let rows = display_order(&moved, &HashSet::new());
-        assert_eq!(names(&rows), ["Synth", "Hats", "Drums", "Kick", "Song"]);
+        assert_eq!(names(&rows), ["Song", "Synth", "Drums", "Hats", "Kick"]);
 
         let edit = move_edit(&moved, KICK, Drop::After(FIRST_NODE)).unwrap();
         let moved = apply(&mut engine, edit);
         let rows = display_order(&moved, &HashSet::new());
-        assert_eq!(names(&rows), ["Synth", "Kick", "Hats", "Drums", "Song"]);
+        assert_eq!(names(&rows), ["Song", "Synth", "Kick", "Drums", "Hats"]);
     }
 
     #[test]
@@ -491,7 +492,7 @@ mod tests {
         let rows = display_order(&grouped, &HashSet::new());
         assert_eq!(
             names(&rows),
-            ["Synth", "Kick", "Folder", "Hats", "Drums", "Song"]
+            ["Song", "Synth", "Drums", "Folder", "Kick", "Hats"]
         );
         engine.apply(Command::Undo).unwrap();
         assert_eq!(engine.snapshot().nodes.len(), 5, "one undo step");
@@ -551,7 +552,7 @@ mod tests {
         assert_eq!(
             names(&rows),
             [
-                "Synth", "Kick", "Hats", "Drums", "Kick", "Hats", "Drums 2", "Song"
+                "Song", "Synth", "Drums", "Kick", "Hats", "Drums 2", "Kick", "Hats"
             ]
         );
     }

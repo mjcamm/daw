@@ -24,6 +24,9 @@
 
 ## Model changes worth knowing
 
+- **Node kinds** (2026-10-16, the user's call): every node is MIDI or Audio (`NodeKind`). MIDI clips go on any MIDI node, with or without an instrument; audio nodes take audio clips once they exist; the Song holds no clips. "Folder" is not a type: any node with children is one. Only MIDI nodes have instruments.
+- **Parent first** (the user's call, reversing the earlier "folders below"): on Arrange the Song is at the top and each parent sits above its children; on the mixer each parent strip sits left of its children. Opening slides children out from under the parent; folding slides them back. Map bars start at the parent's row (or strip) with the chevron; while a node is dragged, every row offers a drop slot to nest into it. Map sizes ease as levels come and go.
+
 - **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; `crates/daw-engine/src/upgrade.rs` converts older files exactly (Replace only when nothing below it acts).
 - **Layer mix** scales every block's weight on a layer.
 - **Signals** (file version 4): drawn, or ADSR hits from MIDI notes. A layer listens with `Layer.signal`; its blocks are windows onto the signal. No range: block depth and invert do it.

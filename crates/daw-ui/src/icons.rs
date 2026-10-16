@@ -31,12 +31,10 @@ pub enum Icon {
     FolderPlus,
     Copy,
     Trash,
-    IntoFolder,
-    IntoStrip,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 24] = [
+const ICONS: [(Icon, &str, &[u8]); 22] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -146,16 +144,6 @@ const ICONS: [(Icon, &str, &[u8]); 24] = [
         Icon::Trash,
         "icons/trash-2.svg",
         include_bytes!("../assets/icons/trash-2.svg"),
-    ),
-    (
-        Icon::IntoFolder,
-        "icons/corner-down-right.svg",
-        include_bytes!("../assets/icons/corner-down-right.svg"),
-    ),
-    (
-        Icon::IntoStrip,
-        "icons/corner-right-up.svg",
-        include_bytes!("../assets/icons/corner-right-up.svg"),
     ),
 ];
 

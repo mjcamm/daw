@@ -53,6 +53,23 @@ pub struct RowLayout {
     pub opacity: f32,
 }
 
+/// A size that eases toward its target instead of jumping, so a map that
+/// gains or loses a level does not jolt everything beside it.
+#[derive(Debug, Default)]
+pub struct Eased(std::cell::Cell<Option<f32>>);
+
+impl Eased {
+    /// The size to draw this frame, a step closer to `target`.
+    pub fn toward(&self, target: f32) -> f32 {
+        let next = match self.0.get() {
+            Some(current) if (target - current).abs() > 0.5 => current + (target - current) * 0.25,
+            _ => target,
+        };
+        self.0.set(Some(next));
+        next
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct RowMotion {
     /// The rows last shown, in order.
@@ -209,6 +226,7 @@ mod tests {
     fn node(id: u64) -> NodeSnapshot {
         NodeSnapshot {
             id: NodeId(id),
+            kind: daw_engine::NodeKind::Midi,
             parent: None,
             depth: 1,
             children: Vec::new(),
@@ -306,6 +324,18 @@ mod tests {
         assert_eq!(offsets, [100., -50., -50.]);
         let layout = motion.layout(&[&c, &a, &b], 50., now + DURATION);
         assert!(layout.iter().all(|r| r.offset == 0.));
+    }
+
+    #[test]
+    fn sizes_ease_toward_their_target() {
+        let size = Eased::default();
+        assert_eq!(size.toward(100.), 100., "the first frame is exact");
+        let next = size.toward(60.);
+        assert!(next < 100. && next > 60.);
+        for _ in 0..40 {
+            size.toward(60.);
+        }
+        assert_eq!(size.toward(60.), 60.);
     }
 
     #[test]

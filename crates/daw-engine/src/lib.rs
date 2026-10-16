@@ -24,9 +24,9 @@ pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
     Edit, Effect, EffectKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange,
-    Meter, MidiClip, MidiNote, Node, NodeId, NodeSnapshot, NotesSource, ParamId, ParamSnapshot,
-    ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource,
-    SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    Meter, MidiClip, MidiNote, Node, NodeId, NodeKind, NodeSnapshot, NotesSource, ParamId,
+    ParamSnapshot, ParamState, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
+    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -311,6 +311,7 @@ fn node_snapshot(
     let node = entry.node;
     NodeSnapshot {
         id: entry.id,
+        kind: node.kind,
         parent: entry.parent,
         depth: entry.depth,
         children: node.children.iter().map(|(id, _)| *id).collect(),

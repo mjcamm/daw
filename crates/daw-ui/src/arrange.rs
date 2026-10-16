@@ -15,7 +15,7 @@ use crate::signals::{node_has_notes, published_signals};
 use crate::theme::Theme;
 use crate::tooltip;
 use crate::tree::{self, Bar, Drop, display_order};
-use daw_engine::{Command, Edit, Node, NodeId, NodeSnapshot};
+use daw_engine::{Command, Edit, Node, NodeId, NodeKind, NodeSnapshot};
 use gpui::{
     ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
 };
@@ -47,7 +47,7 @@ impl ProjectView {
             .collect();
         let rows: Vec<&NodeSnapshot> = placed.iter().map(|(n, _)| *n).collect();
         let map_bars = tree::bars(&rows);
-        let map_width = map_width(tree::columns(&map_bars));
+        let map_width = self.map_width.toward(map_width(tree::columns(&map_bars)));
         let left_width = map_width + NODE_LIST_WIDTH;
 
         // The ruler stays at the top and follows the lanes' sideways scroll.
@@ -204,12 +204,11 @@ impl ProjectView {
                 }))
                 .into_any_element(),
         };
-        let kind = if song {
-            "Master"
-        } else if node.has_instrument() {
-            "MIDI · Synth"
-        } else {
-            "Folder"
+        let kind = match node.kind {
+            _ if song => "Master",
+            NodeKind::Audio => "Audio",
+            NodeKind::Midi if node.has_instrument() => "MIDI · Synth",
+            NodeKind::Midi => "MIDI",
         };
         let mut drop_highlight = theme.accent;
         drop_highlight.a = 0.18;
@@ -306,12 +305,14 @@ impl ProjectView {
                     menu::panel(theme)
                         .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
                         .child(
-                            menu::item(theme, "add-instrument", "Instrument (Synth)", "")
-                                .on_click(cx.listener(|this, _, _, _| this.add_node(true))),
+                            menu::item(theme, "add-midi", "MIDI node", "with a Synth").on_click(
+                                cx.listener(|this, _, _, _| this.add_node(NodeKind::Midi)),
+                            ),
                         )
                         .child(
-                            menu::item(theme, "add-folder", "Folder", "")
-                                .on_click(cx.listener(|this, _, _, _| this.add_node(false))),
+                            menu::item(theme, "add-audio", "Audio node", "").on_click(
+                                cx.listener(|this, _, _, _| this.add_node(NodeKind::Audio)),
+                            ),
                         ),
                 ))
             });
@@ -384,7 +385,9 @@ impl ProjectView {
         }
         let total_height = y;
         let height_of = |row: usize| rows[row].1.height;
-        let content_width = tree::columns(bars) as f32 * MAP_COLUMN + 2. * MAP_PAD;
+        // One column more while dragging, for the drop slots.
+        let columns = tree::columns(bars) + usize::from(cx.has_active_drag());
+        let content_width = columns as f32 * MAP_COLUMN + 2. * MAP_PAD;
         let hover = theme.hover;
         let marks = bars.iter().map(|bar| {
             let node = rows[bar.row].0;
@@ -416,20 +419,14 @@ impl ProjectView {
                     .tooltip(tooltip::text(if folded { "Unfold" } else { "Fold" }))
                     .on_click(cx.listener(move |this, _, _, _| this.toggle_fold(id)))
             });
-            // The bar: beside what is under the folder, or (folded, empty)
-            // a short pill on its own row. While children close up into the
-            // folder, the bar shrinks with them into the pill.
+            // The bar: from the folder's own row down beside what is under
+            // it, or (folded) a short pill on its row. While children close
+            // up under the folder, the bar shrinks with them into the pill.
             const PILL: f32 = 14.;
-            let span = (bar.first < bar.row).then(|| {
-                let top = tops[bar.first];
-                let bottom = tops[bar.row - 1] + height_of(bar.row - 1);
-                (top + 4., bottom - top - 8.)
-            });
-            let pill = (
-                tops[bar.row] + height_of(bar.row) / 2. - PILL / 2.,
-                PILL.min(height_of(bar.row)),
-            );
-            let (top, height) = span.filter(|(_, h)| *h >= PILL).unwrap_or(pill);
+            let start = tops[bar.row] + height_of(bar.row) / 2. - PILL / 2.;
+            let bottom = tops[bar.last] + height_of(bar.last) - 4.;
+            let height = (bottom - start).max(PILL.min(height_of(bar.row)));
+            let top = start;
             let body = div()
                 .id(("map-bar", id.0))
                 .absolute()
@@ -451,26 +448,44 @@ impl ProjectView {
                 .on_drop(cx.listener(move |this, dragged: &DraggedNode, _, _| {
                     this.move_node(dragged.id, Drop::Into(id));
                 }));
-            // The arrow into the folder's row.
-            let arrow = span.filter(|(_, h)| *h >= PILL).map(|_| {
-                div()
-                    .absolute()
-                    .left(px(x))
-                    .top(px(tops[bar.row] + height_of(bar.row) / 2. - 8.))
-                    .opacity(rows[bar.row].1.opacity)
-                    .child(icon(Icon::IntoFolder, colors.detail, 14.))
-            });
-            [
-                Some(body.into_any_element()),
-                arrow.map(|a| a.into_any_element()),
-            ]
+            body.into_any_element()
+        });
+        // While a node is dragged, every other row offers a slot to drop it
+        // into (making that node a folder).
+        let slots = cx.has_active_drag().then(|| {
+            rows.iter()
+                .enumerate()
+                .filter(|(_, (node, layout))| layout.ghost.is_none() && !tree::is_folder(node))
+                .map(|(row, (node, _))| {
+                    let id = node.id;
+                    let colors = theme.content(node.color);
+                    let mut fill = colors.detail;
+                    fill.a = 0.35;
+                    div()
+                        .id(("map-slot", id.0))
+                        .absolute()
+                        .left(px(MAP_PAD + 1. + (node.depth + 1) as f32 * MAP_COLUMN))
+                        .top(px(tops[row] + height_of(row) / 2. - 7.))
+                        .w(px(MAP_COLUMN - 4.))
+                        .h(px(14.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(colors.outline)
+                        .drag_over::<DraggedNode>(move |style, _, _, _| style.bg(fill))
+                        .on_drop(cx.listener(move |this, dragged: &DraggedNode, _, _| {
+                            this.move_node(dragged.id, Drop::Into(id));
+                        }))
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>()
         });
         let content = div()
             .relative()
             .w(px(content_width))
             .h(px(total_height))
             .flex_shrink_0()
-            .children(marks.flatten().flatten().collect::<Vec<_>>());
+            .children(marks.collect::<Vec<_>>())
+            .children(slots.into_iter().flatten());
         scroll::axis_locked(div())
             .id("node-map")
             .w(px(width))
@@ -490,18 +505,21 @@ impl ProjectView {
         }
     }
 
-    /// Adds a node that plays notes, or a folder, after the selected node,
-    /// and selects it.
-    fn add_node(&mut self, instrument: bool) {
+    /// Adds a MIDI node (with a Synth) or an audio node after the selected
+    /// node, and selects it.
+    fn add_node(&mut self, kind: NodeKind) {
         self.open_menu = None;
         let snapshot = self.session.snapshot();
         let (parent, index) = tree::new_node_place(snapshot, self.selected_node);
         let id = tree::next_node_id(snapshot);
         let color = tree::next_color(snapshot);
-        let node = if instrument {
-            Node::new(&tree::next_name(snapshot, "Synth"), color).with_instrument()
-        } else {
-            Node::new(&tree::next_name(snapshot, "Folder"), color)
+        let node = match kind {
+            NodeKind::Midi => {
+                Node::new(&tree::next_name(snapshot, "Synth"), color).with_instrument()
+            }
+            NodeKind::Audio => {
+                Node::new(&tree::next_name(snapshot, "Audio"), color).with_kind(NodeKind::Audio)
+            }
         };
         self.session.apply(Command::Edit(Edit::AddNode {
             id,
@@ -801,8 +819,8 @@ impl ProjectView {
 
 /// A row (or its lane) as it is drawn this frame: as tall as it has grown,
 /// shifted while it glides, and faded in or out. Its content stays full
-/// height, anchored at the bottom edge, so a closing row slides down into
-/// what is below it (a folder's row) and an opening one rises out of it.
+/// height, anchored at the top edge, so an opening row slides out from
+/// under the row above it (its folder) and a closing one slides back up.
 fn animated(layout: &RowLayout, row_height: f32, content: impl IntoElement) -> gpui::Div {
     div()
         .relative()
@@ -816,7 +834,7 @@ fn animated(layout: &RowLayout, row_height: f32, content: impl IntoElement) -> g
                 .absolute()
                 .left_0()
                 .right_0()
-                .bottom_0()
+                .top_0()
                 .h(px(row_height))
                 .child(content),
         )

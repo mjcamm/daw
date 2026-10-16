@@ -10,7 +10,7 @@ use crate::devices::{
 use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
     Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, InvalidClip, Layer,
-    LayerId, MidiClip, Node, NodeId, ParamId, ParamState, Signal, SignalId, SignalSource,
+    LayerId, MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, Signal, SignalId, SignalSource,
     SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
@@ -65,7 +65,7 @@ impl Default for Project {
 
 /// The Song with nothing in it: a plain bus at its defaults.
 pub fn song() -> Node {
-    let mut node = Node::new("Song", SONG_COLOR);
+    let mut node = Node::new("Song", SONG_COLOR).with_kind(NodeKind::Audio);
     node.channel = default_params(&CHANNEL_PARAMS);
     node
 }
@@ -213,11 +213,13 @@ impl Project {
         find_node_mut(&mut self.root, NodeId::ROOT, id)
     }
 
-    /// A node that exists and has an instrument, so clips can play on it.
+    /// A node that exists and takes MIDI clips: a MIDI node, not the Song.
     fn check_plays_clips(&self, node: NodeId) -> Result<(), CommandError> {
         match self.node(node) {
             None => Err(CommandError::UnknownNode { id: node }),
-            Some(n) if n.instrument.is_none() => Err(CommandError::NoInstrument { node }),
+            Some(n) if n.kind != NodeKind::Midi || node == NodeId::ROOT => {
+                Err(CommandError::NotMidi { node })
+            }
             Some(_) => Ok(()),
         }
     }
@@ -960,8 +962,11 @@ fn prepare_node(
             signals,
         )?;
     }
-    if node.instrument.is_none() && !node.clips.is_empty() {
-        return Err(CommandError::NoInstrument { node: id });
+    if node.kind == NodeKind::Audio && node.instrument.is_some() {
+        return Err(CommandError::InstrumentOnAudio { node: id });
+    }
+    if node.kind == NodeKind::Audio && !node.clips.is_empty() {
+        return Err(CommandError::NotMidi { node: id });
     }
     for (clip_id, clip) in &node.clips {
         used.claim_clip(*clip_id)?;
@@ -2296,27 +2301,45 @@ mod node_tests {
     }
 
     #[test]
-    fn clips_only_go_on_nodes_that_play_them() {
+    fn midi_clips_go_on_midi_nodes_with_or_without_an_instrument() {
         let mut project = tree();
+        project
+            .apply(Edit::AddClip {
+                node: DRUMS,
+                id: ClipId(1),
+                clip: one_beat(),
+            })
+            .unwrap();
         let before = project.clone();
         assert_eq!(
             project.apply(Edit::AddClip {
-                node: DRUMS,
-                id: ClipId(1),
+                node: NodeId::ROOT,
+                id: ClipId(2),
                 clip: one_beat()
             }),
-            Err(CommandError::NoInstrument { node: DRUMS })
+            Err(CommandError::NotMidi { node: NodeId::ROOT })
         );
-        let mut folder = Node::new("Folder", 0);
-        folder.clips.insert(ClipId(2), one_beat());
+        let mut audio = Node::new("Vocals", 0).with_kind(NodeKind::Audio);
+        audio.clips.insert(ClipId(2), one_beat());
         assert_eq!(
             project.apply(Edit::AddNode {
                 id: NodeId(8),
                 parent: NodeId::ROOT,
                 index: 0,
-                node: folder
+                node: audio
             }),
-            Err(CommandError::NoInstrument { node: NodeId(8) })
+            Err(CommandError::NotMidi { node: NodeId(8) })
+        );
+        assert_eq!(
+            project.apply(Edit::AddNode {
+                id: NodeId(8),
+                parent: NodeId::ROOT,
+                index: 0,
+                node: Node::new("Vocals", 0)
+                    .with_kind(NodeKind::Audio)
+                    .with_instrument()
+            }),
+            Err(CommandError::InstrumentOnAudio { node: NodeId(8) })
         );
         assert_eq!(project, before);
     }

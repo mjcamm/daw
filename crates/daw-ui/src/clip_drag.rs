@@ -72,7 +72,7 @@ impl ClipDrag {
 
 /// Rows in display order: each node and whether it plays clips.
 fn row_kinds(rows: &[&daw_engine::NodeSnapshot]) -> Vec<(NodeId, bool)> {
-    rows.iter().map(|n| (n.id, n.has_instrument())).collect()
+    rows.iter().map(|n| (n.id, n.takes_midi())).collect()
 }
 
 impl ProjectView {

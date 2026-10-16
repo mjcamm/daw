@@ -1,5 +1,5 @@
 //! The Mixer page: every node as a strip in one flat, aligned row (each
-//! folder after its children, the Song last), with the nesting map along
+//! parent before its children, the Song first), with the nesting map along
 //! the bottom. See `docs/design/mixer.md`.
 //!
 //! Strip, top to bottom: effect slots, pan, fader with meters, the volume
@@ -60,6 +60,8 @@ pub struct MixerView {
     fader_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Where the horizontal scrollbar's track was drawn.
     track: Rc<Cell<Bounds<Pixels>>>,
+    /// The map's height, easing as levels come and go.
+    map_height: crate::motion::Eased,
     /// Each node's held peak and when it was reached.
     peaks: std::cell::RefCell<std::collections::HashMap<NodeId, (f32, Instant)>>,
 }
@@ -72,6 +74,7 @@ impl Default for MixerView {
             map_y: ScrollHandle::new(),
             fader_bounds: Rc::default(),
             track: Rc::default(),
+            map_height: crate::motion::Eased::default(),
             peaks: std::cell::RefCell::default(),
         }
     }
@@ -723,16 +726,11 @@ impl ProjectView {
             let folded = self.folded.contains(&id);
             let foldable = id != NodeId::ROOT && !node.children.is_empty();
             const PILL: f32 = 18.;
-            let span = (bar.first < bar.row).then(|| {
-                let left = lefts[bar.first];
-                let right = lefts[bar.row - 1] + widths[bar.row - 1];
-                (left + 4., right - left - 8.)
-            });
-            let own = (
-                lefts[bar.row] + widths[bar.row] / 2. - PILL / 2.,
-                PILL.min(widths[bar.row]),
-            );
-            let (left, width) = span.filter(|(_, w)| *w >= PILL).unwrap_or(own);
+            // From the folder's own strip right beneath what is under it,
+            // or (folded) a short pill under its strip.
+            let left = lefts[bar.row] + widths[bar.row] / 2. - PILL / 2.;
+            let right = lefts[bar.last] + widths[bar.last] - 4.;
+            let width = (right - left).max(PILL.min(widths[bar.row]));
             let chevron = foldable.then(|| {
                 div()
                     .id(("mixer-fold", id.0))
@@ -754,7 +752,7 @@ impl ProjectView {
                     .tooltip(tooltip::text(if folded { "Unfold" } else { "Fold" }))
                     .on_click(cx.listener(move |this, _, _, _| this.toggle_fold(id)))
             });
-            let body = div()
+            div()
                 .id(("mixer-bar", id.0))
                 .absolute()
                 .left(px(left))
@@ -769,25 +767,13 @@ impl ProjectView {
                 .items_center()
                 .pl(px(1.))
                 .children(chevron)
-                .tooltip(tooltip::text(node.name.clone()));
-            let arrow = span.filter(|(_, w)| *w >= PILL).map(|_| {
-                div()
-                    .absolute()
-                    .left(px(lefts[bar.row] + widths[bar.row] / 2. - 7.))
-                    .top(px(top))
-                    .opacity(placed[bar.row].1.opacity)
-                    .child(icon(Icon::IntoStrip, colors.detail, 14.))
-            });
-            [
-                Some(body.into_any_element()),
-                arrow.map(|a| a.into_any_element()),
-            ]
+                .tooltip(tooltip::text(node.name.clone()))
         });
         let full = levels as f32 * MAP_ROW + 2. * MAP_PAD;
         scroll::axis_locked(div())
             .id("mixer-map")
             .w(px(content_width))
-            .h(px(map_height(levels)))
+            .h(px(self.mixer_view.map_height.toward(map_height(levels))))
             .flex_none()
             .overflow_y_scroll()
             .track_scroll(&self.mixer_view.map_y)
@@ -799,7 +785,7 @@ impl ProjectView {
                     .relative()
                     .w(px(content_width))
                     .h(px(full))
-                    .children(marks.flatten().flatten().collect::<Vec<_>>()),
+                    .children(marks.collect::<Vec<_>>()),
             )
     }
 
@@ -913,7 +899,8 @@ impl ProjectView {
 
 /// A strip as drawn this frame: as wide as it has grown, shifted while it
 /// glides, faded in or out. Its content keeps its full width anchored at
-/// the right edge, so a closing strip slides right into its folder.
+/// the left edge, so an opening strip slides out from under its folder's
+/// strip (to its left) and a closing one slides back under it.
 fn animated_strip(
     layout: &RowLayout,
     width: f32,
@@ -933,7 +920,7 @@ fn animated_strip(
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .right_0()
+                .left_0()
                 .w(px(full_width))
                 .child(content),
         )
