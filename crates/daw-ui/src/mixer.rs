@@ -984,11 +984,13 @@ impl ProjectView {
                     .justify_center()
                     .rounded(px(3.))
                     .hover(move |s| s.bg(hover))
+                    // Arrange's chevrons turned a quarter: open points
+                    // right, at the children; folded points down.
                     .child(icon(
                         if folded {
-                            Icon::ChevronRight
-                        } else {
                             Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
                         },
                         colors.detail,
                         11.,
