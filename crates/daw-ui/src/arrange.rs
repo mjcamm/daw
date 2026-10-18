@@ -48,9 +48,15 @@ impl ProjectView {
             .collect();
         let rows: Vec<&NodeSnapshot> = placed.iter().map(|(n, _)| *n).collect();
         let map_bars = tree::bars(&rows);
-        // One column more while a node is dragged, for the drop slots.
-        let columns = tree::columns(&map_bars) + usize::from(cx.has_active_drag());
-        let map_width = self.map_width.toward(map_width(columns));
+        // While a node is dragged the map shows every column, one more for
+        // the drop slots, so every slot can be reached without scrolling.
+        let dragging = cx.has_active_drag();
+        let columns = tree::columns(&map_bars) + usize::from(dragging);
+        let map_width = self.map_width.toward(if dragging {
+            full_map_width(columns)
+        } else {
+            map_width(columns)
+        });
         let left_width = map_width + NODE_LIST_WIDTH;
 
         // The ruler stays at the top and follows the lanes' sideways scroll.
@@ -458,7 +464,9 @@ impl ProjectView {
         let slots = cx.has_active_drag().then(|| {
             rows.iter()
                 .enumerate()
-                .filter(|(_, (node, layout))| layout.ghost.is_none() && !tree::is_folder(node))
+                .filter(|(_, (node, layout))| {
+                    layout.ghost.is_none() && !tree::is_folder(node) && node.id != NodeId::ROOT
+                })
                 .map(|(row, (node, _))| {
                     let id = node.id;
                     let colors = theme.content(node.color);
@@ -467,7 +475,8 @@ impl ProjectView {
                     div()
                         .id(("map-slot", id.0))
                         .absolute()
-                        .left(px(MAP_PAD + 1. + node.depth as f32 * MAP_COLUMN))
+                        // Where its bar will be once something is inside.
+                        .left(px(MAP_PAD + 1. + (node.depth - 1) as f32 * MAP_COLUMN))
                         .top(px(tops[row] + height_of(row) / 2. - 7.))
                         .w(px(MAP_COLUMN - 4.))
                         .h(px(14.))
@@ -846,12 +855,19 @@ fn animated(layout: &RowLayout, row_height: f32, content: impl IntoElement) -> g
 /// show in full, and past that four and a half (the rest scroll sideways
 /// inside it).
 fn map_width(columns: usize) -> f32 {
-    if columns == 0 {
-        0.
-    } else if (columns as f32) <= MAP_VISIBLE_COLUMNS {
-        columns as f32 * MAP_COLUMN + 2. * MAP_PAD
+    if (columns as f32) <= MAP_VISIBLE_COLUMNS {
+        full_map_width(columns)
     } else {
         MAP_PAD + MAP_VISIBLE_COLUMNS * MAP_COLUMN
+    }
+}
+
+/// Width of the nesting map showing all `columns`.
+fn full_map_width(columns: usize) -> f32 {
+    if columns == 0 {
+        0.
+    } else {
+        columns as f32 * MAP_COLUMN + 2. * MAP_PAD
     }
 }
 
@@ -917,5 +933,10 @@ mod tests {
             "half a column peeks"
         );
         assert_eq!(map_width(9), map_width(5));
+        assert_eq!(
+            full_map_width(9),
+            9. * MAP_COLUMN + 2. * MAP_PAD,
+            "while dragging"
+        );
     }
 }

@@ -14,6 +14,7 @@ public class W {
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, int x, int y, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte s, uint f, UIntPtr e);
@@ -30,6 +31,13 @@ if ($env:DAW_PID) {
 $h = $p.MainWindowHandle
 [W]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 150
+# Windows may refuse to bring the window forward (someone is using the
+# machine). Then clicks, keys and screenshots would land on whatever is in
+# front, so stop instead.
+if ([W]::GetForegroundWindow() -ne $h) {
+    Write-Error "The DAW window is not in front; refusing to send input or take a screenshot."
+    exit 2
+}
 $r = New-Object W+RECT; [W]::GetClientRect($h, [ref]$r) | Out-Null
 $o = New-Object W+PT; [W]::ClientToScreen($h, [ref]$o) | Out-Null
 function MoveTo($x, $y) { [W]::SetCursorPos($o.X + [int]$x, $o.Y + [int]$y) | Out-Null; Start-Sleep -Milliseconds 60 }
