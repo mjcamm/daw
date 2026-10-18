@@ -13,6 +13,10 @@
 
 #![allow(unsafe_code, reason = "implementing GlobalAlloc requires unsafe")]
 
+mod denormals;
+
+pub use denormals::without_denormals;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};

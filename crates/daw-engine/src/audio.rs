@@ -207,7 +207,13 @@ impl AudioProcessor {
     ///
     /// `out.len()` must be a multiple of the channel count. Real-time safe.
     pub fn process(&mut self, out: &mut [f32]) {
-        daw_rt::realtime(|| {
+        // Denormals (numbers near zero as sounds fade out) are flushed to
+        // zero: the CPU's slow path for them could cause dropouts.
+        daw_rt::realtime(|| daw_rt::without_denormals(|| self.process_block(out)));
+    }
+
+    fn process_block(&mut self, out: &mut [f32]) {
+        {
             debug_assert_eq!(out.len() % self.channels, 0, "partial frame in block");
             self.receive();
             for chunk in out.chunks_mut(CHUNK_FRAMES * self.channels) {
@@ -218,7 +224,7 @@ impl AudioProcessor {
                 write_output(left, right, chunk, self.channels);
             }
             self.status.set_position_beats(self.transport.position());
-        });
+        }
     }
 
     #[cfg(test)]
@@ -467,12 +473,24 @@ fn two_mut<T>(items: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
     }
 }
 
-/// Writes stereo output into interleaved `out`. Mono output sums both sides
-/// at equal power; channels beyond two are silent.
+/// The last guard before the speakers: anything that is not a number
+/// (a broken calculation) is silence, and nothing goes past full scale.
+#[inline]
+pub(crate) fn safe(sample: f32) -> f32 {
+    if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Writes stereo output into interleaved `out`, through [`safe`]. Mono
+/// output sums both sides at equal power; channels beyond two are silent.
 fn write_output(left: &[f32], right: &[f32], out: &mut [f32], channels: usize) {
     for ((frame, &l), &r) in out.chunks_exact_mut(channels).zip(left).zip(right) {
+        let (l, r) = (safe(l), safe(r));
         match frame {
-            [only] => *only = (l + r) * std::f32::consts::FRAC_1_SQRT_2,
+            [only] => *only = safe((l + r) * std::f32::consts::FRAC_1_SQRT_2),
             [a, b, rest @ ..] => {
                 *a = l;
                 *b = r;
@@ -949,5 +967,17 @@ mod tests {
         let folder = player_of(&processor, NodeId(7));
         assert_ne!(folder, first);
         assert_eq!(processor.players[folder].node, Some(NodeId(7)));
+    }
+
+    #[test]
+    fn the_output_never_goes_past_full_scale_or_carries_broken_numbers() {
+        assert_eq!(safe(0.5), 0.5);
+        assert_eq!(safe(3.0), 1.0);
+        assert_eq!(safe(-7.0), -1.0);
+        assert_eq!(safe(f32::NAN), 0.0);
+        assert_eq!(safe(f32::INFINITY), 0.0);
+        let mut out = [9.0; 4];
+        write_output(&[2.0, f32::NAN], &[-2.0, 0.25], &mut out, 2);
+        assert_eq!(out, [1.0, -1.0, 0.0, 0.25]);
     }
 }
