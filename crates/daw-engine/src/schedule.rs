@@ -1,9 +1,11 @@
 //! Compiling the project into the flat, time-sorted form the audio side plays.
 
 use crate::project::Project;
+use crate::samples::{SampleData, SamplePool};
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
 use daw_protocol::{DeviceId, EffectKind, InstrumentKind, Node, NodeId, ParamState, SignalSource};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Everything the audio thread needs to render, compiled from the project by
 /// the control side. Immutable once sent.
@@ -46,6 +48,9 @@ pub struct InstrumentState {
     pub enabled: bool,
     /// One automation per parameter, in index order.
     pub params: Vec<Automation>,
+    /// The audio a SingleSampler plays, if its sample was read. The audio
+    /// thread only reads it; render states are freed on the control side.
+    pub sample: Option<Arc<SampleData>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,19 +134,27 @@ pub fn schedule_notes(node: &Node) -> Vec<ScheduledNote> {
 
 /// Compiles `node` and its subtree into `out`, children first, and returns
 /// the node's position.
+/// What every node's compilation reads.
+struct Context<'a> {
+    any_soloed: bool,
+    signals: &'a Signals,
+    project: &'a Project,
+    samples: &'a SamplePool,
+}
+
 fn compile_node(
     id: NodeId,
     node: &Node,
     soloed_above: bool,
-    any_soloed: bool,
-    signals: &Signals,
+    cx: &Context<'_>,
     out: &mut Vec<NodeRender>,
 ) -> usize {
+    let (any_soloed, signals) = (cx.any_soloed, cx.signals);
     let soloed = soloed_above || node.soloed;
     let children: Vec<usize> = node
         .children
         .iter()
-        .map(|(child_id, child)| compile_node(*child_id, child, soloed, any_soloed, signals, out))
+        .map(|(child_id, child)| compile_node(*child_id, child, soloed, cx, out))
         .collect();
     let index = out.len();
     out.push(NodeRender {
@@ -158,6 +171,10 @@ fn compile_node(
                 kind: instrument.kind,
                 enabled: instrument.enabled,
                 params: compile_params(&instrument.params, signals),
+                sample: instrument.sample.and_then(|sample| {
+                    let file = &cx.project.samples.get(&sample)?.file;
+                    cx.samples.get(sample, file).cloned()
+                }),
             })
             .collect(),
         effects: node
@@ -179,18 +196,22 @@ fn compile_node(
 }
 
 impl RenderState {
+    /// The project with no sample audio (samplers are silent).
     pub fn compile(project: &Project) -> Self {
+        Self::compile_with(project, &SamplePool::default())
+    }
+
+    /// The project, with samples' audio from `samples`.
+    pub fn compile_with(project: &Project, samples: &SamplePool) -> Self {
         let signals = compile_signals(project);
-        let any_soloed = project.nodes().iter().any(|e| e.node.soloed);
+        let cx = Context {
+            any_soloed: project.nodes().iter().any(|e| e.node.soloed),
+            signals: &signals,
+            project,
+            samples,
+        };
         let mut nodes = Vec::new();
-        compile_node(
-            NodeId::ROOT,
-            &project.root,
-            false,
-            any_soloed,
-            &signals,
-            &mut nodes,
-        );
+        compile_node(NodeId::ROOT, &project.root, false, &cx, &mut nodes);
         Self {
             tempo_bpm: project.tempo_bpm,
             nodes,

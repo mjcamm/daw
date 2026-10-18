@@ -92,6 +92,27 @@ pub static INSTRUMENT_PARAMS: [ParamInfo; 8] = [
     ),
 ];
 
+pub mod sampler {
+    pub const LEVEL: u32 = 0;
+}
+
+/// The SingleSampler: the sample plays at its recorded level at 0 dB.
+pub static SAMPLER_PARAMS: [ParamInfo; 1] = [ParamInfo::new(
+    "Level",
+    "dB",
+    Scale::Decibels {
+        min_db: -60.0,
+        max_db: 6.0,
+    },
+    0.0,
+)];
+
+/// The SingleSampler's linear level from real-unit values in
+/// [`SAMPLER_PARAMS`] order.
+pub fn sampler_level(plain: &[f64]) -> f32 {
+    db_to_gain(plain[sampler::LEVEL as usize] as f32)
+}
+
 pub mod channel {
     pub const VOLUME: u32 = 0;
     pub const PAN: u32 = 1;
@@ -142,6 +163,7 @@ pub fn effect_params(kind: EffectKind) -> &'static [ParamInfo] {
 pub fn instrument_name(kind: InstrumentKind) -> &'static str {
     match kind {
         InstrumentKind::Synth => "Synth",
+        InstrumentKind::SingleSampler => "SingleSampler",
     }
 }
 
@@ -149,15 +171,17 @@ pub fn instrument_name(kind: InstrumentKind) -> &'static str {
 pub fn instrument_description(kind: InstrumentKind) -> &'static str {
     match kind {
         InstrumentKind::Synth => "Saw synth with filter and envelopes",
+        InstrumentKind::SingleSampler => "Plays one audio sample for every note",
     }
 }
 
 /// Every built-in instrument, for the browser.
-pub const INSTRUMENTS: [InstrumentKind; 1] = [InstrumentKind::Synth];
+pub const INSTRUMENTS: [InstrumentKind; 2] = [InstrumentKind::Synth, InstrumentKind::SingleSampler];
 
 pub fn instrument_params(kind: InstrumentKind) -> &'static [ParamInfo] {
     match kind {
         InstrumentKind::Synth => &INSTRUMENT_PARAMS,
+        InstrumentKind::SingleSampler => &SAMPLER_PARAMS,
     }
 }
 

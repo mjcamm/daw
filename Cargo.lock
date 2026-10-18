@@ -1375,6 +1375,7 @@ dependencies = [
  "daw-protocol",
  "daw-rt",
  "daw-testkit",
+ "hound",
  "rtrb",
  "serde",
  "serde_json",

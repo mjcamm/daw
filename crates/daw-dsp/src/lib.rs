@@ -10,6 +10,7 @@ pub mod filter_effect;
 pub mod gain;
 pub mod oscillator;
 pub mod pan;
+pub mod sampler;
 pub mod smoothing;
 pub mod synth;
 

@@ -71,6 +71,7 @@ impl Session {
             .as_ref()
             .map_or_else(|_| EngineConfig::default(), OutputDevice::engine_config);
         let (mut engine, processor) = Engine::new(config);
+        engine.set_sample_dir(Some(folder.clone()));
         setup(&mut engine)?;
         let (output, audio_error) = match device.and_then(|d| d.start(processor)) {
             Ok(output) => (Some(output), None),

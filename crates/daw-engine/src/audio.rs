@@ -13,17 +13,19 @@
 
 use crate::devices::{
     CHANNEL_PARAMS, MAX_DEVICE_PARAMS, ParamInfo, channel_settings, effect_params, filter_params,
-    instrument_params, synth_params,
+    instrument_params, sampler_level, synth_params,
 };
 use crate::project::{MAX_EFFECTS, MAX_INSTRUMENTS, MAX_NODES};
+use crate::samples::SampleData;
 use crate::schedule::{EffectState, InstrumentState, NodeRender, RenderState};
 use crate::transport::Transport;
 use daw_automation::Automation;
 use daw_dsp::filter_effect::FilterEffect;
 use daw_dsp::pan::{balance, equal_power};
+use daw_dsp::sampler::Sampler;
 use daw_dsp::smoothing::Smoothed;
 use daw_dsp::synth::{MAX_VOICES, Synth};
-use daw_protocol::{DeviceId, EffectKind, NodeId};
+use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -150,7 +152,8 @@ pub struct AudioProcessor {
     /// For each node in `state.nodes`, the player playing it.
     slots: Vec<usize>,
     /// Where an instrument renders before joining its node's bus.
-    scratch: Box<[f32; CHUNK_FRAMES]>,
+    scratch_left: Box<[f32; CHUNK_FRAMES]>,
+    scratch_right: Box<[f32; CHUNK_FRAMES]>,
     left: Box<[f32; CHUNK_FRAMES]>,
     right: Box<[f32; CHUNK_FRAMES]>,
     /// Frames rendered since the processor started; sets the control grid.
@@ -179,7 +182,8 @@ impl AudioProcessor {
                 .map(|_| NodePlayer::new(sample_rate))
                 .collect(),
             slots: Vec::with_capacity(MAX_NODES),
-            scratch: Box::new([0.0; CHUNK_FRAMES]),
+            scratch_left: Box::new([0.0; CHUNK_FRAMES]),
+            scratch_right: Box::new([0.0; CHUNK_FRAMES]),
             left: Box::new([0.0; CHUNK_FRAMES]),
             right: Box::new([0.0; CHUNK_FRAMES]),
             frames_processed: 0,
@@ -250,11 +254,11 @@ impl AudioProcessor {
                     let player = self.players.iter_mut().find(|p| p.node == Some(node));
                     if let Some(player) = player {
                         let id = PREVIEW_NOTE_IDS + u32::from(pitch);
-                        for (_, synth) in &mut player.synths {
+                        for (_, instrument) in &mut player.instruments {
                             if on {
-                                synth.note_on(id, pitch, velocity);
+                                instrument.note_on(id, pitch, velocity);
                             } else {
-                                synth.note_off(id);
+                                instrument.note_off(id);
                             }
                         }
                     }
@@ -379,16 +383,16 @@ impl AudioProcessor {
             let index = self.slots[slot];
             let player = &mut self.players[index];
             // Every instrument plays; their sounds add up in the bus.
-            for ((_, synth), state) in player.synths.iter_mut().zip(&node.instruments) {
-                let scratch = &mut self.scratch[span.clone()];
-                synth.render(scratch);
+            for ((_, instrument), state) in player.instruments.iter_mut().zip(&node.instruments) {
+                let left = &mut self.scratch_left[span.clone()];
+                let right = &mut self.scratch_right[span.clone()];
+                instrument.render(state.sample.as_deref(), left, right);
                 if node.instrument_on && state.enabled {
-                    let bus = player.bus_left[span.clone()]
-                        .iter_mut()
-                        .zip(&mut player.bus_right[span.clone()]);
-                    for ((l, r), s) in bus.zip(scratch.iter()) {
-                        *l += *s;
-                        *r += *s;
+                    for (to, from) in player.bus_left[span.clone()].iter_mut().zip(left.iter()) {
+                        *to += *from;
+                    }
+                    for (to, from) in player.bus_right[span.clone()].iter_mut().zip(right.iter()) {
+                        *to += *from;
                     }
                 }
             }
@@ -513,6 +517,75 @@ impl EffectInstance {
     }
 }
 
+/// A running instrument. Holds no heap memory, so creating and dropping one
+/// on the audio thread is allocation-free.
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "instances are made on the audio thread, where boxing would allocate"
+)]
+enum InstrumentInstance {
+    Synth(Synth),
+    Sampler(Sampler),
+}
+
+impl InstrumentInstance {
+    fn new(kind: InstrumentKind, sample_rate: f32) -> Self {
+        match kind {
+            InstrumentKind::Synth => Self::Synth(Synth::new(sample_rate)),
+            InstrumentKind::SingleSampler => Self::Sampler(Sampler::new(sample_rate)),
+        }
+    }
+
+    fn kind(&self) -> InstrumentKind {
+        match self {
+            Self::Synth(_) => InstrumentKind::Synth,
+            Self::Sampler(_) => InstrumentKind::SingleSampler,
+        }
+    }
+
+    /// Applies real-unit parameter values in the kind's parameter order.
+    fn set_params(&mut self, plain: &[f64]) {
+        match self {
+            Self::Synth(synth) => synth.set_params(synth_params(plain)),
+            Self::Sampler(sampler) => sampler.set_level(sampler_level(plain)),
+        }
+    }
+
+    fn note_on(&mut self, note: u32, pitch: u8, velocity: u8) {
+        match self {
+            Self::Synth(synth) => synth.note_on(note, pitch, velocity),
+            Self::Sampler(sampler) => sampler.note_on(note, pitch, velocity),
+        }
+    }
+
+    fn note_off(&mut self, note: u32) {
+        match self {
+            Self::Synth(synth) => synth.note_off(note),
+            Self::Sampler(sampler) => sampler.note_off(note),
+        }
+    }
+
+    fn release_all(&mut self) {
+        match self {
+            Self::Synth(synth) => synth.release_all(),
+            Self::Sampler(sampler) => sampler.release_all(),
+        }
+    }
+
+    /// Renders into `left` and `right`, overwriting them. The synth is a
+    /// mono source, heard in both sides.
+    fn render(&mut self, sample: Option<&SampleData>, left: &mut [f32], right: &mut [f32]) {
+        match self {
+            Self::Synth(synth) => {
+                synth.render(left);
+                right.copy_from_slice(left);
+            }
+            Self::Sampler(sampler) => sampler.render(sample.map(SampleData::view), left, right),
+        }
+    }
+}
+
 /// A sounding note waiting for its scheduled end.
 #[derive(Debug, Clone, Copy)]
 struct PendingEnd {
@@ -531,8 +604,8 @@ struct NodePlayer {
     sample_rate: f32,
     /// The running instruments, in the order of the node's instruments.
     /// Capacity is reserved up front so rebuilding never allocates.
-    synths: Vec<(DeviceId, Synth)>,
-    spare_synths: Vec<(DeviceId, Synth)>,
+    instruments: Vec<(DeviceId, InstrumentInstance)>,
+    spare_instruments: Vec<(DeviceId, InstrumentInstance)>,
     /// The running chain, in the order of the node's effects. Capacity is
     /// reserved up front so rebuilding it never allocates.
     effects: Vec<(DeviceId, EffectInstance)>,
@@ -555,8 +628,8 @@ impl NodePlayer {
             node: None,
             fresh: false,
             sample_rate,
-            synths: Vec::with_capacity(MAX_INSTRUMENTS),
-            spare_synths: Vec::with_capacity(MAX_INSTRUMENTS),
+            instruments: Vec::with_capacity(MAX_INSTRUMENTS),
+            spare_instruments: Vec::with_capacity(MAX_INSTRUMENTS),
             effects: Vec::with_capacity(MAX_EFFECTS),
             spare_effects: Vec::with_capacity(MAX_EFFECTS),
             gain_left: Smoothed::new(0.0, CONTROL_FRAMES as u32),
@@ -573,7 +646,7 @@ impl NodePlayer {
     fn start(&mut self, node: NodeId, meter: &PlayerMeter) {
         self.node = Some(node);
         self.fresh = true;
-        self.synths.clear();
+        self.instruments.clear();
         self.effects.clear();
         self.cursor = 0;
         self.pending_ends = [None; MAX_PENDING_ENDS];
@@ -585,7 +658,7 @@ impl NodePlayer {
     fn free(&mut self, meter: &PlayerMeter) {
         self.node = None;
         self.release_all();
-        self.synths.clear();
+        self.instruments.clear();
         self.effects.clear();
         meter.node.store(0, Ordering::Relaxed);
         meter.peaks.take();
@@ -623,34 +696,38 @@ impl NodePlayer {
     }
 
     /// Rebuilds the running instruments to match `wanted`, keeping existing
-    /// ones (and their sounding voices) by id. Allocation-free: a synth
-    /// holds no heap memory.
+    /// ones (and their sounding voices) by id and kind. Allocation-free: an
+    /// instrument holds no heap memory.
     fn sync_instruments(&mut self, wanted: &[InstrumentState]) {
         debug_assert!(wanted.len() <= MAX_INSTRUMENTS);
-        self.spare_synths.clear();
-        for instrument in wanted {
-            let synth = match self.synths.iter().position(|(id, _)| *id == instrument.id) {
-                Some(index) => self.synths.swap_remove(index).1,
-                None => Synth::new(self.sample_rate),
+        self.spare_instruments.clear();
+        for state in wanted {
+            let existing = self
+                .instruments
+                .iter()
+                .position(|(id, i)| *id == state.id && i.kind() == state.kind);
+            let instance = match existing {
+                Some(index) => self.instruments.swap_remove(index).1,
+                None => InstrumentInstance::new(state.kind, self.sample_rate),
             };
-            self.spare_synths.push((instrument.id, synth));
+            self.spare_instruments.push((state.id, instance));
         }
-        self.synths.clear();
-        std::mem::swap(&mut self.synths, &mut self.spare_synths);
+        self.instruments.clear();
+        std::mem::swap(&mut self.instruments, &mut self.spare_instruments);
     }
 
     /// Evaluates every parameter's layers at `beat` and applies the results.
     fn update_params(&mut self, node: &NodeRender, beat: f64) {
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
 
-        for ((_, synth), instrument) in self.synths.iter_mut().zip(&node.instruments) {
+        for ((_, instance), instrument) in self.instruments.iter_mut().zip(&node.instruments) {
             evaluate(
                 &instrument.params,
                 instrument_params(instrument.kind),
                 beat,
                 &mut plain,
             );
-            synth.set_params(synth_params(&plain));
+            instance.set_params(&plain);
         }
 
         for ((_, instance), effect) in self.effects.iter_mut().zip(&node.effects) {
@@ -708,8 +785,8 @@ impl NodePlayer {
             if let Some(pending) = *slot
                 && transport.frames_until(pending.end_beats) <= 0
             {
-                for (_, synth) in &mut self.synths {
-                    synth.note_off(pending.note_id);
+                for (_, instrument) in &mut self.instruments {
+                    instrument.note_off(pending.note_id);
                 }
                 *slot = None;
             }
@@ -730,15 +807,15 @@ impl NodePlayer {
                     .filter_map(|(i, p)| p.map(|p| (i, p)))
                     .min_by(|(_, a), (_, b)| a.end_beats.total_cmp(&b.end_beats))
                     .unwrap_or((0, PendingEnd { note_id, end_beats }));
-                for (_, synth) in &mut self.synths {
-                    synth.note_off(soonest.note_id);
+                for (_, instrument) in &mut self.instruments {
+                    instrument.note_off(soonest.note_id);
                 }
                 slot
             }
         };
         self.pending_ends[slot] = Some(PendingEnd { note_id, end_beats });
-        for (_, synth) in &mut self.synths {
-            synth.note_on(note_id, pitch, velocity);
+        for (_, instrument) in &mut self.instruments {
+            instrument.note_on(note_id, pitch, velocity);
         }
     }
 
@@ -769,8 +846,8 @@ impl NodePlayer {
     }
 
     fn release_all(&mut self) {
-        for (_, synth) in &mut self.synths {
-            synth.release_all();
+        for (_, instrument) in &mut self.instruments {
+            instrument.release_all();
         }
         self.pending_ends = [None; MAX_PENDING_ENDS];
     }

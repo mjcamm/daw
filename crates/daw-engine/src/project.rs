@@ -12,7 +12,7 @@ use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
     Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument,
     InstrumentKind, InvalidClip, Layer, LayerId, MidiClip, Node, NodeId, NodeKind, ParamId,
-    ParamState, Signal, SignalId, SignalSource, SignalUse,
+    ParamState, SampleId, SampleRef, Signal, SignalId, SignalSource, SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -41,6 +41,8 @@ pub struct Project {
     pub root: Node,
     /// Motion signals, by id.
     pub signals: BTreeMap<SignalId, Signal>,
+    /// Audio files the project uses, by id.
+    pub samples: BTreeMap<SampleId, SampleRef>,
 }
 
 /// A node as found by walking the tree.
@@ -62,6 +64,7 @@ impl Default for Project {
             tempo_bpm: DEFAULT_TEMPO_BPM,
             root,
             signals: BTreeMap::new(),
+            samples: BTreeMap::new(),
         }
     }
 }
@@ -212,6 +215,34 @@ fn walk_into<'a>(
 }
 
 /// How many nodes are in `node`'s subtree, itself included.
+/// Every instrument in `node` and under it.
+fn subtree_instruments(node: &Node) -> Vec<(DeviceId, &Instrument)> {
+    let mut out: Vec<(DeviceId, &Instrument)> =
+        node.instruments.iter().map(|(id, i)| (*id, i)).collect();
+    for (_, child) in &node.children {
+        out.extend(subtree_instruments(child));
+    }
+    out
+}
+
+/// A sample file must be a relative path inside the project folder, with
+/// `/` between parts and no way out of it.
+fn check_sample_file(file: &str) -> Result<(), CommandError> {
+    let bad = file.is_empty()
+        || file.starts_with('/')
+        || file.contains('\\')
+        || file.contains(':')
+        || file
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..");
+    if bad {
+        return Err(CommandError::InvalidSampleFile {
+            file: file.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 fn count_nodes(node: &Node) -> usize {
     1 + node
         .children
@@ -290,6 +321,32 @@ impl Project {
     }
 
     /// The node holding an instrument.
+    /// Whether any instrument plays the sample.
+    pub fn sample_in_use(&self, id: SampleId) -> bool {
+        subtree_instruments(&self.root)
+            .iter()
+            .any(|(_, i)| i.sample == Some(id))
+    }
+
+    /// An instrument may only name a sample if it is a SingleSampler and
+    /// the sample is in the table.
+    fn check_instrument_sample(
+        &self,
+        id: DeviceId,
+        instrument: &Instrument,
+    ) -> Result<(), CommandError> {
+        let Some(sample) = instrument.sample else {
+            return Ok(());
+        };
+        if instrument.kind != InstrumentKind::SingleSampler {
+            return Err(CommandError::NotASampler { id });
+        }
+        if !self.samples.contains_key(&sample) {
+            return Err(CommandError::UnknownSample { id: sample });
+        }
+        Ok(())
+    }
+
     pub fn instrument_node(&self, id: DeviceId) -> Option<NodeId> {
         self.nodes()
             .into_iter()
@@ -568,6 +625,9 @@ impl Project {
                 if count_nodes(&self.root) + count_nodes(&node) > MAX_NODES {
                     return Err(CommandError::TooManyNodes { max: MAX_NODES });
                 }
+                for (device, instrument) in subtree_instruments(&node) {
+                    self.check_instrument_sample(device, instrument)?;
+                }
                 let mut used = self.used_ids();
                 prepare_node(id, &mut node, &mut used, &self.signals)?;
                 self.node_or_err(parent)?.children.insert(index, (id, node));
@@ -736,6 +796,7 @@ impl Project {
                     return Err(CommandError::InstrumentOnAudio { node });
                 }
                 let len = target.instruments.len();
+                self.check_instrument_sample(id, &instrument)?;
                 let mut used = self.used_ids();
                 used.claim_device(id)?;
                 if len >= MAX_INSTRUMENTS {
@@ -771,6 +832,60 @@ impl Project {
                     id,
                     index,
                     instrument,
+                })
+            }
+            Edit::AddSample { id, sample } => {
+                if self.samples.contains_key(&id) {
+                    return Err(CommandError::DuplicateSample { id });
+                }
+                check_sample_file(&sample.file)?;
+                if sample.name.trim().is_empty() {
+                    return Err(CommandError::EmptyName);
+                }
+                self.samples.insert(id, sample);
+                Ok(Edit::RemoveSample { id })
+            }
+            Edit::RemoveSample { id } => {
+                if !self.samples.contains_key(&id) {
+                    return Err(CommandError::UnknownSample { id });
+                }
+                if self.sample_in_use(id) {
+                    return Err(CommandError::SampleInUse { id });
+                }
+                let sample = self
+                    .samples
+                    .remove(&id)
+                    .ok_or(CommandError::UnknownSample { id })?;
+                Ok(Edit::AddSample { id, sample })
+            }
+            Edit::SetInstrumentSample { id, sample } => {
+                let node = self
+                    .instrument_node(id)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let current = self
+                    .node(node)
+                    .and_then(|n| n.instrument(id))
+                    .map(|(_, i)| i.clone())
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                self.check_instrument_sample(
+                    id,
+                    &Instrument {
+                        sample,
+                        ..current.clone()
+                    },
+                )?;
+                if current.kind != InstrumentKind::SingleSampler {
+                    return Err(CommandError::NotASampler { id });
+                }
+                let target = self.node_or_err(node)?;
+                let Some((_, instrument)) = target.instruments.iter_mut().find(|(i, _)| *i == id)
+                else {
+                    return Err(CommandError::UnknownDevice { id });
+                };
+                let previous = std::mem::replace(&mut instrument.sample, sample);
+                Ok(Edit::SetInstrumentSample {
+                    id,
+                    sample: previous,
                 })
             }
             Edit::SetDeviceEnabled { id, enabled } => {

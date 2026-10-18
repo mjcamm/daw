@@ -14,6 +14,13 @@ use crate::Ticks;
 )]
 pub struct DeviceId(pub u64);
 
+/// Identifies an audio sample in the project's sample table. Chosen by its
+/// creator.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct SampleId(pub u64);
+
 /// Identifies a node anywhere in the project. Chosen by its creator; the
 /// Song, the root of the tree, is always [`NodeId::ROOT`].
 #[derive(
@@ -69,6 +76,8 @@ pub struct ParamId {
 pub enum InstrumentKind {
     /// Saw synth with a filter and envelopes.
     Synth,
+    /// Plays one audio sample, from the top, for every note (one-shot).
+    SingleSampler,
 }
 
 /// An instrument and the state of its parameters. A MIDI node can hold
@@ -81,6 +90,10 @@ pub struct Instrument {
     pub enabled: bool,
     /// One entry per parameter, in index order. Empty means all defaults.
     pub params: Vec<ParamState>,
+    /// The sample a SingleSampler plays; `None` for none (silent) and for
+    /// other instruments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<SampleId>,
 }
 
 impl Instrument {
@@ -90,6 +103,7 @@ impl Instrument {
             kind,
             enabled: true,
             params: Vec::new(),
+            sample: None,
         }
     }
 }

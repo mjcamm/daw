@@ -1,7 +1,7 @@
 //! Project folders on disk and the list of recently opened projects.
 //!
-//! A project is a folder holding `project.json`. Recordings and other audio
-//! will live in an `audio/` folder beside it.
+//! A project is a folder holding `project.json`. Imported samples (and
+//! later recordings) live in an `audio/` folder beside it.
 
 use daw_engine::{LoadError, ProjectFile};
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PROJECT_FILE: &str = "project.json";
+/// Where a project keeps its audio files, inside its folder.
+pub const AUDIO_DIR: &str = "audio";
 /// Background backup written while there are unsaved changes, so work can
 /// be recovered after a crash. Removed by a normal save.
 pub const AUTOSAVE_FILE: &str = "project.autosave.json";
@@ -68,6 +70,46 @@ pub fn folder_name(name: &str) -> String {
     } else {
         trimmed.to_owned()
     }
+}
+
+/// Copies an audio file into the project's `audio/` folder (adding a
+/// number if the name is taken) and returns how the project refers to it:
+/// the file's name without its extension, and its path inside the folder.
+pub fn import_sample(folder: &Path, source: &Path) -> io::Result<daw_engine::SampleRef> {
+    let stem = source
+        .file_stem()
+        .map_or_else(|| "Sample".to_owned(), |s| s.to_string_lossy().into_owned());
+    let extension = source
+        .extension()
+        .map_or_else(|| "wav".to_owned(), |e| e.to_string_lossy().to_lowercase());
+    let base = folder_name(&stem);
+    let dir = folder.join(AUDIO_DIR);
+    std::fs::create_dir_all(&dir)?;
+    for n in 1.. {
+        let name = if n == 1 {
+            format!("{base}.{extension}")
+        } else {
+            format!("{base} {n}.{extension}")
+        };
+        let target = dir.join(&name);
+        // Create the file first, so two imports never pick the same name.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(_) => {
+                std::fs::copy(source, &target)?;
+                return Ok(daw_engine::SampleRef {
+                    name: stem,
+                    file: format!("{AUDIO_DIR}/{name}"),
+                });
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("ran out of file names")
 }
 
 /// Saves a project into its folder. The file is written beside the old one
@@ -303,5 +345,22 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn imported_samples_are_copied_into_the_project() {
+        let dir = scratch("import");
+        let source = dir.join("Big Kick.WAV");
+        std::fs::write(&source, b"RIFF").unwrap();
+        let project = dir.join("Song");
+        let first = import_sample(&project, &source).unwrap();
+        assert_eq!(first.name, "Big Kick");
+        assert_eq!(first.file, "audio/Big Kick.wav");
+        assert_eq!(
+            std::fs::read(project.join("audio/Big Kick.wav")).unwrap(),
+            b"RIFF"
+        );
+        let second = import_sample(&project, &source).unwrap();
+        assert_eq!(second.file, "audio/Big Kick 2.wav", "never overwrites");
     }
 }

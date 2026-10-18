@@ -16,6 +16,7 @@ pub mod devices;
 mod file;
 mod history;
 mod project;
+pub mod samples;
 mod schedule;
 mod transport;
 mod upgrade;
@@ -25,8 +26,9 @@ pub use daw_protocol::{
     BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
     Edit, Effect, EffectKind, Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal,
     Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote, Node, NodeId, NodeKind, NodeSnapshot,
-    NotesSource, ParamId, ParamSnapshot, ParamState, Scale, Segment, Shape, ShapePoint, Signal,
-    SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    NotesSource, ParamId, ParamSnapshot, ParamState, SampleId, SampleRef, SampleSnapshot,
+    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
+    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -39,6 +41,7 @@ use audio::{AudioMsg, SharedStatus};
 use daw_automation::{Automation, Signals};
 use devices::{ParamInfo, effect_name};
 use history::History;
+use samples::{SampleData, SamplePool};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
@@ -79,6 +82,8 @@ pub struct Engine {
     to_audio: rtrb::Producer<AudioMsg>,
     garbage: rtrb::Consumer<Box<RenderState>>,
     status: Arc<SharedStatus>,
+    /// Decoded sample audio, read from the project folder as needed.
+    samples: SamplePool,
 }
 
 impl Engine {
@@ -114,6 +119,7 @@ impl Engine {
             to_audio,
             garbage,
             status,
+            samples: SamplePool::default(),
         };
         (engine, processor)
     }
@@ -187,6 +193,24 @@ impl Engine {
         Ok(())
     }
 
+    /// The project folder, where sample files are found. Samples that could
+    /// not be read are tried again.
+    pub fn set_sample_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.samples.set_dir(dir);
+        self.publish_state();
+        self.revision += 1;
+        self.maintain();
+    }
+
+    /// Puts decoded audio in the sample pool as if read from `file` (for
+    /// generated sounds and tests).
+    pub fn insert_sample_data(&mut self, id: SampleId, file: &str, data: SampleData) {
+        self.samples.insert(id, file, data);
+        self.publish_state();
+        self.revision += 1;
+        self.maintain();
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let position_beats = self.status.position_beats();
         let signals = schedule::compile_signals(&self.project);
@@ -218,6 +242,17 @@ impl Engine {
                         .filter(|(_, listened)| *listened == id)
                         .map(|(used, _)| *used)
                         .collect(),
+                })
+                .collect(),
+            samples: self
+                .project
+                .samples
+                .iter()
+                .map(|(&id, sample)| SampleSnapshot {
+                    id,
+                    name: sample.name.clone(),
+                    file: sample.file.clone(),
+                    status: self.samples.status(id, &sample.file),
                 })
                 .collect(),
             can_undo: self.history.can_undo(),
@@ -314,7 +349,8 @@ impl Engine {
         // Only the newest state matters; drop any that were never delivered.
         self.outbox
             .retain(|msg| !matches!(msg, AudioMsg::SwapState(_)));
-        let state = Box::new(RenderState::compile(&self.project));
+        self.samples.refresh(&self.project.samples);
+        let state = Box::new(RenderState::compile_with(&self.project, &self.samples));
         self.outbox.push_back(AudioMsg::SwapState(state));
     }
 }
@@ -352,6 +388,12 @@ fn node_snapshot(
                     },
                     instrument: match device {
                         DeviceRef::Instrument(id) => node.instrument(id).map(|(_, i)| i.kind),
+                        _ => None,
+                    },
+                    sample: match device {
+                        DeviceRef::Instrument(id) => {
+                            node.instrument(id).and_then(|(_, i)| i.sample)
+                        }
                         _ => None,
                     },
                     enabled: match device {

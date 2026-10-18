@@ -309,6 +309,7 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
                         kind,
                         enabled: device.enabled,
                         params: copy_params(&device.params, ids),
+                        sample: device.sample,
                     };
                     copy.instruments
                         .push((DeviceId(FreshIds::next(&mut ids.device)), instrument));

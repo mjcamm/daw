@@ -9,8 +9,8 @@ mod time;
 
 pub use automation::{
     BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Instrument, InstrumentKind,
-    Layer, LayerId, NodeId, NotesSource, ParamId, ParamState, Scale, Segment, Shape, ShapePoint,
-    Signal, SignalId, SignalSource,
+    Layer, LayerId, NodeId, NotesSource, ParamId, ParamState, SampleId, Scale, Segment, Shape,
+    ShapePoint, Signal, SignalId, SignalSource,
 };
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -172,6 +172,21 @@ pub enum Edit {
         id: LayerId,
         mix: f64,
     },
+    /// Add an audio sample to the project's sample table. `file` is a path
+    /// inside the project folder, with `/` between parts.
+    AddSample {
+        id: SampleId,
+        sample: SampleRef,
+    },
+    /// Remove a sample from the table. Refused while an instrument uses it.
+    RemoveSample {
+        id: SampleId,
+    },
+    /// Choose the sample a SingleSampler plays, or none.
+    SetInstrumentSample {
+        id: DeviceId,
+        sample: Option<SampleId>,
+    },
     /// Make a layer listen to a signal, or draw its own blocks (`None`).
     /// The blocks are kept either way.
     SetLayerSignal {
@@ -292,6 +307,34 @@ impl Node {
     }
 }
 
+/// An audio file the project uses: its display name, and where it is inside
+/// the project folder (`/` between parts, e.g. `audio/kick.wav`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SampleRef {
+    pub name: String,
+    pub file: String,
+}
+
+/// Whether a sample's audio could be read.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SampleStatus {
+    Loaded {
+        seconds: f64,
+        channels: u16,
+        sample_rate: u32,
+    },
+    /// Missing or unreadable; instruments using it are silent.
+    Missing { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SampleSnapshot {
+    pub id: SampleId,
+    pub name: String,
+    pub file: String,
+    pub status: SampleStatus,
+}
+
 /// Identifies a clip. Chosen by whoever creates the clip.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -343,6 +386,8 @@ pub struct Snapshot {
     pub nodes: Vec<NodeSnapshot>,
     /// Every motion signal, in id order.
     pub signals: Vec<SignalSnapshot>,
+    /// The sample table, in id order.
+    pub samples: Vec<SampleSnapshot>,
     pub can_undo: bool,
     pub can_redo: bool,
 }
@@ -408,6 +453,8 @@ pub struct DeviceSnapshot {
     pub effect: Option<EffectKind>,
     /// The kind, for an instrument.
     pub instrument: Option<InstrumentKind>,
+    /// The sample, for a SingleSampler that has one.
+    pub sample: Option<SampleId>,
     /// False for an instrument or effect switched off.
     pub enabled: bool,
     pub name: String,
@@ -566,6 +613,24 @@ pub enum CommandError {
     InstrumentOnAudio {
         node: NodeId,
     },
+    DuplicateSample {
+        id: SampleId,
+    },
+    UnknownSample {
+        id: SampleId,
+    },
+    /// A sample cannot be removed while an instrument plays it.
+    SampleInUse {
+        id: SampleId,
+    },
+    /// Sample files are relative paths inside the project folder.
+    InvalidSampleFile {
+        file: String,
+    },
+    /// Only a SingleSampler plays a sample.
+    NotASampler {
+        id: DeviceId,
+    },
     /// Colours index the nine-colour content palette.
     ColorOutOfRange {
         color: u8,
@@ -698,6 +763,17 @@ impl fmt::Display for CommandError {
             }
             Self::ColorOutOfRange { color } => write!(f, "colour {color} is not in the palette"),
             Self::EmptyName => f.write_str("names cannot be empty"),
+            Self::DuplicateSample { id } => write!(f, "sample {} already exists", id.0),
+            Self::UnknownSample { id } => write!(f, "sample {} does not exist", id.0),
+            Self::SampleInUse { id } => {
+                write!(f, "sample {} is still played by an instrument", id.0)
+            }
+            Self::InvalidSampleFile { file } => {
+                write!(f, "{file:?} is not a path inside the project folder")
+            }
+            Self::NotASampler { id } => {
+                write!(f, "device {} is not a SingleSampler", id.0)
+            }
             Self::NothingToUndo => f.write_str("nothing to undo"),
             Self::NothingToRedo => f.write_str("nothing to redo"),
         }

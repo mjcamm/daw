@@ -9,7 +9,7 @@ use crate::devices::CHANNEL_PARAMS;
 use crate::project::{Project, song};
 use daw_protocol::{
     ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument, LoopRange, MidiClip, Node,
-    NodeId, NodeKind, ParamId, ParamState, Signal, SignalId,
+    NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef, Signal, SignalId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -21,8 +21,9 @@ pub const FORMAT: &str = "daw-project";
 /// version 4 moved listening to signals onto layers and made notes signals
 /// ADSR hits; version 5 made velocity a clamp; version 6 added switches for
 /// the pitch range and the clamp; version 7 made the nodes a tree under the
-/// Song; version 8 let a node layer several instruments.
-pub const VERSION: u32 = 8;
+/// Song; version 8 let a node layer several instruments; version 9 added
+/// the sample table and the SingleSampler's sample.
+pub const VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -36,6 +37,16 @@ pub struct ProjectFile {
     /// Motion signals. Missing in version 1 files.
     #[serde(default)]
     pub signals: Vec<SignalFile>,
+    /// Audio files the project uses. Missing before version 9.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<SampleFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SampleFile {
+    pub id: SampleId,
+    #[serde(flatten)]
+    pub sample: SampleRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -229,6 +240,14 @@ impl ProjectFile {
                     signal: signal.clone(),
                 })
                 .collect(),
+            samples: project
+                .samples
+                .iter()
+                .map(|(id, sample)| SampleFile {
+                    id: *id,
+                    sample: sample.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -269,7 +288,9 @@ impl ProjectFile {
             if header.version < 7 {
                 crate::upgrade::nest_under_song(&mut value);
             }
-            crate::upgrade::instrument_lists(&mut value);
+            if header.version < 8 {
+                crate::upgrade::instrument_lists(&mut value);
+            }
             return serde_json::from_value(value).map_err(LoadError::Json);
         }
         serde_json::from_str(json).map_err(LoadError::Json)
@@ -292,16 +313,21 @@ impl ProjectFile {
             ..Project::default()
         };
         let song = NodeId::ROOT;
-        // Signals first, so the layers that listen to them resolve.
+        // Samples and signals first, so the instruments that play them and
+        // the layers that listen to them resolve.
         let mut edits: Vec<Edit> = self
-            .signals
+            .samples
             .into_iter()
-            .map(|s| Edit::AddSignal {
+            .map(|s| Edit::AddSample {
                 id: s.id,
-                signal: s.signal,
-                listeners: Vec::new(),
+                sample: s.sample,
             })
             .collect();
+        edits.extend(self.signals.into_iter().map(|s| Edit::AddSignal {
+            id: s.id,
+            signal: s.signal,
+            listeners: Vec::new(),
+        }));
         edits.extend([
             Edit::RenameSong { name: self.name },
             Edit::SetTempo {
