@@ -135,6 +135,34 @@ impl Session {
         self.engine.content_revision() != self.saved_revision
     }
 
+    /// Copies an audio file into the project and makes it the sample a
+    /// SingleSampler plays, as one undoable step.
+    pub fn import_sample(
+        &mut self,
+        instrument: daw_engine::DeviceId,
+        source: &Path,
+    ) -> Result<(), String> {
+        let sample = projects::import_sample(&self.folder, source).map_err(|e| e.to_string())?;
+        let id = daw_engine::SampleId(
+            self.engine
+                .snapshot()
+                .samples
+                .iter()
+                .map(|s| s.id.0 + 1)
+                .max()
+                .unwrap_or(1),
+        );
+        self.engine
+            .apply(Command::Edit(Edit::Batch(vec![
+                Edit::AddSample { id, sample },
+                Edit::SetInstrumentSample {
+                    id: instrument,
+                    sample: Some(id),
+                },
+            ])))
+            .map_err(|e| e.to_string())
+    }
+
     pub fn folder(&self) -> &Path {
         &self.folder
     }

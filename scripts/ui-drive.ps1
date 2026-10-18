@@ -16,6 +16,7 @@ public class W {
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, int x, int y, uint d, UIntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte s, uint f, UIntPtr e);
@@ -30,12 +31,22 @@ if ($env:DAW_PID) {
     $p = Get-Process daw -ErrorAction Stop | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 }
 $h = $p.MainWindowHandle
-[W]::SetForegroundWindow($h) | Out-Null
-Start-Sleep -Milliseconds 150
+# Bring the window forward, unless one of its own windows (a dialog) is
+# already in front: keys then go to that dialog.
+$frontPid = 0
+[W]::GetWindowThreadProcessId([W]::GetForegroundWindow(), [ref]$frontPid) | Out-Null
+if ($frontPid -ne $p.Id) {
+    [W]::SetForegroundWindow($h) | Out-Null
+    Start-Sleep -Milliseconds 150
+}
 # Windows may refuse to bring the window forward (someone is using the
 # machine). Then clicks, keys and screenshots would land on whatever is in
 # front, so stop instead.
-if ([W]::GetForegroundWindow() -ne $h) {
+# Any window of the same process counts (its dialogs, such as a file
+# picker, are windows of their own).
+$frontPid = 0
+[W]::GetWindowThreadProcessId([W]::GetForegroundWindow(), [ref]$frontPid) | Out-Null
+if ($frontPid -ne $p.Id) {
     Write-Error "The DAW window is not in front; refusing to send input or take a screenshot."
     exit 2
 }

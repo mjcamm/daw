@@ -30,6 +30,8 @@ pub enum OpenMenu {
     AddEffect(daw_engine::NodeId),
     /// The instrument browser for a MIDI node's strip.
     InstrumentBrowser(daw_engine::NodeId),
+    /// A SingleSampler's panel: its sample, and choosing another.
+    Sampler(daw_engine::DeviceId),
     /// Publishing a node as a signal, and the signals it publishes.
     NodeSignals(daw_engine::NodeId),
 }

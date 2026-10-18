@@ -1,6 +1,6 @@
 # Samples and the SingleSampler
 
-*Status: in progress (2026-10-18). The user: "Lets call it SingleSampler, can we just do the audio engine now then so its just done right … Lets get just basics first. Play audio sample".*
+*Status: built (2026-10-18); engine in `daw-dsp/src/sampler.rs`, `daw-engine/src/samples.rs`, import in `daw-host/src/projects.rs`, UI in `daw-ui/src/mixer.rs`. The user: "Lets call it SingleSampler, can we just do the audio engine now then so its just done right … Lets get just basics first. Play audio sample".*
 
 ## What it is
 
@@ -27,7 +27,10 @@
 ## UI (first pass)
 
 - The instrument browser lists SingleSampler under BUILT-IN.
+- A MIDI node's subtitle on Arrange names its first instrument and how many more are layered ("MIDI · SingleSampler", "MIDI · Synth +1").
 - On a strip, a SingleSampler's chip shows its sample's name. Clicking the chip's name opens a small panel: the sample's name (or "No sample"), and **Choose sample…**, which opens a file picker for WAV files, copies the file into the project and sets it as the sample (one undo step).
+
+- Reading a file happens on the control thread when it is chosen or the project opens, so a very long file pauses the UI briefly. Reading in the background comes with longer audio (audio clips).
 
 ## Later
 

@@ -215,11 +215,20 @@ impl ProjectView {
                 }))
                 .into_any_element(),
         };
-        let kind = match node.kind {
-            _ if song => "Master",
-            NodeKind::Audio => "Audio",
-            NodeKind::Midi if node.has_instrument() => "MIDI · Synth",
-            NodeKind::Midi => "MIDI",
+        // The kind, and for a MIDI node its first instrument (and how many
+        // more are layered with it).
+        let instruments: Vec<&str> = node
+            .devices
+            .iter()
+            .filter(|d| d.instrument.is_some())
+            .map(|d| d.name.as_str())
+            .collect();
+        let kind = match (node.kind, instruments.as_slice()) {
+            _ if song => "Master".to_owned(),
+            (NodeKind::Audio, _) => "Audio".to_owned(),
+            (NodeKind::Midi, []) => "MIDI".to_owned(),
+            (NodeKind::Midi, [only]) => format!("MIDI · {only}"),
+            (NodeKind::Midi, [first, rest @ ..]) => format!("MIDI · {first} +{}", rest.len()),
         };
         let mut drop_highlight = theme.accent;
         drop_highlight.a = 0.18;

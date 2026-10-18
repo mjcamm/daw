@@ -22,8 +22,8 @@ use daw_engine::devices::{
     CHANNEL_PARAMS, INSTRUMENTS, channel, instrument_description, instrument_name,
 };
 use daw_engine::{
-    Command, DeviceRef, Edit, Effect, EffectKind, Instrument, InstrumentKind, NodeId, NodeSnapshot,
-    ParamId,
+    Command, DeviceId, DeviceRef, Edit, Effect, EffectKind, Instrument, InstrumentKind, NodeId,
+    NodeSnapshot, ParamId,
 };
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, FontWeight, MouseButton, MouseDownEvent, Pixels,
@@ -410,6 +410,22 @@ impl ProjectView {
         let hover = theme.hover;
         let enabled = device.enabled;
         let selected = self.selected_effect == Some(id);
+        // A SingleSampler shows its sample and opens its panel.
+        let sampler = device.instrument == Some(InstrumentKind::SingleSampler);
+        let sample_name = device.sample.and_then(|s| {
+            self.session
+                .snapshot()
+                .samples
+                .iter()
+                .find(|x| x.id == s)
+                .map(|x| x.name.clone())
+        });
+        let label = if sampler {
+            sample_name.unwrap_or_else(|| "No sample".to_owned())
+        } else {
+            device.name.clone()
+        };
+        let panel_open = self.open_menu == Some(OpenMenu::Sampler(id));
         let mut selected_bg = theme.accent;
         selected_bg.a = 0.18;
         let dot = div()
@@ -472,16 +488,143 @@ impl ProjectView {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .child(device.name.clone()),
+                        .child(label),
                 )
                 .children(remove)
+                .when(sampler && !panel_open, |d| {
+                    d.tooltip(tooltip::text("SingleSampler: click to choose its sample"))
+                })
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     cx.stop_propagation();
                     this.selected_node = Some(node);
                     this.selected_effect = Some(id);
+                    if sampler {
+                        this.toggle_menu(OpenMenu::Sampler(id));
+                    }
                 }))
                 .into_any_element(),
         )
+        .map(|slot| {
+            if panel_open {
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(slot)
+                    .child(menu::float(self.sampler_panel(
+                        id,
+                        device.sample,
+                        theme,
+                        cx,
+                    )))
+                    .into_any_element()
+            } else {
+                slot
+            }
+        })
+    }
+
+    /// A SingleSampler's panel: its sample (with how long it is, or why it
+    /// is missing) and a button to choose another.
+    fn sampler_panel(
+        &self,
+        id: DeviceId,
+        sample: Option<daw_engine::SampleId>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let snapshot = self.session.snapshot();
+        let found = sample.and_then(|s| snapshot.samples.iter().find(|x| x.id == s));
+        let (title, detail) = match found {
+            Some(s) => (
+                s.name.clone(),
+                match &s.status {
+                    daw_engine::SampleStatus::Loaded {
+                        seconds,
+                        channels,
+                        sample_rate,
+                    } => format!(
+                        "{seconds:.2} s · {} · {:.1} kHz",
+                        if *channels == 1 { "mono" } else { "stereo" },
+                        f64::from(*sample_rate) / 1000.
+                    ),
+                    daw_engine::SampleStatus::Missing { reason } => format!("Missing: {reason}"),
+                },
+            ),
+            None => (
+                "No sample".to_owned(),
+                "Choose a WAV file to play on every note.".to_owned(),
+            ),
+        };
+        let hover = theme.hover;
+        let error = self.sample_error.clone();
+        menu::panel(theme)
+            .w(px(240.))
+            .p(px(10.))
+            .gap(px(6.))
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_tertiary)
+                    .child("SINGLESAMPLER"),
+            )
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme.text_secondary)
+                    .child(detail),
+            )
+            .children(error.map(|e| div().text_size(px(11.)).text_color(theme.record).child(e)))
+            .child(
+                div()
+                    .id(("choose-sample", id.0))
+                    .mt(px(4.))
+                    .h(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .bg(theme.control)
+                    .hover(move |s| s.bg(hover))
+                    .text_size(px(12.))
+                    .child("Choose sample…")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.choose_sample(id, cx);
+                    })),
+            )
+    }
+
+    /// Asks for an audio file, then copies it into the project and plays
+    /// it on the SingleSampler.
+    fn choose_sample(&mut self, id: DeviceId, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose sample".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = chosen.await
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update(cx, |this, cx| {
+                    this.sample_error = this.session.import_sample(id, &path).err();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     /// The dashed "+" at the end of a slot list, with its menu when open.

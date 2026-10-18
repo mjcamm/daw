@@ -106,6 +106,8 @@ pub struct ProjectView {
     pub(crate) selected_node: Option<NodeId>,
     /// Folders folded in the nesting map. UI state, not saved.
     pub(crate) folded: std::collections::HashSet<NodeId>,
+    /// Why the last sample import failed, shown in the sampler's panel.
+    pub(crate) sample_error: Option<String>,
     /// The piano roll in the bottom panel, if a clip is open.
     pub(crate) note_editor: Option<crate::piano_roll::NoteEditor>,
     /// A note being heard from the editor, and since when.
@@ -220,6 +222,7 @@ impl ProjectView {
             strip_motion: crate::motion::RowMotion::default(),
             selected_effect: None,
             selected_clips: std::collections::BTreeSet::new(),
+            sample_error: None,
             note_editor: None,
             note_preview: None,
             note_clipboard: Vec::new(),
