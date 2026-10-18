@@ -16,6 +16,25 @@ use gpui::{
     relative,
 };
 
+/// Within this many pixels of a scroll area's edge, a drag scrolls it.
+pub const EDGE_ZONE: f32 = 32.;
+/// Fastest auto-scroll, in pixels a frame, at the very edge.
+pub const EDGE_SPEED: f32 = 18.;
+
+/// How far to auto-scroll this frame with the pointer at `at` in a view
+/// running `low..high`: faster the deeper into an edge zone, negative
+/// toward `low`, zero away from the edges.
+pub fn edge_step(at: f32, low: f32, high: f32) -> f32 {
+    let speed = |depth: f32| (depth / EDGE_ZONE).clamp(0., 1.) * EDGE_SPEED;
+    if at > high - EDGE_ZONE {
+        speed(at - (high - EDGE_ZONE))
+    } else if at < low + EDGE_ZONE {
+        -speed(low + EDGE_ZONE - at)
+    } else {
+        0.
+    }
+}
+
 /// Cross size of a scrollbar.
 pub const THICKNESS: f32 = crate::slider::THICKNESS;
 /// Thinnest a thumb gets, as a share of the track.
@@ -189,6 +208,21 @@ mod tests {
             extent(800., 800., 0.).dragged(50., 400.),
             0.,
             "nothing to scroll"
+        );
+    }
+
+    #[test]
+    fn dragging_near_an_edge_scrolls_faster_the_deeper() {
+        assert_eq!(edge_step(500., 0., 1000.), 0.);
+        assert_eq!(edge_step(1000., 0., 1000.), EDGE_SPEED);
+        assert_eq!(
+            edge_step(1000. - EDGE_ZONE / 2., 0., 1000.),
+            EDGE_SPEED / 2.
+        );
+        assert_eq!(
+            edge_step(-50., 0., 1000.),
+            -EDGE_SPEED,
+            "beyond the edge: full speed"
         );
     }
 }

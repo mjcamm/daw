@@ -59,7 +59,7 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 ## Known gaps
 
-- New clips can't be made from nothing yet (only moved, copied, resized, and their notes edited in the piano roll). Effects are added on the mixer; their settings show only on Parameters for now. No node colour picker yet.
+- MIDI: new clips by double-clicking an empty MIDI lane; quantize and auto-scroll in the piano roll (2026-10-18). Recording, MIDI keyboard input, MIDI file import and more instruments are Phase 9. Effects are added on the mixer; their settings show only on Parameters for now. No node colour picker yet.
 - Parameters update every 32 samples (gains ramp, others step); revisit if anything sounds zippery.
 - Reference WAVs in `crates/daw-engine/tests/references/` total about 4 MB; keep new ones short.
 - `docs/gpui-notes.md` holds hard-won GPUI knowledge; add to it.

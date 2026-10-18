@@ -293,6 +293,26 @@ pub fn pasted(notes: &[MidiNote], clipboard: &[MidiNote], at: Ticks) -> (Vec<Mid
     (out, (first..stop).collect())
 }
 
+/// The notes with the selected ones' starts on the nearest `grid` line
+/// (every note when nothing is selected); lengths stay as they were.
+pub fn quantized(notes: &[MidiNote], selection: &Selection, grid: Ticks) -> Vec<MidiNote> {
+    let g = grid.0.max(1);
+    notes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            if selection.is_empty() || selection.contains(&i) {
+                MidiNote {
+                    start: Ticks((n.start.0 + g / 2).div_euclid(g) * g),
+                    ..*n
+                }
+            } else {
+                *n
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,5 +453,17 @@ mod tests {
         assert_eq!((out[2].start, out[3].start), (beats(4.), beats(5.)));
         let (out, _) = added(&notes, note(3., 1., 67));
         assert_eq!(deleted(&out, &set(&[0, 2])), [notes[1]]);
+    }
+
+    #[test]
+    fn quantize_moves_starts_to_the_grid_and_keeps_lengths() {
+        let notes = [note(0.1, 0.5, 60), note(1.4, 1., 62), note(2.6, 0.3, 64)];
+        let q = quantized(&notes, &set(&[0, 2]), beats(1.));
+        assert_eq!(q[0].start, beats(0.));
+        assert_eq!(q[0].length, beats(0.5), "length kept");
+        assert_eq!(q[1], notes[1], "not selected");
+        assert_eq!(q[2].start, beats(3.));
+        let all = quantized(&notes, &Selection::new(), beats(1.));
+        assert_eq!(all[1].start, beats(1.), "nothing selected: every note");
     }
 }

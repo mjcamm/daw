@@ -331,6 +331,21 @@ pub fn bar_beat(t: Ticks) -> String {
     }
 }
 
+/// How long a new clip starting at `start` can be, up to `length`: it
+/// stops where the next clip on the lane begins. None when `start` is
+/// inside a clip or there is no room.
+pub fn room_for_clip(clips: &[MidiClip], start: Ticks, length: Ticks) -> Option<Ticks> {
+    if clips
+        .iter()
+        .any(|c| c.start <= start && start < c.start + c.length)
+    {
+        return None;
+    }
+    let next = clips.iter().map(|c| c.start).filter(|&s| s > start).min();
+    let room = next.map_or(length, |n| (n - start).min(length));
+    (room > Ticks::ZERO).then_some(room)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +598,37 @@ mod tests {
         assert_eq!(bar_beat(Ticks::ZERO), "1.1");
         assert_eq!(bar_beat(beats(5)), "2.2");
         assert_eq!(bar_beat(Ticks::from_beats_f64(2.5)), "1.3.50");
+    }
+
+    #[test]
+    fn a_new_clip_fills_the_room_up_to_the_next_clip() {
+        let lane = [
+            MidiClip {
+                start: beats(4),
+                length: beats(4),
+                notes: vec![],
+            },
+            MidiClip {
+                start: beats(10),
+                length: beats(2),
+                notes: vec![],
+            },
+        ];
+        assert_eq!(room_for_clip(&lane, beats(0), beats(4)), Some(beats(4)));
+        assert_eq!(
+            room_for_clip(&lane, beats(8), beats(4)),
+            Some(beats(2)),
+            "stops at the next clip"
+        );
+        assert_eq!(
+            room_for_clip(&lane, beats(5), beats(4)),
+            None,
+            "inside a clip"
+        );
+        assert_eq!(
+            room_for_clip(&lane, beats(12), beats(4)),
+            Some(beats(4)),
+            "after the last"
+        );
     }
 }

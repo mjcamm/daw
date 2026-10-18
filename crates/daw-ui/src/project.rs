@@ -39,7 +39,8 @@ actions!(
         NudgeRight,
         SelectAll,
         CopyNotes,
-        PasteNotes
+        PasteNotes,
+        Quantize
     ]
 );
 
@@ -408,6 +409,7 @@ impl Render for ProjectView {
             };
             motion.update(&rows, last, std::time::Instant::now());
             self.autoscroll_clip_drag();
+            self.autoscroll_note_drag();
         }
 
         self.end_note_preview();
@@ -478,6 +480,7 @@ impl Render for ProjectView {
             .on_action(cx.listener(|this, _: &SelectAll, _, _| this.select_all_notes()))
             .on_action(cx.listener(|this, _: &CopyNotes, _, _| this.copy_notes()))
             .on_action(cx.listener(|this, _: &PasteNotes, _, _| this.paste_notes()))
+            .on_action(cx.listener(|this, _: &Quantize, _, _| this.quantize_notes()))
             .child(self.render_header(&theme, cx))
             .children(
                 self.session

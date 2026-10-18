@@ -35,8 +35,8 @@ use gpui::{
 };
 use project::{
     CancelDrag, CopyNotes, DeleteSelection, NudgeDown, NudgeLeft, NudgeRight, NudgeUp, OctaveDown,
-    OctaveUp, PasteNotes, Redo, Save, SelectAll, TogglePlay, ToolPen, ToolScissors, ToolSelect,
-    Undo,
+    OctaveUp, PasteNotes, Quantize, Redo, Save, SelectAll, TogglePlay, ToolPen, ToolScissors,
+    ToolSelect, Undo,
 };
 use theme::Theme;
 
@@ -62,6 +62,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("1", ToolSelect, not_typing),
         KeyBinding::new("2", ToolPen, not_typing),
         KeyBinding::new("3", ToolScissors, not_typing),
+        KeyBinding::new("q", Quantize, not_typing),
         KeyBinding::new("up", NudgeUp, not_typing),
         KeyBinding::new("down", NudgeDown, not_typing),
         KeyBinding::new("shift-up", OctaveUp, not_typing),

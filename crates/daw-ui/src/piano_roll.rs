@@ -16,6 +16,8 @@ use crate::inspector::note_name;
 use crate::note_edit::{self, Part, Selection};
 use crate::parameters::small_button;
 use crate::project::ProjectView;
+use crate::scroll;
+use crate::slider::Axis;
 use crate::theme::Theme;
 use crate::tooltip;
 use crate::zoom::Zoom;
@@ -107,6 +109,15 @@ pub struct NoteEditor {
     preview: Option<(Vec<MidiNote>, Selection)>,
     /// Opened at, for the slide-up.
     opened: Instant,
+    /// Where the grid's content was when the drag began. Drags measure in
+    /// that frame, so scrolling while dragging (auto-scroll near the edges)
+    /// moves the notes with the view.
+    drag_grid: Point<Pixels>,
+    /// The pointer and keys during a drag, to follow while auto-scrolling.
+    pointer: Option<(Point<Pixels>, gpui::Modifiers)>,
+    /// Opened on a clip just added, which the snapshot does not show yet:
+    /// until it does, its absence does not close the editor.
+    waiting: bool,
 }
 
 impl NoteEditor {
@@ -123,6 +134,9 @@ impl NoteEditor {
             drag: None,
             preview: None,
             opened: Instant::now(),
+            drag_grid: Point::default(),
+            pointer: None,
+            waiting: false,
         }
     }
 
@@ -132,7 +146,16 @@ impl NoteEditor {
 
     /// The pointer as (beat from the clip start, pitch).
     fn at(&self, position: Point<Pixels>, zoom: Zoom) -> (f64, u8) {
-        let origin = self.grid.get().origin;
+        self.at_from(self.grid.get().origin, position, zoom)
+    }
+
+    /// A point stored during a drag (in the frame it began in) as (beat,
+    /// pitch).
+    fn at_press(&self, position: Point<Pixels>, zoom: Zoom) -> (f64, u8) {
+        self.at_from(self.drag_grid, position, zoom)
+    }
+
+    fn at_from(&self, origin: Point<Pixels>, position: Point<Pixels>, zoom: Zoom) -> (f64, u8) {
         let x = (position.x - origin.x) / px(1.);
         let y = (position.y - origin.y) / px(1.);
         let beat = f64::from(x / zoom.pixels_per_beat);
@@ -158,6 +181,18 @@ impl ProjectView {
     pub(crate) fn note_editor_start(&self) -> Option<f32> {
         self.editor_clip()
             .map(|(_, clip)| clip.start.as_beats() as f32)
+    }
+
+    /// Opens a clip just added to `node` (not in the snapshot yet).
+    pub(crate) fn open_new_clip(&mut self, node: NodeId, clip: ClipId) {
+        let mut editor = NoteEditor::new(node, clip, DEFAULT_HEIGHT);
+        if let Some(open) = &self.note_editor {
+            editor.height = open.height;
+            editor.tool = open.tool;
+            editor.opened = open.opened;
+        }
+        editor.waiting = true;
+        self.note_editor = Some(editor);
     }
 
     /// Opens a clip's notes in the bottom panel.
@@ -259,6 +294,10 @@ impl ProjectView {
 
     /// A press on the grid, with the current tool.
     fn press_grid(&mut self, event: &MouseDownEvent) {
+        if let Some(editor) = &mut self.note_editor {
+            editor.drag_grid = editor.grid.get().origin;
+            editor.pointer = None;
+        }
         let Some((editor, clip)) = self.editor_clip() else {
             return;
         };
@@ -438,7 +477,12 @@ impl ProjectView {
         let zoom = self.notes_view.zoom;
         let ppb = zoom.pixels_per_beat;
         let beats = |dx: Pixels| Ticks::from_beats_f64(f64::from(dx / px(1.) / ppb));
+        // The pitch is the row under the pointer now; distances are taken in
+        // the frame the drag began in, so scrolling carries the notes along.
         let (_, pointer_pitch) = editor.at(position, zoom);
+        editor.pointer = Some((position, modifiers));
+        let screen = position;
+        let position = position + (editor.drag_grid - editor.grid.get().origin);
         let Some(drag) = &mut editor.drag else {
             return false;
         };
@@ -526,13 +570,13 @@ impl ProjectView {
                 editor.preview = Some((notes, [*index].into()));
             }
             NoteDrag::Velocity { origin, original } => {
-                let delta = (-(position.y - origin.y) / px(1.) / VELOCITY_HEIGHT * 127.).round();
+                let delta = (-(screen.y - origin.y) / px(1.) / VELOCITY_HEIGHT * 127.).round();
                 let notes =
                     note_edit::with_velocity(original, &editor.selection, original, delta as i32);
                 editor.preview = Some((notes, editor.selection.clone()));
             }
             NoteDrag::Height { origin, original } => {
-                editor.height = (*original - (position.y - origin.y) / px(1.)).max(MIN_HEIGHT);
+                editor.height = (*original - (screen.y - origin.y) / px(1.)).max(MIN_HEIGHT);
             }
         }
         let node = editor.node;
@@ -553,8 +597,8 @@ impl ProjectView {
         let preview = editor.preview.take();
         if let NoteDrag::Box { from, to, original } = drag {
             let zoom = self.notes_view.zoom;
-            let (b0, p0) = editor.at(from, zoom);
-            let (b1, p1) = editor.at(to, zoom);
+            let (b0, p0) = editor.at_press(from, zoom);
+            let (b1, p1) = editor.at_press(to, zoom);
             if let Some((_, clip)) = self.editor_clip() {
                 let mut chosen = note_edit::in_box(&clip.notes, b0, b1, p0, p1);
                 chosen.extend(original);
@@ -575,11 +619,65 @@ impl ProjectView {
             return None;
         };
         let zoom = self.notes_view.zoom;
-        let (b0, p0) = editor.at(*from, zoom);
-        let (b1, p1) = editor.at(*to, zoom);
+        let (b0, p0) = editor.at_press(*from, zoom);
+        let (b1, p1) = editor.at_press(*to, zoom);
         let mut chosen = note_edit::in_box(notes, b0, b1, p0, p1);
         chosen.extend(original.iter().copied());
         Some(chosen)
+    }
+
+    /// While dragging notes near the grid's edges, scrolls it and follows
+    /// the drag. Called every frame.
+    pub(crate) fn autoscroll_note_drag(&mut self) {
+        let Some(editor) = &self.note_editor else {
+            return;
+        };
+        let scrolls = matches!(
+            editor.drag,
+            Some(
+                NoteDrag::Move { .. }
+                    | NoteDrag::Resize { .. }
+                    | NoteDrag::Pen { .. }
+                    | NoteDrag::Box { .. }
+            )
+        );
+        let Some((pointer, modifiers)) = editor.pointer.filter(|_| scrolls) else {
+            return;
+        };
+        let handle = &self.notes_view.x;
+        let bounds = handle.bounds();
+        let mut moved = false;
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            let (at, low, high) = match axis {
+                Axis::Horizontal => (pointer.x, bounds.left(), bounds.right()),
+                Axis::Vertical => (pointer.y, bounds.top(), bounds.bottom()),
+            };
+            let step = scroll::edge_step(at / px(1.), low / px(1.), high / px(1.));
+            if step != 0. {
+                let extent = scroll::Extent::of(handle, axis);
+                let max = (extent.content - extent.view).max(0.);
+                let scrolled = (extent.scrolled + step).clamp(0., max);
+                if scrolled != extent.scrolled {
+                    scroll::scroll_to(handle, axis, scrolled);
+                    moved = true;
+                }
+            }
+        }
+        if moved {
+            self.drag_note_editor(pointer, modifiers);
+        }
+    }
+
+    /// Moves the selected notes' starts (every note's, with none selected)
+    /// to the nearest line of the editor's grid.
+    pub(crate) fn quantize_notes(&mut self) {
+        let Some((editor, clip)) = self.editor_clip() else {
+            return;
+        };
+        let grid = self.note_grid.grid.ticks();
+        let notes = note_edit::quantized(&clip.notes, &editor.selection, grid);
+        let selection = editor.selection.clone();
+        self.commit_notes(notes, selection);
     }
 
     // ---- keys
@@ -661,9 +759,15 @@ impl ProjectView {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        // A clip that is gone closes the editor.
-        if self.note_editor.is_some() && self.editor_clip().is_none() {
-            self.note_editor = None;
+        // A clip that is gone closes the editor (unless it is a new clip
+        // still on its way into the snapshot).
+        let found = self.editor_clip().is_some();
+        if let Some(editor) = &mut self.note_editor {
+            if found {
+                editor.waiting = false;
+            } else if !editor.waiting {
+                self.note_editor = None;
+            }
         }
         self.fit_note_editor();
         let (editor, clip) = self.editor_clip()?;
@@ -733,6 +837,24 @@ impl ProjectView {
             .child(tool_button("tool-pen", Icon::Pencil, Tool::Pen, "Pen (2): click to add a note and drag its length, click a note to delete it"))
             .child(tool_button("tool-scissors", Icon::Scissors, Tool::Scissors, "Scissors (3): click a note to split it"))
             .child(div().flex_1())
+            .child(
+                div()
+                    .id("note-quantize")
+                    .h(px(26.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(6.))
+                    .bg(theme.control)
+                    .hover(move |s| s.bg(hover))
+                    .text_size(px(12.))
+                    .text_color(theme.text_secondary)
+                    .child("Quantize")
+                    .tooltip(tooltip::text(
+                        "Quantize (Q): move the selected notes' starts to the grid (every note when none are selected)",
+                    ))
+                    .on_click(cx.listener(|this, _, _, _| this.quantize_notes())),
+            )
             .child(div().text_size(px(12.)).child(self.render_snap(true, theme, cx)))
             .child(div().w(px(6.)))
             .child(
@@ -869,7 +991,7 @@ impl ProjectView {
             });
         let rubber = match &editor.drag {
             Some(NoteDrag::Box { from, to, .. }) => {
-                let origin = editor.grid.get().origin;
+                let origin = editor.drag_grid;
                 let (x0, x1) = (
                     (from.x.min(to.x) - origin.x) / px(1.),
                     (from.x.max(to.x) - origin.x) / px(1.),

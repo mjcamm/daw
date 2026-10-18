@@ -27,10 +27,6 @@ use gpui::{
 const DRAG_THRESHOLD: f32 = 3.;
 /// Width of the resize zone at each end of a clip.
 const EDGE: f32 = 6.;
-/// The timeline scrolls when a drag comes this close to its edge...
-const SCROLL_ZONE: f32 = 32.;
-/// ...by up to this many pixels a frame.
-const SCROLL_SPEED: f32 = 18.;
 const CLIP_INSET: f32 = 4.;
 const CLIP_LABEL_HEIGHT: f32 = 16.;
 
@@ -244,6 +240,36 @@ impl ProjectView {
         true
     }
 
+    /// Adds an empty clip where an empty lane of a MIDI node was
+    /// double-clicked: a bar long from the grid line at or before the
+    /// pointer (shorter if the next clip comes sooner), selected and open
+    /// in the piano roll.
+    pub(crate) fn add_clip_at(&mut self, node: NodeId, position: Point<Pixels>) {
+        let view = &self.arrange_view;
+        let bounds = view.x.bounds();
+        let x = (position.x - bounds.left() - view.x.offset().x) / px(1.);
+        let at = Ticks::from_beats_f64(view.zoom.x_to_beats(x).max(0.));
+        let start = self.snap.floor(at);
+        let snapshot = self.session.snapshot();
+        let Some(lane) = snapshot.node(node).filter(|n| n.takes_midi()) else {
+            return;
+        };
+        let clips: Vec<MidiClip> = lane.clips.iter().map(|(_, c)| c.clone()).collect();
+        let Some(length) = clip_edit::room_for_clip(&clips, start, Ticks::from_beats(4)) else {
+            return;
+        };
+        let id = clip_edit::next_clip_id(snapshot);
+        let clip = MidiClip {
+            start,
+            length,
+            notes: Vec::new(),
+        };
+        self.session
+            .apply(Command::Edit(Edit::AddClip { node, id, clip }));
+        self.selected_clips = [id].into();
+        self.open_new_clip(node, id);
+    }
+
     /// While dragging near the timeline's edges, scrolls it. Called every
     /// frame.
     pub(crate) fn autoscroll_clip_drag(&self) {
@@ -259,14 +285,7 @@ impl ProjectView {
                 Axis::Horizontal => (drag.pointer.x, bounds.left(), bounds.right()),
                 Axis::Vertical => (drag.pointer.y, bounds.top(), bounds.bottom()),
             };
-            let speed = |depth: Pixels| (depth / px(1.) / SCROLL_ZONE).clamp(0., 1.) * SCROLL_SPEED;
-            let step = if pointer > high - px(SCROLL_ZONE) {
-                speed(pointer - (high - px(SCROLL_ZONE)))
-            } else if pointer < low + px(SCROLL_ZONE) {
-                -speed(low + px(SCROLL_ZONE) - pointer)
-            } else {
-                0.
-            };
+            let step = scroll::edge_step(pointer / px(1.), low / px(1.), high / px(1.));
             if step != 0. {
                 let extent = Extent::of(handle, axis);
                 scroll::scroll_to(handle, axis, extent.scrolled + step);

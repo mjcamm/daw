@@ -742,16 +742,24 @@ impl ProjectView {
                 } else {
                     theme.content(node.color)
                 };
+                let id = node.id;
+                let takes_clips = node.takes_midi();
                 let lane = div()
                     .relative()
                     .h(px(zoom.row_height))
                     .flex_none()
                     .border_b_1()
                     .border_color(theme.hairline)
-                    // A press on empty lane clears the clip selection.
+                    // A press on empty lane clears the clip selection; a
+                    // double-click on a MIDI node's lane adds a clip there.
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, _| this.selected_clips.clear()),
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            this.selected_clips.clear();
+                            if takes_clips && event.click_count >= 2 {
+                                this.add_clip_at(id, event.position);
+                            }
+                        }),
                     )
                     .children(
                         node.clips
