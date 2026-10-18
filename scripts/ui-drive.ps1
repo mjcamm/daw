@@ -1,6 +1,7 @@
 # Drives the DAW window: screenshot, click, double-click, key presses.
 # Usage: ui-drive.ps1 shot <out.png> | click <x> <y> | dclick <x> <y> | key <vk> | front
 #        down <x> <y> | move <x> <y> | up <x> <y>  (a drag in steps, to look mid-drag)
+#        wheel <x> <y> [notches]  (negative scrolls down)
 #        keydown <vk> | keyup <vk>  (hold a key, e.g. 17 Ctrl, 18 Alt, 16 Shift)
 # Coordinates are relative to the window's client area top-left.
 param([string]$cmd, [string]$a, [string]$b)
@@ -53,6 +54,12 @@ switch ($cmd) {
   }
   "click" { MoveTo $a $b; Click }
   "dclick" { MoveTo $a $b; Click; Start-Sleep -Milliseconds 60; Click }
+  "wheel" {
+    # wheel <x> <y> [notches]: positive scrolls up, negative down.
+    MoveTo $a $b
+    $n = if ($args.Count -gt 0) { [int]$args[0] } else { -1 }
+    [W]::mouse_event(0x0800, 0, 0, [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]($n * 120)), 0), [UIntPtr]::Zero)
+  }
   "move" { MoveTo $a $b }
   "down" { MoveTo $a $b; [W]::mouse_event(2,0,0,0,[UIntPtr]::Zero) }
   "keydown" { [W]::keybd_event([byte][int]$a,0,0,[UIntPtr]::Zero) }

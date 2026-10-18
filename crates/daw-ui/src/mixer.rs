@@ -970,9 +970,9 @@ impl ProjectView {
             let folded = self.folded.contains(&id);
             let foldable = id != NodeId::ROOT && !node.children.is_empty();
             const PILL: f32 = 18.;
-            // From the folder's own strip right beneath what is under it,
-            // or (folded) a short pill under its strip.
-            let left = lefts[bar.row] + widths[bar.row] / 2. - PILL / 2.;
+            // From the left edge of the folder's own strip right beneath
+            // what is under it, or (folded) a short pill under its strip.
+            let left = lefts[bar.row] + 4.;
             let right = lefts[bar.last] + widths[bar.last] - 4.;
             let width = (right - left).max(PILL.min(widths[bar.row]));
             let chevron = foldable.then(|| {

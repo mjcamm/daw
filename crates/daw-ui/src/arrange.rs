@@ -12,12 +12,14 @@ use crate::parameters::small_button;
 use crate::project::{ProjectView, RenameTarget, song_clips};
 use crate::scroll;
 use crate::signals::{node_has_notes, published_signals};
+use crate::slider::Axis;
 use crate::theme::Theme;
 use crate::tooltip;
 use crate::tree::{self, Bar, Drop, display_order};
 use daw_engine::{Command, Edit, Node, NodeId, NodeKind, NodeSnapshot};
 use gpui::{
-    ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, canvas, div, prelude::*, px,
+    ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, canvas,
+    div, prelude::*, px,
 };
 use std::time::Instant;
 
@@ -511,6 +513,23 @@ impl ProjectView {
             .flex()
             .overflow_x_scroll()
             .track_scroll(&self.node_map_x)
+            // The wheel scrolls the map sideways while it has more columns
+            // than fit (Shift+wheel is sideways anyway); otherwise it passes
+            // on to the rows.
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let delta = event.delta.pixel_delta(px(20.));
+                let sideways = if delta.x == px(0.) { delta.y } else { delta.x };
+                let handle = &this.node_map_x;
+                let extent = scroll::Extent::of(handle, Axis::Horizontal);
+                if extent.content - extent.view <= 0.5 {
+                    return;
+                }
+                let scrolled =
+                    (extent.scrolled - sideways / px(1.)).clamp(0., extent.content - extent.view);
+                scroll::scroll_to(handle, Axis::Horizontal, scrolled);
+                cx.stop_propagation();
+                cx.notify();
+            }))
             // Grab anywhere but a chevron and pull sideways to scroll.
             .on_mouse_down(
                 MouseButton::Left,
