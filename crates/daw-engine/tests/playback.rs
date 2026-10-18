@@ -484,3 +484,13 @@ fn snapshot_describes_the_node() {
     assert_eq!(node.parent, Some(daw_engine::NodeId::ROOT));
     assert_eq!(snapshot.root().children, [FIRST_NODE]);
 }
+
+#[test]
+fn the_test_tone_plays_one_second_at_minus_12_db() {
+    let (mut engine, mut processor) = engine();
+    engine.apply(Command::TestTone).unwrap();
+    let rendered = render(&mut engine, &mut processor, 60_000, VARIED_BLOCKS);
+    let tone = frames(&rendered, 0..48_000);
+    assert!((peak(tone) - 0.251).abs() < 0.01, "peak {}", peak(tone));
+    assert_silent(frames(&rendered, 48_000..60_000));
+}

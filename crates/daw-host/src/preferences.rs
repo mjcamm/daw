@@ -32,6 +32,24 @@ impl Appearance {
 #[serde(default)]
 pub struct Preferences {
     pub appearance: Appearance,
+    pub audio: AudioSettings,
+}
+
+/// The audio setup the user chose. Each `None` leaves it to the system (or
+/// the app): the default driver, device, rate and buffer, automatic
+/// threads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSettings {
+    /// The driver by name, e.g. "WASAPI" or "ASIO".
+    pub driver: Option<String>,
+    /// The output device, by its system id.
+    pub device: Option<String>,
+    pub sample_rate: Option<u32>,
+    /// Frames per buffer: smaller is less delay but more work per second.
+    pub buffer_frames: Option<u32>,
+    /// Threads that render, the audio thread included.
+    pub threads: Option<usize>,
 }
 
 /// Preferences and where they are kept.

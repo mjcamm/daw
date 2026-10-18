@@ -17,6 +17,20 @@ pub struct CallbackStats {
     late: AtomicU64,
     min_frames: AtomicU64,
     max_frames: AtomicU64,
+    /// Since the load was last read: time spent processing, audio time
+    /// those callbacks covered, and late callbacks.
+    window_process_ns: AtomicU64,
+    window_audio_ns: AtomicU64,
+    window_late: AtomicU64,
+}
+
+/// How hard the audio thread worked since last asked.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Load {
+    /// Processing time over the time the audio lasted: 1.0 is the limit.
+    pub fraction: f32,
+    /// Callbacks that came late (likely dropouts).
+    pub late: u64,
 }
 
 /// Seconds of audio a buffer of `frames` frames holds.
@@ -44,6 +58,10 @@ impl CallbackStats {
         let count = self.callbacks.fetch_add(1, Ordering::Relaxed);
         let took = took.as_nanos() as u64;
         self.total_process_ns.fetch_add(took, Ordering::Relaxed);
+        self.window_process_ns.fetch_add(took, Ordering::Relaxed);
+        let rate = self.sample_rate.load(Ordering::Relaxed).max(1);
+        self.window_audio_ns
+            .fetch_add(frames * 1_000_000_000 / rate, Ordering::Relaxed);
         self.max_process_ns.fetch_max(took, Ordering::Relaxed);
         if count == 0 {
             self.min_frames.store(frames, Ordering::Relaxed);
@@ -59,8 +77,28 @@ impl CallbackStats {
             let period = self.min_frames.load(Ordering::Relaxed) * 1_000_000_000 / sample_rate;
             if gap > period * 2 + 1_000_000 {
                 self.late.fetch_add(1, Ordering::Relaxed);
+                self.window_late.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// The load since the last call, starting a new window.
+    pub fn take_load(&self) -> Load {
+        let process = self.window_process_ns.swap(0, Ordering::Relaxed);
+        let audio = self.window_audio_ns.swap(0, Ordering::Relaxed);
+        Load {
+            fraction: if audio == 0 {
+                0.0
+            } else {
+                process as f32 / audio as f32
+            },
+            late: self.window_late.swap(0, Ordering::Relaxed),
+        }
+    }
+
+    /// The smallest buffer the device has asked for: its period.
+    pub fn buffer_frames(&self) -> u64 {
+        self.min_frames.load(Ordering::Relaxed)
     }
 
     /// Prints a summary: buffer sizes, processing time against the budget,

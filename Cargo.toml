@@ -19,6 +19,7 @@ daw-protocol = { path = "crates/daw-protocol" }
 daw-rt = { path = "crates/daw-rt" }
 daw-testkit = { path = "crates/daw-testkit" }
 
+audio_thread_priority = { version = "0.35.1", default-features = false }
 cpal = { version = "0.18.2", features = ["realtime"] }
 dirs = "7.0.0"
 hound = "3.5.1"

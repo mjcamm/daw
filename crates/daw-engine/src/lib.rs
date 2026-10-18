@@ -15,6 +15,7 @@ mod audio;
 pub mod devices;
 mod file;
 mod history;
+mod parallel;
 mod project;
 pub mod samples;
 mod schedule;
@@ -56,6 +57,10 @@ pub const MIN_LOOP_LENGTH: Ticks = Ticks(TICKS_PER_BEAT / 16);
 pub struct EngineConfig {
     pub sample_rate: u32,
     pub channels: u16,
+    /// Threads that render, the audio thread included: 1 renders every
+    /// node on the audio thread; more render the nodes of the tree in
+    /// parallel. The result is the same either way.
+    pub threads: usize,
 }
 
 impl Default for EngineConfig {
@@ -63,8 +68,17 @@ impl Default for EngineConfig {
         Self {
             sample_rate: 48_000,
             channels: 2,
+            threads: 1,
         }
     }
+}
+
+/// How many threads to render with when the user leaves it to the app: one
+/// per core, keeping one core free for the rest of the system, at most 8.
+pub fn auto_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get().saturating_sub(1))
+        .clamp(1, 8)
 }
 
 #[derive(Debug)]
@@ -102,6 +116,7 @@ impl Engine {
         let processor = AudioProcessor::new(
             config.sample_rate,
             usize::from(config.channels),
+            config.threads.max(1),
             Box::new(RenderState::compile(&project)),
             from_control,
             garbage_tx,
@@ -126,6 +141,47 @@ impl Engine {
 
     pub fn config(&self) -> EngineConfig {
         self.config
+    }
+
+    /// Makes a new processor for another device setup (sample rate,
+    /// channels, threads), carrying over the song, undo history, transport
+    /// position, playing and the loop. The old processor receives nothing
+    /// more: stop its stream and drop it.
+    pub fn reconnect(&mut self, config: EngineConfig) -> AudioProcessor {
+        assert!(config.channels > 0, "engine needs at least one channel");
+        assert!(config.sample_rate > 0, "engine needs a sample rate");
+        let position = self.status.position_beats();
+        let (to_audio, from_control) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let (garbage_tx, garbage) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let status = Arc::new(SharedStatus::default());
+        status.set_position_beats(position);
+        let processor = AudioProcessor::new(
+            config.sample_rate,
+            usize::from(config.channels),
+            config.threads.max(1),
+            Box::new(RenderState::compile_with(&self.project, &self.samples)),
+            from_control,
+            garbage_tx,
+            Arc::clone(&status),
+        );
+        while let Ok(retired) = self.garbage.pop() {
+            drop(retired);
+        }
+        self.to_audio = to_audio;
+        self.garbage = garbage;
+        self.status = status;
+        self.config = config;
+        // Whatever the old processor had not received is moot now.
+        self.outbox.clear();
+        self.outbox.push_back(AudioMsg::Locate(position));
+        let loop_range = self.loop_range;
+        self.set_loop(loop_range);
+        if self.playing {
+            self.outbox.push_back(AudioMsg::SetPlaying(true));
+        }
+        self.revision += 1;
+        self.maintain();
+        processor
     }
 
     pub fn project(&self) -> &Project {
@@ -165,6 +221,7 @@ impl Engine {
                     on,
                 });
             }
+            Command::TestTone => self.outbox.push_back(AudioMsg::TestTone),
             Command::SetLoop(range) => {
                 if let Some(range) = range {
                     check_loop(range)?;

@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+audio_thread_priority.workspace = true
 daw-automation.workspace = true
 daw-dsp.workspace = true
 daw-protocol.workspace = true

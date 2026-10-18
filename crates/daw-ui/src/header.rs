@@ -6,6 +6,7 @@ use crate::layout::format_position;
 use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget};
 use crate::theme::{MONO_FONT, Theme};
+use crate::tooltip;
 use daw_engine::{Command, Ticks};
 use gpui::{ClickEvent, Context, FontWeight, Hsla, SharedString, div, prelude::*, px};
 
@@ -72,6 +73,41 @@ impl ProjectView {
             .child(div().flex_1())
             .child(self.render_snap(false, theme, cx))
             .child(self.render_transport(theme, cx))
+            .child(self.render_load(theme))
+    }
+
+    /// How hard the audio thread works: the share of each buffer's time
+    /// spent rendering. Amber past 70%, red after a dropout.
+    fn render_load(&self, theme: &Theme) -> impl IntoElement {
+        let (load, dropout) = self.session.load();
+        let percent = (load * 100.).round().min(999.) as u32;
+        let color = if dropout {
+            theme.record
+        } else if load >= 0.7 {
+            theme.warning
+        } else {
+            theme.text_secondary
+        };
+        div()
+            .id("audio-load")
+            .w(px(58.))
+            .flex()
+            .flex_col()
+            .items_end()
+            .text_size(px(10.))
+            .child(div().text_color(theme.text_tertiary).child("CPU"))
+            .child(
+                div()
+                    .font_family(MONO_FONT)
+                    .text_size(px(12.))
+                    .text_color(color)
+                    .child(format!("{percent}%")),
+            )
+            .tooltip(tooltip::text(if dropout {
+                "Audio load: a dropout just happened. A larger buffer size (File > Preferences > Audio) gives more room."
+            } else {
+                "Audio load: how much of each buffer's time rendering takes"
+            }))
     }
 
     fn render_tabs(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {

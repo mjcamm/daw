@@ -33,6 +33,9 @@ pub enum Command {
     Undo,
     /// Reapply the most recently undone edit.
     Redo,
+    /// Play a short 440 Hz tone (A4) at -12 dB through the output, over
+    /// whatever is playing, to check the audio device.
+    TestTone,
     /// Start (`on`) or end a note played straight away on a node's
     /// instruments, to hear it while editing. Not part of the song or undo.
     PreviewNote {

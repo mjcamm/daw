@@ -5,6 +5,7 @@
 
 use crate::layout::METER_FALL_PER_FRAME;
 use daw_engine::{Command, Edit, Engine, EngineConfig, Meter, NodeId, Snapshot};
+use daw_host::preferences::AudioSettings;
 use daw_host::{AudioOutput, OutputDevice, demo, projects};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,10 +14,26 @@ use std::time::{Duration, Instant};
 /// How long unsaved changes wait before a crash-recovery backup is written.
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 
+/// The audio setup running now, as the settings show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioInfo {
+    pub driver: String,
+    pub device: String,
+    pub sample_rate: u32,
+    /// The buffer asked for; `None` leaves it to the device.
+    pub buffer_frames: Option<u32>,
+    pub threads: usize,
+}
+
 pub struct Session {
     engine: Engine,
     /// Kept alive so audio keeps playing; `None` if no device opened.
-    _output: Option<AudioOutput>,
+    output: Option<AudioOutput>,
+    audio: Option<AudioInfo>,
+    /// The audio thread's load, smoothed for display (1.0 is the limit),
+    /// and whether a dropout happened lately.
+    load: f32,
+    dropout_frames: u32,
     snapshot: Snapshot,
     /// The snapshot before the current one, so a view can still draw what
     /// an edit just removed while it animates away.
@@ -36,8 +53,8 @@ pub struct Session {
 impl Session {
     /// Creates a new project called `name` in `folder`, starting with the
     /// demo notes, and saves it.
-    pub fn create(folder: PathBuf, name: &str) -> Result<Self, String> {
-        let mut session = Self::boot(folder, |engine| {
+    pub fn create(folder: PathBuf, name: &str, audio: &AudioSettings) -> Result<Self, String> {
+        let mut session = Self::boot(folder, audio, |engine| {
             engine
                 .apply(Command::Edit(Edit::RenameSong {
                     name: name.to_owned(),
@@ -53,9 +70,9 @@ impl Session {
     }
 
     /// Opens the project saved in `folder`.
-    pub fn open(folder: PathBuf) -> Result<Self, String> {
+    pub fn open(folder: PathBuf, audio: &AudioSettings) -> Result<Self, String> {
         let file = projects::open(&folder).map_err(|e| e.to_string())?;
-        Self::boot(folder, |engine| {
+        Self::boot(folder, audio, |engine| {
             engine.load(file).map_err(|e| e.to_string())
         })
     }
@@ -64,15 +81,17 @@ impl Session {
     /// starts playback through the device.
     fn boot(
         folder: PathBuf,
+        audio: &AudioSettings,
         setup: impl FnOnce(&mut Engine) -> Result<(), String>,
     ) -> Result<Self, String> {
-        let device = OutputDevice::open_default();
+        let device = open_device(audio);
         let config = device
             .as_ref()
             .map_or_else(|_| EngineConfig::default(), OutputDevice::engine_config);
         let (mut engine, processor) = Engine::new(config);
         engine.set_sample_dir(Some(folder.clone()));
         setup(&mut engine)?;
+        let info = device.as_ref().ok().map(audio_info);
         let (output, audio_error) = match device.and_then(|d| d.start(processor)) {
             Ok(output) => (Some(output), None),
             Err(e) => (None, Some(e.to_string())),
@@ -82,7 +101,10 @@ impl Session {
             snapshot: engine.snapshot(),
             previous: None,
             engine,
-            _output: output,
+            audio: info.filter(|_| output.is_some()),
+            output,
+            load: 0.0,
+            dropout_frames: 0,
             meters: BTreeMap::new(),
             folder,
             saved_revision: revision,
@@ -106,7 +128,62 @@ impl Session {
                 right: peak.right.max(shown.right * METER_FALL_PER_FRAME),
             };
         }
+        if let Some(output) = &self.output {
+            let load = output.stats().take_load();
+            // Rises at once, falls back slowly, so peaks can be read.
+            self.load = load.fraction.max(self.load * 0.95);
+            if load.late > 0 {
+                // Shown for about a second.
+                self.dropout_frames = 60;
+            } else {
+                self.dropout_frames = self.dropout_frames.saturating_sub(1);
+            }
+        }
         self.autosave_if_due();
+    }
+
+    /// The audio setup running now; `None` without a device.
+    pub fn audio(&self) -> Option<&AudioInfo> {
+        self.audio.as_ref()
+    }
+
+    /// The buffer size the device is actually using, once it has played.
+    pub fn device_buffer(&self) -> Option<u32> {
+        let frames = self.output.as_ref()?.stats().buffer_frames();
+        (frames > 0).then_some(frames as u32)
+    }
+
+    /// The audio thread's recent load (1.0 is the limit), and whether a
+    /// dropout happened lately.
+    pub fn load(&self) -> (f32, bool) {
+        (self.load, self.dropout_frames > 0)
+    }
+
+    /// Switches to another audio setup, keeping the song, undo history and
+    /// playback. If the setup cannot start, the system default is tried.
+    pub fn apply_audio(&mut self, settings: &AudioSettings) {
+        // Free the device first: some drivers allow one stream at a time.
+        self.output = None;
+        self.audio = None;
+        let device = open_device(settings);
+        let result = device.and_then(|device| {
+            let info = audio_info(&device);
+            let processor = self.engine.reconnect(device.engine_config());
+            device.start(processor).map(|output| (output, info))
+        });
+        match result {
+            Ok((output, info)) => {
+                self.output = Some(output);
+                self.audio = Some(info);
+                self.audio_error = None;
+            }
+            Err(e) => self.audio_error = Some(e.to_string()),
+        }
+    }
+
+    /// A short tone through the output, to check the device.
+    pub fn test_tone(&mut self) {
+        self.apply(Command::TestTone);
     }
 
     fn autosave_if_due(&mut self) {
@@ -191,5 +268,29 @@ impl Session {
         if let Err(e) = self.engine.apply(command) {
             eprintln!("command rejected: {e}");
         }
+    }
+}
+
+/// The device in `settings`, else (if that fails) the system default.
+fn open_device(settings: &AudioSettings) -> daw_host::Result<OutputDevice> {
+    OutputDevice::open(settings).or_else(|e| {
+        if *settings == AudioSettings::default() {
+            Err(e)
+        } else {
+            OutputDevice::open(&AudioSettings {
+                threads: settings.threads,
+                ..AudioSettings::default()
+            })
+        }
+    })
+}
+
+fn audio_info(device: &OutputDevice) -> AudioInfo {
+    AudioInfo {
+        driver: device.driver().to_owned(),
+        device: device.name().to_owned(),
+        sample_rate: device.sample_rate(),
+        buffer_frames: device.buffer_frames(),
+        threads: device.engine_config().threads,
     }
 }

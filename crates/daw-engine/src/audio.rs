@@ -15,6 +15,7 @@ use crate::devices::{
     CHANNEL_PARAMS, MAX_DEVICE_PARAMS, ParamInfo, channel_settings, effect_params, filter_params,
     instrument_params, sampler_level, synth_params,
 };
+use crate::parallel::{Pool, Shards};
 use crate::project::{MAX_EFFECTS, MAX_INSTRUMENTS, MAX_NODES};
 use crate::samples::SampleData;
 use crate::schedule::{EffectState, InstrumentState, NodeRender, RenderState};
@@ -49,6 +50,8 @@ pub(crate) enum AudioMsg {
     Locate(f64),
     SetLoop(Option<(f64, f64)>),
     SwapState(Box<RenderState>),
+    /// A short tone over the output, to check the device.
+    TestTone,
     /// A note heard straight away while editing.
     Preview {
         node: NodeId,
@@ -57,6 +60,11 @@ pub(crate) enum AudioMsg {
         on: bool,
     },
 }
+
+/// The test tone: one second of A4 at -12 dB, faded in and out.
+const TEST_TONE_SECONDS: f32 = 1.0;
+const TEST_TONE_HZ: f32 = 440.0;
+const TEST_TONE_GAIN: f32 = 0.251;
 
 /// Preview notes use ids from here up, one per pitch, so they never meet
 /// the song's own notes.
@@ -118,7 +126,7 @@ impl SharedStatus {
         f64::from_bits(self.position_beats.load(Ordering::Relaxed))
     }
 
-    fn set_position_beats(&self, beats: f64) {
+    pub(crate) fn set_position_beats(&self, beats: f64) {
         self.position_beats
             .store(beats.to_bits(), Ordering::Relaxed);
     }
@@ -147,46 +155,78 @@ pub struct AudioProcessor {
     sample_rate: f32,
     transport: Transport,
     state: Box<RenderState>,
-    /// The pool: one player per possible node.
-    players: Box<[NodePlayer]>,
+    /// The pool: one player per possible node. Players of different nodes
+    /// render in parallel (see [`Self::render`]).
+    players: Shards<NodePlayer>,
     /// For each node in `state.nodes`, the player playing it.
     slots: Vec<usize>,
-    /// Where an instrument renders before joining its node's bus.
-    scratch_left: Box<[f32; CHUNK_FRAMES]>,
-    scratch_right: Box<[f32; CHUNK_FRAMES]>,
+    /// Node positions grouped into levels that can render at once: leaves
+    /// first, each folder after everything under it. `level_ends[n]` is
+    /// where level `n` ends in `order`.
+    order: Vec<usize>,
+    level_ends: Vec<usize>,
+    /// Each node's children, in render order: `child_ranges[node]` is a
+    /// range of `child_list`.
+    child_list: Vec<usize>,
+    child_ranges: Vec<(usize, usize)>,
+    heights: Vec<usize>,
+    /// Worker threads that render nodes alongside this one.
+    pool: Pool,
     left: Box<[f32; CHUNK_FRAMES]>,
     right: Box<[f32; CHUNK_FRAMES]>,
     /// Frames rendered since the processor started; sets the control grid.
     frames_processed: u64,
+    /// Frames of the test tone still to play, and how far it has played.
+    tone_left: u32,
+    tone_played: u32,
     from_control: rtrb::Consumer<AudioMsg>,
     garbage: rtrb::Producer<Box<RenderState>>,
     status: Arc<SharedStatus>,
 }
 
 impl AudioProcessor {
+    /// `threads` is how many threads render, this one included (1: no
+    /// workers).
     pub(crate) fn new(
         sample_rate: u32,
         channels: usize,
+        threads: usize,
         state: Box<RenderState>,
         from_control: rtrb::Consumer<AudioMsg>,
         garbage: rtrb::Producer<Box<RenderState>>,
         status: Arc<SharedStatus>,
     ) -> Self {
+        let rate = sample_rate;
         let sample_rate = sample_rate as f32;
         let mut processor = Self {
             channels,
             sample_rate,
             transport: Transport::new(f64::from(sample_rate), state.tempo_bpm),
             state,
-            players: (0..MAX_NODES)
-                .map(|_| NodePlayer::new(sample_rate))
-                .collect(),
+            players: Shards::new((0..MAX_NODES).map(|_| NodePlayer::new(sample_rate))),
             slots: Vec::with_capacity(MAX_NODES),
-            scratch_left: Box::new([0.0; CHUNK_FRAMES]),
-            scratch_right: Box::new([0.0; CHUNK_FRAMES]),
+            order: Vec::with_capacity(MAX_NODES),
+            level_ends: Vec::with_capacity(MAX_NODES),
+            child_list: Vec::with_capacity(MAX_NODES),
+            child_ranges: Vec::with_capacity(MAX_NODES),
+            heights: Vec::with_capacity(MAX_NODES),
+            pool: Pool::new(threads.saturating_sub(1), move || {
+                // Workers run at audio priority, like the device's thread.
+                if let Ok(handle) =
+                    audio_thread_priority::promote_current_thread_to_real_time(512, rate)
+                {
+                    #[allow(
+                        clippy::forget_non_drop,
+                        reason = "elsewhere the handle's drop may lower the thread's priority again"
+                    )]
+                    std::mem::forget(handle);
+                }
+            }),
             left: Box::new([0.0; CHUNK_FRAMES]),
             right: Box::new([0.0; CHUNK_FRAMES]),
             frames_processed: 0,
+            tone_left: 0,
+            tone_played: 0,
             from_control,
             garbage,
             status,
@@ -203,6 +243,11 @@ impl AudioProcessor {
         self.sample_rate
     }
 
+    /// Threads that render, this one included.
+    pub fn threads(&self) -> usize {
+        self.pool.threads()
+    }
+
     /// Renders one block of interleaved audio into `out`.
     ///
     /// `out.len()` must be a multiple of the channel count. Real-time safe.
@@ -213,17 +258,41 @@ impl AudioProcessor {
     }
 
     fn process_block(&mut self, out: &mut [f32]) {
+        debug_assert_eq!(out.len() % self.channels, 0, "partial frame in block");
+        self.receive();
+        for chunk in out.chunks_mut(CHUNK_FRAMES * self.channels) {
+            let frames = chunk.len() / self.channels;
+            self.render(frames);
+            self.add_test_tone(frames);
+            let (left, right) = (&self.left[..frames], &self.right[..frames]);
+            self.status.output.record(peak(left), peak(right));
+            write_output(left, right, chunk, self.channels);
+        }
+        self.status.set_position_beats(self.transport.position());
+    }
+
+    /// Adds the test tone, while it plays, over the output.
+    fn add_test_tone(&mut self, frames: usize) {
+        if self.tone_left == 0 {
+            return;
+        }
+        let total = (TEST_TONE_SECONDS * self.sample_rate) as u32;
+        let fade = (0.01 * self.sample_rate) as u32;
+        for (l, r) in self.left[..frames]
+            .iter_mut()
+            .zip(&mut self.right[..frames])
         {
-            debug_assert_eq!(out.len() % self.channels, 0, "partial frame in block");
-            self.receive();
-            for chunk in out.chunks_mut(CHUNK_FRAMES * self.channels) {
-                let frames = chunk.len() / self.channels;
-                self.render(frames);
-                let (left, right) = (&self.left[..frames], &self.right[..frames]);
-                self.status.output.record(peak(left), peak(right));
-                write_output(left, right, chunk, self.channels);
+            if self.tone_left == 0 {
+                break;
             }
-            self.status.set_position_beats(self.transport.position());
+            let t = self.tone_played as f32 / self.sample_rate;
+            let edge = self.tone_played.min(total - self.tone_played).min(fade) as f32;
+            let envelope = edge / fade.max(1) as f32;
+            let s = (std::f32::consts::TAU * TEST_TONE_HZ * t).sin() * TEST_TONE_GAIN * envelope;
+            *l += s;
+            *r += s;
+            self.tone_played += 1;
+            self.tone_left -= 1;
         }
     }
 
@@ -251,6 +320,10 @@ impl AudioProcessor {
                     self.transport.locate(beats);
                 }
                 AudioMsg::SetLoop(range) => self.transport.set_loop(range),
+                AudioMsg::TestTone => {
+                    self.tone_left = (TEST_TONE_SECONDS * self.sample_rate) as u32;
+                    self.tone_played = 0;
+                }
                 AudioMsg::Preview {
                     node,
                     pitch,
@@ -290,7 +363,10 @@ impl AudioProcessor {
         let mut taken = [false; MAX_NODES];
         self.slots.clear();
         for node in &self.state.nodes {
-            let own = self.players.iter().position(|p| p.node == Some(node.id));
+            let own = self
+                .players
+                .iter_mut()
+                .position(|p| p.node == Some(node.id));
             if let Some(index) = own {
                 taken[index] = true;
             }
@@ -309,12 +385,14 @@ impl AudioProcessor {
                 taken[free] = true;
                 self.slots[slot] = free;
                 let id = self.state.nodes[slot].id;
-                self.players[free].start(id, &self.status.meters[free]);
+                self.players
+                    .get_mut(free)
+                    .start(id, &self.status.meters[free]);
             }
         }
         let beat = self.transport.position();
         for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
-            let player = &mut self.players[index];
+            let player = self.players.get_mut(index);
             player.sync_effects(&node.effects, self.sample_rate);
             player.sync_instruments(&node.instruments);
             if player.fresh {
@@ -325,51 +403,93 @@ impl AudioProcessor {
                 player.fresh = false;
             }
         }
+        self.plan_levels();
     }
 
-    /// Renders `frames` of the whole tree into `left` and `right`. Notes
-    /// start and end on their exact frames; parameters update on the
-    /// control grid.
+    /// Groups the nodes into levels that can render at the same time (a
+    /// node's height: 0 for a leaf, one more than its tallest child), and
+    /// lists each node's children in render order. Allocation-free: every
+    /// list has room for [`MAX_NODES`].
+    fn plan_levels(&mut self) {
+        let nodes = &self.state.nodes;
+        let count = nodes.len();
+        self.heights.clear();
+        self.heights.resize(count, 0);
+        // Children come before their parent, so a parent's height is final
+        // by the time it is reached.
+        for (index, node) in nodes.iter().enumerate() {
+            if let Some(parent) = node.parent {
+                self.heights[parent] = self.heights[parent].max(self.heights[index] + 1);
+            }
+        }
+        self.child_list.clear();
+        self.child_ranges.clear();
+        for parent in 0..count {
+            let from = self.child_list.len();
+            for (child, node) in nodes[..parent].iter().enumerate() {
+                if node.parent == Some(parent) {
+                    self.child_list.push(child);
+                }
+            }
+            self.child_ranges.push((from, self.child_list.len() - from));
+        }
+        self.order.clear();
+        self.level_ends.clear();
+        let tallest = self.heights.iter().copied().max().unwrap_or(0);
+        for height in 0..=tallest {
+            for (index, &h) in self.heights.iter().enumerate() {
+                if h == height {
+                    self.order.push(index);
+                }
+            }
+            self.level_ends.push(self.order.len());
+        }
+    }
+
+    /// Renders `frames` of the whole tree into `left` and `right`.
+    ///
+    /// Each node renders the whole chunk on its own: its notes start and
+    /// end on their exact frames and its parameters update on the control
+    /// grid, following its own copy of the transport. Nodes of a level
+    /// render in parallel; a folder starts from its children's sum, added
+    /// in render order, so the result is the same on any number of threads.
+    #[allow(
+        unsafe_code,
+        reason = "parallel tasks share the players; see the SAFETY note"
+    )]
     fn render(&mut self, frames: usize) {
-        for &index in &self.slots {
-            self.players[index].clear_bus(frames);
-        }
-        let frames = frames as u64;
-        let mut done = 0;
-        while done < frames {
-            let playing = self.transport.is_playing();
-            let (segment, jumps) = if playing {
-                self.transport.next_segment(frames - done)
-            } else {
-                (frames - done, false)
+        let start = self.transport.clone();
+        let start_frames = self.frames_processed;
+        let players = &self.players;
+        let nodes = &self.state.nodes;
+        let slots = &self.slots;
+        let (child_list, child_ranges) = (&self.child_list, &self.child_ranges);
+        let mut begin = 0;
+        for &end in &self.level_ends {
+            let level = &self.order[begin..end];
+            let task = |k: usize| {
+                let slot = level[k];
+                // SAFETY: in a level each task changes only the player of its
+                // own node (no node is in a level twice, and each node has
+                // its own player). It reads its children's players, which
+                // finished in an earlier level and no task of this level
+                // changes.
+                let player = unsafe { players.task_mut(slots[slot]) };
+                player.clear_bus(frames);
+                let (from, len) = child_ranges[slot];
+                for &child in &child_list[from..from + len] {
+                    let child = unsafe { players.task_ref(slots[child]) };
+                    player.add_bus(child, frames);
+                }
+                player.render_chunk(&nodes[slot], &start, start_frames, frames);
             };
-            let segment_end = done + segment;
-            while done < segment_end {
-                let into_control = self.frames_processed % CONTROL_FRAMES;
-                if into_control == 0 {
-                    self.update_params();
-                }
-                let mut next = (CONTROL_FRAMES - into_control).min(segment_end - done);
-                if playing {
-                    self.fire_due_events();
-                    next = next.min(self.frames_to_next_event());
-                }
-                self.render_span(done as usize..(done + next) as usize);
-                if playing {
-                    self.transport.advance(next);
-                }
-                self.frames_processed += next;
-                done += next;
-            }
-            if jumps {
-                self.transport.jump_to_loop_start();
-                self.release_all();
-                self.seek();
-            }
+            self.pool.run(level.len(), &task);
+            begin = end;
         }
+        self.advance_transport(frames as u64);
+        self.frames_processed += frames as u64;
         for (slot, &index) in self.slots.iter().enumerate() {
-            let player = &self.players[index];
-            let frames = frames as usize;
+            let player = self.players.get_mut(index);
             self.status.meters[index].peaks.record(
                 peak(&player.bus_left[..frames]),
                 peak(&player.bus_right[..frames]),
@@ -381,95 +501,31 @@ impl AudioProcessor {
         }
     }
 
-    /// Renders a span with steady parameters, node by node in render order:
-    /// instrument into the node's bus (which already holds its children),
-    /// effects, volume and pan, then into the parent's bus.
-    fn render_span(&mut self, span: std::ops::Range<usize>) {
-        for (slot, node) in self.state.nodes.iter().enumerate() {
-            let index = self.slots[slot];
-            let player = &mut self.players[index];
-            // Every instrument plays; their sounds add up in the bus.
-            for ((_, instrument), state) in player.instruments.iter_mut().zip(&node.instruments) {
-                let left = &mut self.scratch_left[span.clone()];
-                let right = &mut self.scratch_right[span.clone()];
-                instrument.render(state.sample.as_deref(), left, right);
-                if node.instrument_on && state.enabled {
-                    for (to, from) in player.bus_left[span.clone()].iter_mut().zip(left.iter()) {
-                        *to += *from;
-                    }
-                    for (to, from) in player.bus_right[span.clone()].iter_mut().zip(right.iter()) {
-                        *to += *from;
-                    }
-                }
-            }
-            player.process_span(node, span.clone());
-            if let Some(parent) = node.parent {
-                let (child, parent) = two_mut(&mut self.players, index, self.slots[parent]);
-                for (to, from) in parent.bus_left[span.clone()]
-                    .iter_mut()
-                    .zip(&child.bus_left[span.clone()])
-                {
-                    *to += *from;
-                }
-                for (to, from) in parent.bus_right[span.clone()]
-                    .iter_mut()
-                    .zip(&child.bus_right[span.clone()])
-                {
-                    *to += *from;
-                }
+    /// Moves the transport through a chunk exactly as each node's copy
+    /// moved: segment by segment, jumping back at the loop end.
+    fn advance_transport(&mut self, frames: u64) {
+        let mut done = 0;
+        while done < frames && self.transport.is_playing() {
+            let (segment, jumps) = self.transport.next_segment(frames - done);
+            self.transport.advance(segment);
+            done += segment;
+            if jumps {
+                self.transport.jump_to_loop_start();
             }
         }
-    }
-
-    fn update_params(&mut self) {
-        let beat = self.transport.position();
-        for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
-            self.players[index].update_params(node, beat);
-        }
-    }
-
-    /// Ends and starts every note due on the current frame, on every node.
-    fn fire_due_events(&mut self) {
-        for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
-            self.players[index].fire_due_events(node, &self.transport);
-        }
-    }
-
-    /// Frames until the next note starts or ends on any node; at least 1.
-    fn frames_to_next_event(&self) -> u64 {
-        self.state
-            .nodes
-            .iter()
-            .zip(&self.slots)
-            .map(|(node, &index)| self.players[index].frames_to_next_event(node, &self.transport))
-            .min()
-            .unwrap_or(i64::MAX)
-            .max(1) as u64
     }
 
     /// Points every node's cursor at its first note at or after now.
     fn seek(&mut self) {
         for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
-            self.players[index].seek(node, &self.transport);
+            self.players.get_mut(index).seek(node, &self.transport);
         }
     }
 
     fn release_all(&mut self) {
         for &index in &self.slots {
-            self.players[index].release_all();
+            self.players.get_mut(index).release_all();
         }
-    }
-}
-
-/// Two different elements of a slice, mutably.
-fn two_mut<T>(items: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
-    debug_assert_ne!(a, b);
-    if a < b {
-        let (low, high) = items.split_at_mut(b);
-        (&mut low[a], &mut high[0])
-    } else {
-        let (low, high) = items.split_at_mut(a);
-        (&mut high[0], &mut low[b])
     }
 }
 
@@ -638,6 +694,10 @@ struct NodePlayer {
     /// instrument's, then processed in place.
     bus_left: Box<[f32; CHUNK_FRAMES]>,
     bus_right: Box<[f32; CHUNK_FRAMES]>,
+    /// Where an instrument renders before joining the bus. Each player has
+    /// its own, so players render on any thread.
+    scratch_left: Box<[f32; CHUNK_FRAMES]>,
+    scratch_right: Box<[f32; CHUNK_FRAMES]>,
 }
 
 impl NodePlayer {
@@ -657,6 +717,8 @@ impl NodePlayer {
             next_note_id: 0,
             bus_left: Box::new([0.0; CHUNK_FRAMES]),
             bus_right: Box::new([0.0; CHUNK_FRAMES]),
+            scratch_left: Box::new([0.0; CHUNK_FRAMES]),
+            scratch_right: Box::new([0.0; CHUNK_FRAMES]),
         }
     }
 
@@ -685,6 +747,90 @@ impl NodePlayer {
     fn clear_bus(&mut self, frames: usize) {
         self.bus_left[..frames].fill(0.0);
         self.bus_right[..frames].fill(0.0);
+    }
+
+    /// Adds a child's finished sound into this bus.
+    fn add_bus(&mut self, child: &NodePlayer, frames: usize) {
+        for (to, from) in self.bus_left[..frames]
+            .iter_mut()
+            .zip(&child.bus_left[..frames])
+        {
+            *to += *from;
+        }
+        for (to, from) in self.bus_right[..frames]
+            .iter_mut()
+            .zip(&child.bus_right[..frames])
+        {
+            *to += *from;
+        }
+    }
+
+    /// Renders the node through a chunk of `frames`, from the transport as
+    /// it stood at the chunk's start: notes on their exact frames,
+    /// parameters on the control grid (counted from `start_frames`), the
+    /// loop jumping back at its end. The bus already holds the children.
+    fn render_chunk(
+        &mut self,
+        node: &NodeRender,
+        start: &Transport,
+        start_frames: u64,
+        frames: usize,
+    ) {
+        let mut transport = start.clone();
+        let frames = frames as u64;
+        let mut processed = start_frames;
+        let mut done = 0;
+        while done < frames {
+            let playing = transport.is_playing();
+            let (segment, jumps) = if playing {
+                transport.next_segment(frames - done)
+            } else {
+                (frames - done, false)
+            };
+            let segment_end = done + segment;
+            while done < segment_end {
+                let into_control = processed % CONTROL_FRAMES;
+                if into_control == 0 {
+                    self.update_params(node, transport.position());
+                }
+                let mut next = (CONTROL_FRAMES - into_control).min(segment_end - done);
+                if playing {
+                    self.fire_due_events(node, &transport);
+                    let to_event = self.frames_to_next_event(node, &transport).max(1) as u64;
+                    next = next.min(to_event);
+                }
+                self.render_span(node, done as usize..(done + next) as usize);
+                if playing {
+                    transport.advance(next);
+                }
+                processed += next;
+                done += next;
+            }
+            if jumps {
+                transport.jump_to_loop_start();
+                self.release_all();
+                self.seek(node, &transport);
+            }
+        }
+    }
+
+    /// A span with steady parameters: every instrument into the bus (their
+    /// sounds add up), then effects, volume and pan.
+    fn render_span(&mut self, node: &NodeRender, span: std::ops::Range<usize>) {
+        for ((_, instrument), state) in self.instruments.iter_mut().zip(&node.instruments) {
+            let left = &mut self.scratch_left[span.clone()];
+            let right = &mut self.scratch_right[span.clone()];
+            instrument.render(state.sample.as_deref(), left, right);
+            if node.instrument_on && state.enabled {
+                for (to, from) in self.bus_left[span.clone()].iter_mut().zip(left.iter()) {
+                    *to += *from;
+                }
+                for (to, from) in self.bus_right[span.clone()].iter_mut().zip(right.iter()) {
+                    *to += *from;
+                }
+            }
+        }
+        self.process_span(node, span);
     }
 
     fn settle_gains(&mut self) {
@@ -902,6 +1048,7 @@ mod tests {
         let mut processor = AudioProcessor::new(
             48_000,
             2,
+            1,
             state(100.0),
             from_control,
             garbage_tx,
@@ -934,6 +1081,7 @@ mod tests {
         let mut processor = AudioProcessor::new(
             48_000,
             2,
+            1,
             state(120.0),
             from_control,
             garbage_tx,
@@ -966,7 +1114,7 @@ mod tests {
         );
         let folder = player_of(&processor, NodeId(7));
         assert_ne!(folder, first);
-        assert_eq!(processor.players[folder].node, Some(NodeId(7)));
+        assert_eq!(processor.players.get_mut(folder).node, Some(NodeId(7)));
     }
 
     #[test]
