@@ -116,11 +116,43 @@ impl TimelineView {
     }
 }
 
-/// A drag on a timeline page's frame: a scrollbar thumb or a zoom slider.
+/// A drag on a timeline page's frame: a scrollbar thumb or a zoom slider;
+/// or a nesting map grabbed and pulled.
 #[derive(Debug, Clone, Copy)]
 pub enum FrameDrag {
     Scroll(Timeline, ScrollDrag),
     Zoom(Timeline, ZoomDrag),
+    Pan(MapPan),
+}
+
+/// A nesting map grabbed and pulled: Arrange's sideways, the mixer's up and
+/// down. The map follows the pointer, like a page pulled by hand.
+#[derive(Debug, Clone, Copy)]
+pub struct MapPan {
+    pub mixer: bool,
+    pub origin: Point<Pixels>,
+    /// How far the map was scrolled when grabbed.
+    pub scrolled: f32,
+}
+
+impl MapPan {
+    pub fn axis(self) -> Axis {
+        if self.mixer {
+            Axis::Vertical
+        } else {
+            Axis::Horizontal
+        }
+    }
+
+    /// How far the map is scrolled with the pointer at `position`, kept
+    /// within `0..=max`.
+    pub fn scrolled_at(self, position: Point<Pixels>, max: f32) -> f32 {
+        let moved = match self.axis() {
+            Axis::Horizontal => position.x - self.origin.x,
+            Axis::Vertical => position.y - self.origin.y,
+        } / px(1.);
+        (self.scrolled - moved).clamp(0., max.max(0.))
+    }
 }
 
 impl ProjectView {
@@ -286,12 +318,40 @@ impl ProjectView {
     /// Follows a frame drag (scrollbar or zoom); false if none is in
     /// progress. Horizontal zoom holds the playhead still if it is in view,
     /// otherwise the middle of the view.
+    /// The scroll area of a nesting map.
+    fn map_scroll(&self, mixer: bool) -> &ScrollHandle {
+        if mixer {
+            &self.mixer_view.map_y
+        } else {
+            &self.node_map_x
+        }
+    }
+
+    /// Grabs a nesting map to pull it (not from its chevrons, which stop
+    /// the press).
+    pub(crate) fn grab_map(&mut self, mixer: bool, origin: Point<Pixels>) {
+        let pan = MapPan {
+            mixer,
+            origin,
+            scrolled: 0.,
+        };
+        let scrolled = Extent::of(self.map_scroll(mixer), pan.axis()).scrolled;
+        self.frame_drag = Some(FrameDrag::Pan(MapPan { scrolled, ..pan }));
+    }
+
     pub(crate) fn drag_frame(&mut self, position: Point<Pixels>) -> bool {
         let playhead_beats = self.session.position_beats() as f32;
         // The piano roll's time starts at its clip.
         let clip_start = self.note_editor_start().unwrap_or(0.);
         match self.frame_drag {
             None => false,
+            Some(FrameDrag::Pan(pan)) => {
+                let handle = self.map_scroll(pan.mixer);
+                let extent = Extent::of(handle, pan.axis());
+                let max = extent.content - extent.view;
+                scroll::scroll_to(handle, pan.axis(), pan.scrolled_at(position, max));
+                true
+            }
             Some(FrameDrag::Scroll(timeline, drag)) => {
                 let view = self.timeline(timeline);
                 scroll::scroll_to(
@@ -328,5 +388,26 @@ impl ProjectView {
                 true
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::point;
+
+    #[test]
+    fn a_pulled_map_follows_the_pointer_within_its_range() {
+        let pan = MapPan {
+            mixer: false,
+            origin: point(px(100.), px(50.)),
+            scrolled: 20.,
+        };
+        // Pulling left reveals what is further right.
+        assert_eq!(pan.scrolled_at(point(px(90.), px(80.)), 100.), 30.);
+        assert_eq!(pan.scrolled_at(point(px(150.), px(50.)), 100.), 0.);
+        assert_eq!(pan.scrolled_at(point(px(-200.), px(50.)), 100.), 100.);
+        let mixer = MapPan { mixer: true, ..pan };
+        assert_eq!(mixer.scrolled_at(point(px(100.), px(40.)), 100.), 30.);
     }
 }

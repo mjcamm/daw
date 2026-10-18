@@ -994,6 +994,12 @@ impl ProjectView {
                         11.,
                     ))
                     .tooltip(tooltip::text(if folded { "Unfold" } else { "Fold" }))
+                    .cursor_pointer()
+                    // A press here folds; it does not grab the map.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
                     .on_click(cx.listener(move |this, _, _, _| this.toggle_fold(id)))
             });
             div()
@@ -1021,6 +1027,13 @@ impl ProjectView {
             .flex_none()
             .overflow_y_scroll()
             .track_scroll(&self.mixer_view.map_y)
+            // Grab anywhere but a chevron and pull up or down to scroll.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    this.grab_map(true, event.position);
+                }),
+            )
             .bg(theme.sidebar)
             .border_t_1()
             .border_color(theme.edge)

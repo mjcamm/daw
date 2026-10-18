@@ -125,6 +125,8 @@ pub struct ProjectView {
     pub(crate) selected_effect: Option<daw_engine::DeviceId>,
     /// The width of Arrange's nesting map, easing as levels come and go.
     pub(crate) map_width: crate::motion::Eased,
+    /// The sideways scroll of Arrange's nesting map.
+    pub(crate) node_map_x: gpui::ScrollHandle,
     /// Arrange's rows as they animate in, out and around.
     pub(crate) row_motion: crate::motion::RowMotion,
     /// Where the Parameters page lanes were last drawn: the top-left is
@@ -211,6 +213,7 @@ impl ProjectView {
             folded: std::collections::HashSet::new(),
             row_motion: crate::motion::RowMotion::default(),
             map_width: crate::motion::Eased::default(),
+            node_map_x: gpui::ScrollHandle::new(),
             mixer_view: crate::mixer::MixerView::default(),
             mixer_drag: None,
             strip_motion: crate::motion::RowMotion::default(),

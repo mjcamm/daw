@@ -426,6 +426,12 @@ impl ProjectView {
                         11.,
                     ))
                     .tooltip(tooltip::text(if folded { "Unfold" } else { "Fold" }))
+                    .cursor_pointer()
+                    // A press here folds; it does not grab the map.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                    )
                     .on_click(cx.listener(move |this, _, _, _| this.toggle_fold(id)))
             });
             // The bar: from the folder's own row down beside what is under
@@ -504,6 +510,14 @@ impl ProjectView {
             .flex_none()
             .flex()
             .overflow_x_scroll()
+            .track_scroll(&self.node_map_x)
+            // Grab anywhere but a chevron and pull sideways to scroll.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    this.grab_map(false, event.position);
+                }),
+            )
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.hairline)
