@@ -21,7 +21,12 @@ public class W {
 }
 "@
 [W]::SetProcessDPIAware() | Out-Null
-$p = Get-Process daw -ErrorAction Stop | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+# DAW_PID picks one copy when several run (e.g. Claude's beside the user's).
+if ($env:DAW_PID) {
+    $p = Get-Process -Id $env:DAW_PID -ErrorAction Stop
+} else {
+    $p = Get-Process daw -ErrorAction Stop | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+}
 $h = $p.MainWindowHandle
 [W]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 150

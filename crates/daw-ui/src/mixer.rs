@@ -125,8 +125,12 @@ pub fn resized_strip(original: f32, dx: f32) -> f32 {
     (original + dx / 2.).clamp(MIN_STRIP_WIDTH, MAX_STRIP_WIDTH)
 }
 
-/// The map's height for `levels` rows: at most three show.
+/// The map's height for `levels` rows: none without folders; at most
+/// three show.
 pub fn map_height(levels: usize) -> f32 {
+    if levels == 0 {
+        return 0.;
+    }
     levels.min(MAP_VISIBLE_ROWS) as f32 * MAP_ROW + 2. * MAP_PAD
 }
 
@@ -1186,6 +1190,7 @@ mod tests {
 
     #[test]
     fn the_map_shows_at_most_three_rows() {
+        assert_eq!(map_height(0), 0., "no folders, no map");
         assert_eq!(map_height(1), MAP_ROW + 2. * MAP_PAD);
         assert_eq!(map_height(5), map_height(3));
     }

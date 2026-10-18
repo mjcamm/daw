@@ -27,8 +27,9 @@ const METER_HEIGHT: f32 = 32.;
 /// Width of one column of the nesting map, and its padding.
 const MAP_COLUMN: f32 = 18.;
 const MAP_PAD: f32 = 4.;
-/// Columns the map shows before it scrolls sideways.
-const MAP_VISIBLE_COLUMNS: usize = 4;
+/// Columns the map shows before it scrolls sideways: four and half of the
+/// next, so the half column says there is more.
+const MAP_VISIBLE_COLUMNS: f32 = 4.5;
 
 impl ProjectView {
     pub(crate) fn render_arrange(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -47,7 +48,9 @@ impl ProjectView {
             .collect();
         let rows: Vec<&NodeSnapshot> = placed.iter().map(|(n, _)| *n).collect();
         let map_bars = tree::bars(&rows);
-        let map_width = self.map_width.toward(map_width(tree::columns(&map_bars)));
+        // One column more while a node is dragged, for the drop slots.
+        let columns = tree::columns(&map_bars) + usize::from(cx.has_active_drag());
+        let map_width = self.map_width.toward(map_width(columns));
         let left_width = map_width + NODE_LIST_WIDTH;
 
         // The ruler stays at the top and follows the lanes' sideways scroll.
@@ -423,7 +426,7 @@ impl ProjectView {
             // it, or (folded) a short pill on its row. While children close
             // up under the folder, the bar shrinks with them into the pill.
             const PILL: f32 = 14.;
-            let start = tops[bar.row] + height_of(bar.row) / 2. - PILL / 2.;
+            let start = tops[bar.row] + 4.;
             let bottom = tops[bar.last] + height_of(bar.last) - 4.;
             let height = (bottom - start).max(PILL.min(height_of(bar.row)));
             let top = start;
@@ -464,7 +467,7 @@ impl ProjectView {
                     div()
                         .id(("map-slot", id.0))
                         .absolute()
-                        .left(px(MAP_PAD + 1. + (node.depth + 1) as f32 * MAP_COLUMN))
+                        .left(px(MAP_PAD + 1. + node.depth as f32 * MAP_COLUMN))
                         .top(px(tops[row] + height_of(row) / 2. - 7.))
                         .w(px(MAP_COLUMN - 4.))
                         .h(px(14.))
@@ -839,10 +842,17 @@ fn animated(layout: &RowLayout, row_height: f32, content: impl IntoElement) -> g
         )
 }
 
-/// Width of the nesting map: up to [`MAP_VISIBLE_COLUMNS`] columns show;
-/// more scroll sideways inside it.
+/// Width of the nesting map: none without folders; up to four columns
+/// show in full, and past that four and a half (the rest scroll sideways
+/// inside it).
 fn map_width(columns: usize) -> f32 {
-    columns.min(MAP_VISIBLE_COLUMNS) as f32 * MAP_COLUMN + 2. * MAP_PAD
+    if columns == 0 {
+        0.
+    } else if (columns as f32) <= MAP_VISIBLE_COLUMNS {
+        columns as f32 * MAP_COLUMN + 2. * MAP_PAD
+    } else {
+        MAP_PAD + MAP_VISIBLE_COLUMNS * MAP_COLUMN
+    }
 }
 
 /// A node being dragged to a new place in the tree.
@@ -890,4 +900,22 @@ fn meter_bar(peak: f32, size: f32, theme: &Theme) -> impl IntoElement {
                     theme.meter_low
                 }),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_map_shows_four_columns_then_half_of_the_next() {
+        assert_eq!(map_width(0), 0., "no folders, no map");
+        assert_eq!(map_width(1), MAP_COLUMN + 2. * MAP_PAD);
+        assert_eq!(map_width(4), 4. * MAP_COLUMN + 2. * MAP_PAD);
+        assert_eq!(
+            map_width(5),
+            MAP_PAD + 4.5 * MAP_COLUMN,
+            "half a column peeks"
+        );
+        assert_eq!(map_width(9), map_width(5));
+    }
 }

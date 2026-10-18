@@ -44,7 +44,8 @@ pub fn display_order<'a>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bar {
     pub node: NodeId,
-    /// Its depth: the Song is column 0, at the far left.
+    /// Its column: folders at the top level are column 0, at the far left.
+    /// The Song has no bar: everything is under it, so it says nothing.
     pub column: usize,
     /// The folder's own row, where the bar starts with its chevron.
     pub row: usize,
@@ -53,11 +54,11 @@ pub struct Bar {
     pub last: usize,
 }
 
-/// Every folder's bar, for rows in display order.
+/// Every folder's bar, for rows in display order (not the Song's).
 pub fn bars(rows: &[&NodeSnapshot]) -> Vec<Bar> {
     let mut bars = Vec::new();
     for (row, node) in rows.iter().enumerate() {
-        if !is_folder(node) {
+        if !is_folder(node) || node.id == NodeId::ROOT {
             continue;
         }
         // Its descendants follow it, deeper than it.
@@ -67,7 +68,7 @@ pub fn bars(rows: &[&NodeSnapshot]) -> Vec<Bar> {
             .map_or(rows.len() - 1, |i| row + i);
         bars.push(Bar {
             node: node.id,
-            column: node.depth,
+            column: node.depth - 1,
             row,
             last,
         });
@@ -421,30 +422,23 @@ mod tests {
         let bars = bars(&rows);
         assert_eq!(
             bars,
-            [
-                Bar {
-                    node: NodeId::ROOT,
-                    column: 0,
-                    row: 0,
-                    last: 4
-                },
-                Bar {
-                    node: DRUMS,
-                    column: 1,
-                    row: 2,
-                    last: 4
-                },
-            ]
+            [Bar {
+                node: DRUMS,
+                column: 0,
+                row: 2,
+                last: 4
+            }],
+            "the Song has no bar"
         );
-        assert_eq!(columns(&bars), 2);
+        assert_eq!(columns(&bars), 1);
 
         let folded = HashSet::from([DRUMS]);
         let rows = display_order(&snapshot, &folded);
         assert_eq!(
-            super::bars(&rows)[1],
+            super::bars(&rows)[0],
             Bar {
                 node: DRUMS,
-                column: 1,
+                column: 0,
                 row: 2,
                 last: 2
             },
