@@ -190,6 +190,22 @@ pub enum Edit {
         id: DeviceId,
         sample: Option<SampleId>,
     },
+    /// Add a group clip to a node (it holds no notes; members link to it).
+    AddGroup {
+        node: NodeId,
+        id: ClipId,
+        group: ClipGroup,
+    },
+    /// Remove a group clip. Its members become ordinary clips.
+    RemoveGroup {
+        id: ClipId,
+    },
+    /// Move, resize, rename a group clip or change its members (members
+    /// are moved by their own edits, in the same batch).
+    SetGroup {
+        id: ClipId,
+        group: ClipGroup,
+    },
     /// Choose the one note a SingleSampler plays.
     SetInstrumentNote {
         id: DeviceId,
@@ -280,8 +296,26 @@ pub struct Node {
     /// Volume and pan in index order. An empty list means the defaults.
     pub channel: Vec<ParamState>,
     pub clips: std::collections::BTreeMap<ClipId, MidiClip>,
+    /// Group clips: windows in time whose notes live in member clips on
+    /// this node and below it. They share the clip ids.
+    pub groups: std::collections::BTreeMap<ClipId, ClipGroup>,
     /// Children in order; their sound flows into this node.
     pub children: Vec<(NodeId, Node)>,
+}
+
+/// A group clip: a named window in time on a parent. Its notes live in its
+/// member clips on the parent and below, with the instruments that play
+/// them (`docs/design/note-flow.md`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ClipGroup {
+    pub name: String,
+    pub start: Ticks,
+    pub length: Ticks,
+    /// Its member clips, each on the group's node or below it. A clip is
+    /// a member of at most one group. Removing a member clip leaves its id
+    /// here unused.
+    #[serde(default)]
+    pub members: Vec<ClipId>,
 }
 
 impl Node {
@@ -298,6 +332,7 @@ impl Node {
             effects: Vec::new(),
             channel: Vec::new(),
             clips: std::collections::BTreeMap::new(),
+            groups: std::collections::BTreeMap::new(),
             children: Vec::new(),
         }
     }
@@ -416,6 +451,8 @@ pub struct NodeSnapshot {
     pub soloed: bool,
     /// Clips in id order.
     pub clips: Vec<(ClipId, MidiClip)>,
+    /// Its group clips.
+    pub groups: Vec<(ClipId, ClipGroup)>,
     /// Devices in signal order: instrument (if any), effects, channel.
     pub devices: Vec<DeviceSnapshot>,
 }
@@ -647,6 +684,15 @@ pub enum CommandError {
     NoteOutOfRange {
         note: u8,
     },
+    UnknownGroup {
+        id: ClipId,
+    },
+    /// A group's members must be clips on its node or below it, each in
+    /// one group only.
+    InvalidMember {
+        group: ClipId,
+        clip: ClipId,
+    },
     /// Colours index the nine-colour content palette.
     ColorOutOfRange {
         color: u8,
@@ -791,6 +837,13 @@ impl fmt::Display for CommandError {
                 write!(f, "device {} is not a SingleSampler", id.0)
             }
             Self::NoteOutOfRange { note } => write!(f, "note {note} is outside 0..=127"),
+            Self::UnknownGroup { id } => write!(f, "group clip {} does not exist", id.0),
+            Self::InvalidMember { group, clip } => write!(
+                f,
+                "clip {} cannot be a member of group {}: it must be on the group's node or \
+                 below, and in no other group",
+                clip.0, group.0
+            ),
             Self::NothingToUndo => f.write_str("nothing to undo"),
             Self::NothingToRedo => f.write_str("nothing to redo"),
         }

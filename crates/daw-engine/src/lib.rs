@@ -24,12 +24,12 @@ mod upgrade;
 
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
-    BlendMode, Block, BlockId, ClipId, Command, CommandError, DEFAULT_TRIGGER_NOTE, DeviceId,
-    DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind, Instrument, InstrumentKind, InvalidBlock,
-    InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote, Node, NodeId,
-    NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot, ParamState, SampleId,
-    SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
-    SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    BlendMode, Block, BlockId, ClipGroup, ClipId, Command, CommandError, DEFAULT_TRIGGER_NOTE,
+    DeviceId, DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind, Instrument, InstrumentKind,
+    InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote,
+    Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot, ParamState,
+    SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal,
+    SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -432,6 +432,11 @@ fn node_snapshot(
             .clips
             .iter()
             .map(|(&id, clip)| (id, clip.clone()))
+            .collect(),
+        groups: node
+            .groups
+            .iter()
+            .map(|(&id, group)| (id, group.clone()))
             .collect(),
         devices: node
             .devices()
