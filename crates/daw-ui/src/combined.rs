@@ -82,6 +82,24 @@ pub fn combined_blocks_of(
     blocks
 }
 
+/// A note as it sounds: (start, end, pitch) in song time.
+pub type HeardNote = (Ticks, Ticks, u8);
+
+/// The notes a clip plays, in song time: only the
+/// part of each note inside the clip, as the engine plays them. A clip
+/// trimmed from either side keeps its outside notes to reveal again; they
+/// do not sound, so blocks do not show them.
+pub fn heard_notes(clip: &MidiClip) -> Vec<HeardNote> {
+    clip.notes
+        .iter()
+        .filter_map(|n| {
+            let start = n.start.max(Ticks::ZERO);
+            let end = (n.start + n.length).min(clip.length);
+            (start < end).then(|| (clip.start + start, clip.start + end, n.pitch))
+        })
+        .collect()
+}
+
 /// A combined block being dragged, previewed until release.
 #[derive(Debug, Clone)]
 pub(crate) struct CombinedDrag {
@@ -264,32 +282,34 @@ impl ProjectView {
                     .iter()
                     .filter_map(|(n, id)| shown.iter().find(|(m, c, _)| m == n && c == id))
                     .collect();
-                let (low, high) = clips
+                let heard: Vec<(NodeId, Vec<HeardNote>)> = clips
                     .iter()
-                    .flat_map(|(_, _, c)| c.notes.iter().map(|n| n.pitch))
+                    .map(|(owner, _, clip)| (*owner, heard_notes(clip)))
+                    .collect();
+                let (low, high) = heard
+                    .iter()
+                    .flat_map(|(_, notes)| notes.iter().map(|n| n.2))
                     .fold((u8::MAX, 0u8), |(l, h), p| (l.min(p), h.max(p)));
                 let span = f32::from(high.saturating_sub(low)).max(1.);
                 let area = (zoom.row_height - 2. * INSET - LABEL_HEIGHT - 6.).max(0.);
-                let notes: Vec<AnyElement> = clips
+                let notes: Vec<AnyElement> = heard
                     .iter()
-                    .flat_map(|(owner, _, clip)| {
+                    .flat_map(|(owner, notes)| {
                         let mut color = snapshot
                             .node(*owner)
                             .map_or(theme.text_tertiary, |n| theme.content(n.color).detail);
                         // Inherited: softer than the parent's own notes.
                         color.a *= 0.45;
-                        clip.notes
+                        notes
                             .iter()
-                            .filter(|n| n.start < clip.length)
-                            .map(|n| {
-                                let at = clip.start + n.start - block.start;
-                                let end = (n.start + n.length).min(clip.length) - n.start;
-                                let row = 1. - f32::from(n.pitch.saturating_sub(low)) / span;
+                            .map(|&(start, end, pitch)| {
+                                let at = start - block.start;
+                                let row = 1. - f32::from(pitch.saturating_sub(low)) / span;
                                 div()
                                     .absolute()
                                     .left(px(zoom.beat_to_x(at.as_beats())))
                                     .top(px(LABEL_HEIGHT + row * area))
-                                    .w(px((zoom.beat_to_x(end.as_beats()) - 1.).max(2.)))
+                                    .w(px((zoom.beat_to_x((end - start).as_beats()) - 1.).max(2.)))
                                     .h(px(3.))
                                     .rounded(px(1.))
                                     .bg(color)
@@ -368,6 +388,34 @@ mod tests {
             length: Ticks::from_beats(length),
             notes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_trimmed_clip_shows_only_the_notes_it_plays() {
+        let note = |start: i64, length: i64, pitch: u8| daw_engine::MidiNote {
+            start: Ticks::from_beats(start),
+            length: Ticks::from_beats(length),
+            pitch,
+            velocity: 100,
+        };
+        // Trimmed from the left by 4 beats: its first notes now sit before
+        // its start, kept to reveal again.
+        let clip = MidiClip {
+            start: Ticks::from_beats(8),
+            length: Ticks::from_beats(4),
+            notes: vec![
+                note(-4, 1, 60),
+                note(-1, 2, 61),
+                note(2, 4, 62),
+                note(5, 1, 63),
+            ],
+        };
+        let beats = Ticks::from_beats;
+        assert_eq!(
+            heard_notes(&clip),
+            [(beats(8), beats(9), 61), (beats(10), beats(12), 62)],
+            "hidden notes go; ones crossing an edge show their inside part"
+        );
     }
 
     #[test]
