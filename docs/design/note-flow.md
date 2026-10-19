@@ -1,4 +1,4 @@
-# Notes in the Tree, Group Clips, and the Tree Editor
+# Notes in the Tree, Combined Blocks, and the Tree Editor
 
 *Status: agreed with the user 2026-10-19. Built: notes flowing up and trigger notes (engine), group clips (engine, `group_clips.rs` on Arrange: double-click a parent's empty lane to make one), the tree editor (`tree_editor.rs`: tree, focus, pen, routing, "Drawing to", other members' notes). Named and folded rows and the pen's preview note are built too. Not yet: moving other nodes' notes from the group's node, unlinking a member by a button (dragging it alone does it), copying a group, duplicating a node with its groups, scales. Builds on `node-tree.md`, `piano-roll.md` and `samples.md`.*
 
@@ -9,15 +9,21 @@
 - **Notes never travel down.** A note only sounds if an instrument on its node, or above it, plays that pitch; anything else is silent but kept (shown greyed).
 - **SingleSampler trigger notes** start at C1 and go up among siblings, so drums in a parent never clash (C1 Kick, C♯1 Snare, D1 Hat…). Each is changeable in the sampler's panel.
 
-## Group clips
+## Combined blocks (replacing group clips, user 2026-10-19)
 
-- A **group clip** lives on a parent and holds no notes: a window in time with a name. Its **member clips** live on the children (and on the parent itself, for a parent's own instrument), each holding that node's notes, with the same span, linked to the group. Notes stay with the instrument that plays them.
-- Moving, copying, resizing or deleting a group does the same to its members, as one undo step. A member can be unlinked into an ordinary clip. A child with no member yet gets one the first time a note is drawn for it in the group.
-- On Arrange, the group shows on the parent's lane; members show on the children's lanes, marked as members.
+- Clips live only on the node whose instruments play them. **A parent's lane shows combined blocks**: wherever any node below it has clips, overlapping or touching clips merge into one block. Nothing is stored; blocks always match the clips below. The Song's row shows everything.
+- In a combined block, **inherited notes are a softer colour**; a parent's **own** clips draw solid as usual (user: "show ITS OWN notes a solider color, and the inherited notes a softer color").
+- Dragging a combined block moves every clip inside it on every node below, one undo step; Delete removes them. No resizing a combined block (which clips would stretch is unclear).
+- The stored group clips built first (`ClipGroup`, "Pattern n") are removed: one concept. Older files keep every note (members were ordinary clips).
 
-## The tree editor (piano roll on a group)
+## The editor follows the node, not a clip
 
-- A **tree panel** on the right of the piano roll shows the whole group: the parent, its children, deeper levels nested; each row has colour, name and its note count in the group. The same tree shows whichever node the editor was opened from.
+- **Selecting a node** (its row or lane) points the editor at that node, at the time Arrange is showing. Double-clicking a lane or a clip opens the editor there. The editor's time is song time (its ruler counts song bars).
+- The roll shows the node's notes from all its clips. **Drawing where the node has no clip makes a one-bar clip** (snapped to the bar) around the note. Each note belongs to the clip its start falls in; an edit that moves a note out of every clip makes it a new one-bar clip. Each gesture is one undo step.
+
+## The tree editor
+
+- A **tree panel** on the right of the piano roll shows the selected node's whole branch (from the top-level node under the Song): parents, children, deeper levels nested; each row has colour, name and its note count. Clicking a name selects that node (the roll follows).
 - **Focus** (click a name): the roll shows and edits only the focused node's member clip (others hidden), with rows from its note map, named where an instrument names them (a drum's row is its node's name). Focusing the group's own node shows every member's notes in their owners' colours; clicking one focuses its node with that note selected (the parent view does not move other nodes' notes itself). A node with no member yet edits an empty clip spanning the group, which becomes its member with its first note.
 - **Drawing target** (click the pen column in the tree): where new notes go. Focusing a child moves the pen to it. With the parent focused, a row with **one owner** draws to that owner whatever the pen says; a row with **several owners** (marked with their count on the keyboard) draws to the pen's node.
 - **Rows** follow the focused node's note map. **Fold** (header button) shows only the notes something plays plus any pitch that holds notes (so nothing is hidden); it starts folded when the map is limited (a drum kit) and unfolded for full-range instruments. A named row shows its drum's name; a row several instruments play shows how many; a row nothing plays has a grey label.

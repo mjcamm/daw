@@ -1,0 +1,19 @@
+[package]
+name = "daw-stretch"
+description = "Real-time, pitch-preserving time-stretching (the stem stretcher)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+realfft = "3.5.0"
+rustfft = "6.4.1"
+
+[dev-dependencies]
+daw-rt.workspace = true
+
+[lints]
+workspace = true
