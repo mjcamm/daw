@@ -1,6 +1,6 @@
 # Audio Clips
 
-*Status: agreed with the user 2026-10-19. **Engine built** (2026-10-19): the clip model and edits, file version 12, rate conversion, waveform overviews in the snapshot, playback through the stretcher (`daw-engine/src/clips.rs`, tests in `daw-engine/tests/audio_clips.rs`). **UI built** (2026-10-19): Track → Import Audio…, dropping files on Arrange with a live preview, audio clips drawn with waveforms, and moving, copying, trimming and revealing them with the MIDI clip gestures (`clip_edit::AnyClip`); tried by Claude in the app, dropping from Explorer not yet tried. Still to build: the scissors tool and the clip panel. Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
+*Status: agreed with the user 2026-10-19. **Engine built** (2026-10-19): the clip model and edits, file version 12, rate conversion, waveform overviews in the snapshot, playback through the stretcher (`daw-engine/src/clips.rs`, tests in `daw-engine/tests/audio_clips.rs`). **UI built** (2026-10-19): Track → Import Audio…, dropping files on Arrange with a live preview, audio clips drawn with waveforms, and moving, copying, trimming and revealing them with the MIDI clip gestures (`clip_edit::AnyClip`); tried by Claude in the app, dropping from Explorer not yet tried. **Scissors built** (2026-10-19, tried by Claude in the app). Still to build: the clip panel. Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
 
 ## Stretching happens live, at playback
 
@@ -58,7 +58,7 @@ An audio clip is a window onto a sample (`AudioClip` in `daw-protocol`):
 
 - Audio clips draw like MIDI clips (soft tinted fill in the node's colour) with the waveform in the bright detail colour. A clip being stretched shows its BPM in its tag.
 - Move, copy (Ctrl), trim and cut with the same gestures as MIDI clips; dropping clips below the last row makes a new node of their kind.
-- **Scissors tool** on Arrange: cuts MIDI and audio clips at the snapped position.
+- **Scissors tool** on Arrange (the user's layout): a pointer / scissors switch left of the snap control, keys 1 and 3 (they go to the piano roll instead while the pointer is over it). With the scissors out, a layer over the lanes shows a cut line with its bar and beat at the snapped position under the pointer; a click cuts the clip there, or every selected clip there if that clip is selected (both halves stay selected). One undo step (`clip_edit::split_at`).
 
 ## Later
 

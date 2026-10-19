@@ -2,6 +2,15 @@
 //! framed by scrollbars and zoom sliders (see `frame.rs`).
 
 use crate::audio_import::{FileDrop, file_drop};
+
+/// Arrange's tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrangeTool {
+    /// Select, move and resize clips.
+    Pointer,
+    /// Click a clip to cut it in two.
+    Scissors,
+}
 use crate::clip_edit;
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
@@ -621,6 +630,163 @@ impl ProjectView {
             .err();
     }
 
+    /// The clip under `pointer` and where the scissors would cut it (the
+    /// snapped song position), with its row's top and height.
+    fn scissors_target(
+        &self,
+        pointer: gpui::Point<gpui::Pixels>,
+        rows: &[(NodeId, f32, f32)],
+    ) -> Option<(daw_engine::ClipId, daw_engine::Ticks, f32, f32)> {
+        let bounds = self.arrange_lanes_bounds.get();
+        let x = (pointer.x - bounds.left()) / px(1.);
+        let y = (pointer.y - bounds.top()) / px(1.);
+        let &(node, top, height) = rows.iter().find(|(_, top, h)| y >= *top && y < top + h)?;
+        let snapshot = self.session.snapshot();
+        let beat = daw_engine::Ticks::from_beats_f64(self.arrange_view.zoom.x_to_beats(x));
+        let (id, clip) = clip_edit::node_clips(snapshot.node(node)?)
+            .find(|(_, c)| c.start() <= beat && beat < c.end())?;
+        let at = self.snap.round(beat);
+        (at > clip.start() && at < clip.end()).then_some((id, at, top, height))
+    }
+
+    /// While the scissors are out: a layer over the lanes that cuts the
+    /// clip under a click at the snapped position (every selected clip
+    /// there, if that clip is selected), with a cut line under the pointer.
+    fn scissors_layer(
+        &self,
+        rows: &[(NodeId, f32, f32)],
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if self.arrange_tool != ArrangeTool::Scissors {
+            return None;
+        }
+        let zoom = self.arrange_view.zoom;
+        let line = self
+            .scissors_at
+            .and_then(|pointer| self.scissors_target(pointer, rows))
+            .map(|(_, at, top, height)| {
+                let x = zoom.beat_to_x(at.as_beats());
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .top(px(top))
+                    .w(px(1.))
+                    .h(px(height))
+                    .bg(theme.accent)
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(4.))
+                            .top(px(-18.))
+                            .whitespace_nowrap()
+                            .px(px(5.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .bg(theme.accent)
+                            .text_color(theme.on_accent)
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(clip_edit::bar_beat(at)),
+                    )
+            });
+        let rows_for_click = rows.to_vec();
+        Some(
+            div()
+                .id("scissors")
+                .absolute()
+                .size_full()
+                .occlude()
+                .cursor_crosshair()
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, _| {
+                    this.scissors_at = Some(event.position);
+                }))
+                .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                    if !hovered {
+                        this.scissors_at = None;
+                    }
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                        this.cut_with_scissors(event.position, &rows_for_click);
+                    }),
+                )
+                .children(line)
+                .into_any_element(),
+        )
+    }
+
+    /// A scissors click: cuts the clip under the pointer, or every selected
+    /// clip there if it is selected, as one undo step.
+    fn cut_with_scissors(
+        &mut self,
+        pointer: gpui::Point<gpui::Pixels>,
+        rows: &[(NodeId, f32, f32)],
+    ) {
+        let Some((id, at, _, _)) = self.scissors_target(pointer, rows) else {
+            return;
+        };
+        let ids: Vec<daw_engine::ClipId> = if self.selected_clips.contains(&id) {
+            self.selected_clips.iter().copied().collect()
+        } else {
+            vec![id]
+        };
+        let Some((edit, pieces)) = clip_edit::split_at(self.session.snapshot(), &ids, at) else {
+            return;
+        };
+        let keep_selected = self.selected_clips.contains(&id);
+        self.session.apply(Command::Edit(edit));
+        // A cut selection stays selected, both halves of it.
+        if keep_selected {
+            self.selected_clips.extend(pieces);
+        }
+    }
+
+    /// Arrange's tools, left of the snap control: the pointer and the
+    /// scissors (keys 1 and 3, as in the piano roll).
+    pub(crate) fn render_arrange_tools(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let button = |id: &'static str, kind: Icon, tool: ArrangeTool, hint: &'static str| {
+            let on = self.arrange_tool == tool;
+            small_button(id, theme)
+                .when(on, |d| d.bg(theme.control))
+                .child(icon(
+                    kind,
+                    if on {
+                        theme.accent
+                    } else {
+                        theme.text_secondary
+                    },
+                    14.,
+                ))
+                .tooltip(tooltip::text(hint))
+                .on_click(cx.listener(move |this, _, _, _| {
+                    this.arrange_tool = tool;
+                    this.scissors_at = None;
+                }))
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .child(button(
+                "arrange-pointer",
+                Icon::Pointer,
+                ArrangeTool::Pointer,
+                "Pointer (1): select, move and resize clips",
+            ))
+            .child(button(
+                "arrange-scissors",
+                Icon::Scissors,
+                ArrangeTool::Scissors,
+                "Scissors (3): click a clip to cut it at the grid; a selected clip cuts the whole selection there",
+            ))
+    }
+
     /// Where files dragged over the lanes would go, if any are.
     fn file_target(&self, rows: &[(NodeId, f32, f32)]) -> Option<(FileDrop, f32, usize)> {
         let (pointer, count) = self.file_hover?;
@@ -904,6 +1070,7 @@ impl ProjectView {
             .map(|((node, layout), top)| (node.id, *top, layout.height))
             .collect();
         overlay.extend(self.file_drop_overlay(&drop_rows, theme));
+        let scissor_rows = drop_rows.clone();
         let lanes: Vec<_> = rows
             .iter()
             .map(|(node, layout)| {
@@ -1002,6 +1169,7 @@ impl ProjectView {
                     .children(grid_lines(zoom, bars, theme))
                     .children(lanes)
                     .children(overlay)
+                    .children(self.scissors_layer(&scissor_rows, theme, cx))
                     .child(playhead),
             )
     }

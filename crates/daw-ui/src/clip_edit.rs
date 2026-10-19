@@ -99,10 +99,6 @@ impl AnyClip {
     }
 
     /// Cut in two at `at` (inside it).
-    #[allow(
-        dead_code,
-        reason = "the scissors tool on Arrange, built next, cuts with it"
-    )]
     pub fn split(&self, at: Ticks, song_bpm: f64) -> Option<(Self, Self)> {
         if at <= self.start() || at >= self.end() {
             return None;
@@ -314,6 +310,28 @@ pub fn land(
         edits.push(landing.clip.edit(id, landing.node, landing.id.is_none()));
     }
     (Edit::Batch(edits), landed)
+}
+
+/// The scissors: cuts each of `ids` that spans `at` in two, as one step.
+/// The left part keeps its id; the right parts take new ones. Returns the
+/// edit and every piece's id, or `None` if nothing was cut.
+pub fn split_at(snapshot: &Snapshot, ids: &[ClipId], at: Ticks) -> Option<(Edit, Vec<ClipId>)> {
+    let mut next = next_clip_id(snapshot).0;
+    let mut edits = Vec::new();
+    let mut pieces = Vec::new();
+    for node in &snapshot.nodes {
+        for (id, clip) in node_clips(node).filter(|(id, _)| ids.contains(id)) {
+            let Some((left, right)) = clip.split(at, snapshot.tempo_bpm) else {
+                continue;
+            };
+            let fresh = ClipId(next);
+            next += 1;
+            edits.push(left.edit(id, node.id, false));
+            edits.push(right.edit(fresh, node.id, true));
+            pieces.extend([id, fresh]);
+        }
+    }
+    (!edits.is_empty()).then_some((Edit::Batch(edits), pieces))
 }
 
 /// Which part of a clip a drag holds.
@@ -916,6 +934,34 @@ mod tests {
         assert!(
             AnyClip::Audio(whole).split(beats(8), 120.0).is_none(),
             "not at an edge"
+        );
+    }
+
+    #[test]
+    fn the_scissors_cut_every_chosen_clip_that_spans_the_spot() {
+        let other = MidiClip {
+            start: beats(12),
+            length: beats(4),
+            notes: vec![note(0, 1, 50)],
+        };
+        let mut engine = engine_with(&[(1, clip()), (2, other)]);
+        let snapshot = engine.snapshot();
+        assert!(
+            split_at(&snapshot, &[ClipId(2)], beats(8)).is_none(),
+            "clip 2 is not under the cut"
+        );
+        let (edit, pieces) = split_at(&snapshot, &[ClipId(1), ClipId(2)], beats(8)).unwrap();
+        assert_eq!(pieces, [ClipId(1), ClipId(3)]);
+        engine.apply(Command::Edit(edit)).unwrap();
+        assert_eq!(
+            spans(&engine),
+            [(1, 4.0, 8.0), (2, 12.0, 16.0), (3, 8.0, 12.0)]
+        );
+        engine.apply(Command::Undo).unwrap();
+        assert_eq!(
+            spans(&engine),
+            [(1, 4.0, 12.0), (2, 12.0, 16.0)],
+            "one undo"
         );
     }
 }

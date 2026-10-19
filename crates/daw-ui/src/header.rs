@@ -71,6 +71,9 @@ impl ProjectView {
             .child(song)
             .child(self.render_tabs(theme, cx))
             .child(div().flex_1())
+            .when(self.page == crate::project::Page::Arrange, |d| {
+                d.child(self.render_arrange_tools(theme, cx))
+            })
             .child(self.render_snap(false, theme, cx))
             .child(self.render_transport(theme, cx))
             .child(self.render_load(theme))

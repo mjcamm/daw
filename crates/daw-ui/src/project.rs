@@ -115,6 +115,12 @@ pub struct ProjectView {
     /// Files being dragged over Arrange from outside: the pointer and how
     /// many files. Cleared once no drag is running.
     pub(crate) file_hover: Option<(gpui::Point<Pixels>, usize)>,
+    /// Arrange's tool: the pointer, or the scissors.
+    pub(crate) arrange_tool: crate::arrange::ArrangeTool,
+    /// The pointer over the lanes while the scissors are out.
+    pub(crate) scissors_at: Option<gpui::Point<Pixels>>,
+    /// Whether the pointer is over the piano roll panel: tool keys go to it.
+    pub(crate) roll_hovered: bool,
     /// The piano roll in the bottom panel, if a clip is open.
     pub(crate) note_editor: Option<crate::piano_roll::NoteEditor>,
     /// A note being heard from the editor, and since when.
@@ -240,6 +246,9 @@ impl ProjectView {
             import_error: None,
             arrange_lanes_bounds: Rc::default(),
             file_hover: None,
+            arrange_tool: crate::arrange::ArrangeTool::Pointer,
+            scissors_at: None,
+            roll_hovered: false,
             note_editor: None,
             note_preview: None,
             note_clipboard: Vec::new(),
@@ -449,7 +458,18 @@ impl Render for ProjectView {
                 .flex()
                 .flex_col()
                 .child(self.render_arrange(&theme, cx))
-                .children(editor)
+                .children(editor.map(|panel| {
+                    // Tool keys go to the panel while the pointer is on it.
+                    div()
+                        .id("note-panel")
+                        .flex_none()
+                        .flex()
+                        .flex_col()
+                        .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                            this.roll_hovered = *hovered;
+                        }))
+                        .child(panel)
+                }))
                 .into_any_element(),
             Page::Parameters if self.shown_node().is_some() => self
                 .render_parameters(&theme, window, cx)
@@ -486,13 +506,19 @@ impl Render for ProjectView {
                 this.cancel_clip_drag();
             }))
             .on_action(cx.listener(|this, _: &ToolSelect, _, _| {
-                this.set_note_tool(crate::piano_roll::Tool::Select)
+                this.choose_tool(
+                    crate::piano_roll::Tool::Select,
+                    Some(crate::arrange::ArrangeTool::Pointer),
+                )
             }))
             .on_action(cx.listener(|this, _: &ToolPen, _, _| {
-                this.set_note_tool(crate::piano_roll::Tool::Pen)
+                this.choose_tool(crate::piano_roll::Tool::Pen, None)
             }))
             .on_action(cx.listener(|this, _: &ToolScissors, _, _| {
-                this.set_note_tool(crate::piano_roll::Tool::Scissors)
+                this.choose_tool(
+                    crate::piano_roll::Tool::Scissors,
+                    Some(crate::arrange::ArrangeTool::Scissors),
+                )
             }))
             .on_action(cx.listener(|this, _: &NudgeUp, _, _| this.nudge_notes(0, 1)))
             .on_action(cx.listener(|this, _: &NudgeDown, _, _| this.nudge_notes(0, -1)))
@@ -518,6 +544,22 @@ impl Render for ProjectView {
 }
 
 impl ProjectView {
+    /// A tool key (1, 2, 3): the piano roll's tool while the pointer is on
+    /// it (or Arrange has no such tool), else Arrange's.
+    fn choose_tool(
+        &mut self,
+        note: crate::piano_roll::Tool,
+        arrange: Option<crate::arrange::ArrangeTool>,
+    ) {
+        match arrange {
+            Some(tool) if self.page == Page::Arrange && !self.roll_hovered => {
+                self.arrange_tool = tool;
+                self.scissors_at = None;
+            }
+            _ => self.set_note_tool(note),
+        }
+    }
+
     /// Opens `menu`, or closes it if it is open. A press on the trigger of
     /// an open menu first closes it as a press outside the menu; that press
     /// leaves it closed.
