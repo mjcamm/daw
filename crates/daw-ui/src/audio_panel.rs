@@ -341,6 +341,22 @@ impl ProjectView {
         }));
     }
 
+    /// A new tempo changes a clip's length: like a resize, it wins over
+    /// the clips it now reaches into (clips on a node never overlap).
+    fn retempo_panel_clip(&mut self, id: ClipId, clip: AudioClip) {
+        let Some(editor) = &self.audio_editor else {
+            return;
+        };
+        let landing = crate::clip_edit::Landing {
+            id: Some(id),
+            node: editor.node,
+            clip: crate::clip_edit::AnyClip::Audio(clip),
+        };
+        let (edit, _) =
+            crate::clip_edit::land(self.session.snapshot(), &[landing], &[id], Vec::new());
+        self.session.apply(Command::Edit(edit));
+    }
+
     /// Starts typing the clip's BPM.
     fn edit_bpm(&mut self, id: ClipId, current: f64, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| TextInput::new(&format_bpm(current), "BPM", cx));
@@ -354,7 +370,7 @@ impl ProjectView {
                     && let Some((clip_id, clip)) = this.panel_clip()
                     && clip_id == id
                 {
-                    this.set_panel_clip(id, clip.with_bpm(bpm));
+                    this.retempo_panel_clip(id, clip.with_bpm(bpm));
                 }
                 this.bpm_input = None;
                 window.focus(&this.focus);
