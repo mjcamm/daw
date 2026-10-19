@@ -834,6 +834,7 @@ impl ProjectView {
             || self.drag_clips(position, modifiers)
             || self.drag_mixer(position, modifiers.shift)
             || self.drag_note_editor(position, modifiers)
+            || self.drag_combined(position, modifiers)
         {
             return;
         }
@@ -886,6 +887,7 @@ impl ProjectView {
         self.finish_clip_drag();
         self.finish_mixer_drag();
         self.finish_note_drag();
+        self.finish_combined_drag();
         if let Some(drag) = self.mix_drag.take()
             && drag.preview != drag.original
         {
@@ -1042,6 +1044,7 @@ impl ProjectView {
             // with neither, the selected node.
             if !self.delete_notes()
                 && !self.delete_clips()
+                && !self.delete_combined()
                 && let Some(id) = self.selected_node
             {
                 self.delete_node(id);

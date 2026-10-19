@@ -782,21 +782,36 @@ impl ProjectView {
                     .border_b_1()
                     .border_color(theme.hairline)
                     // A press on empty lane clears the clip selection; a
-                    // double-click on a MIDI node's lane adds a clip there.
+                    // double-click on a MIDI node's lane opens the editor
+                    // there.
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, _| {
                             this.selected_clips.clear();
+                            this.selected_combined = None;
                             if event.click_count >= 2 && takes_clips {
-                                this.add_clip_at(id, event.position);
+                                this.open_editor_at(id, event.position);
                             }
                         }),
                     )
+                    // A parent shows the clips below it combined, under its
+                    // own clips.
+                    .children(if node.children.is_empty() {
+                        Vec::new()
+                    } else {
+                        self.combined_elements(id, theme, cx)
+                    })
                     .children(
                         node.clips
                             .iter()
                             .map(|(cid, clip)| {
-                                self.clip_element(*cid, clip, &node.name, color, theme, cx)
+                                // A clip moves with its block while dragged.
+                                let shown = self
+                                    .combined_drag
+                                    .as_ref()
+                                    .and_then(|d| d.shifted(*cid, clip))
+                                    .unwrap_or_else(|| clip.clone());
+                                self.clip_element(*cid, &shown, &node.name, color, theme, cx)
                             })
                             .collect::<Vec<_>>(),
                     );

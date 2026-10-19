@@ -114,6 +114,10 @@ pub struct ProjectView {
     pub(crate) note_preview: Option<(NodeId, u8, std::time::Instant)>,
     /// Notes copied in the editor.
     pub(crate) note_clipboard: Vec<daw_engine::MidiNote>,
+    /// The combined block selected on Arrange: its node and start.
+    pub(crate) selected_combined: Option<(NodeId, daw_engine::Ticks)>,
+    /// A combined block being dragged.
+    pub(crate) combined_drag: Option<crate::combined::CombinedDrag>,
     /// Clips selected on Arrange.
     pub(crate) selected_clips: std::collections::BTreeSet<daw_engine::ClipId>,
     /// Clips being dragged on Arrange; one edit on release.
@@ -222,6 +226,8 @@ impl ProjectView {
             strip_motion: crate::motion::RowMotion::default(),
             selected_effect: None,
             selected_clips: std::collections::BTreeSet::new(),
+            selected_combined: None,
+            combined_drag: None,
 
             sample_error: None,
             note_editor: None,
@@ -530,6 +536,7 @@ impl ProjectView {
             || self.notes_drag.is_some()
             || self.clip_drag.is_some()
             || self.mixer_drag.is_some()
+            || self.combined_drag.is_some()
             || self.note_editor.as_ref().is_some_and(|e| e.dragging())
     }
 

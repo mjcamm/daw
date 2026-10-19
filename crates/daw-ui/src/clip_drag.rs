@@ -82,6 +82,7 @@ impl ProjectView {
     /// Starts a press on a clip: selects it and, unless Shift took it out
     /// of the selection, begins a drag of the selection.
     pub(crate) fn press_clip(&mut self, id: ClipId, grab: Grab, event: &MouseDownEvent) {
+        self.selected_combined = None;
         if event.modifiers.shift {
             if !self.selected_clips.remove(&id) {
                 self.selected_clips.insert(id);
@@ -240,34 +241,16 @@ impl ProjectView {
         true
     }
 
-    /// Adds an empty clip where an empty lane of a MIDI node was
-    /// double-clicked: a bar long from the grid line at or before the
-    /// pointer (shorter if the next clip comes sooner), selected and open
-    /// in the piano roll.
-    pub(crate) fn add_clip_at(&mut self, node: NodeId, position: Point<Pixels>) {
+    /// Opens the editor on a node at the time where its lane was
+    /// double-clicked (drawing there makes the clips).
+    pub(crate) fn open_editor_at(&mut self, node: NodeId, position: Point<Pixels>) {
         let view = &self.arrange_view;
         let bounds = view.x.bounds();
         let x = (position.x - bounds.left() - view.x.offset().x) / px(1.);
-        let at = Ticks::from_beats_f64(view.zoom.x_to_beats(x).max(0.));
-        let start = self.snap.floor(at);
-        let snapshot = self.session.snapshot();
-        let Some(lane) = snapshot.node(node).filter(|n| n.takes_midi()) else {
-            return;
-        };
-        let clips: Vec<MidiClip> = lane.clips.iter().map(|(_, c)| c.clone()).collect();
-        let Some(length) = clip_edit::room_for_clip(&clips, start, Ticks::from_beats(4)) else {
-            return;
-        };
-        let id = clip_edit::next_clip_id(snapshot);
-        let clip = MidiClip {
-            start,
-            length,
-            notes: Vec::new(),
-        };
-        self.session
-            .apply(Command::Edit(Edit::AddClip { node, id, clip }));
-        self.selected_clips = [id].into();
-        self.open_new_clip(node, id);
+        let beat = view.zoom.x_to_beats(x).max(0.);
+        // Open a little before the spot, on the bar.
+        let start = (beat / 4.).floor() * 4.;
+        self.open_node_editor(node, start);
     }
 
     /// While dragging near the timeline's edges, scrolls it. Called every

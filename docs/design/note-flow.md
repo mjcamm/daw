@@ -1,6 +1,6 @@
 # Notes in the Tree, Combined Blocks, and the Tree Editor
 
-*Status: agreed with the user 2026-10-19. Built: notes flowing up and trigger notes (engine), group clips (engine, `group_clips.rs` on Arrange: double-click a parent's empty lane to make one), the tree editor (`tree_editor.rs`: tree, focus, pen, routing, "Drawing to", other members' notes). Named and folded rows and the pen's preview note are built too. Not yet: moving other nodes' notes from the group's node, unlinking a member by a button (dragging it alone does it), copying a group, duplicating a node with its groups, scales. Builds on `node-tree.md`, `piano-roll.md` and `samples.md`.*
+*Status: built 2026-10-19 (agreed with the user the same day). Notes flowing up and trigger notes are in the engine; combined blocks are `combined.rs` on Arrange; the node-following editor is `piano_roll.rs` with `timeline.rs` (a node's notes as one timeline, put back into its clips) and `tree_editor.rs` (the branch tree, owners, inherited notes). Not yet: resizing a combined block, scales.*
 
 ## Notes flow up, like sound
 

@@ -44,8 +44,6 @@ pub const DEFAULT_ZOOM: Zoom = Zoom::new(48., 12.).with_rows(6., 40.);
 const DEAD_ZONE: f32 = 3.;
 /// How long a previewed note sounds.
 const PREVIEW_TIME: Duration = Duration::from_millis(280);
-/// The time zoom a clip is fitted within.
-const FIT_ZOOM: (f32, f32) = (8., 400.);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -131,10 +129,13 @@ impl Rows {
     }
 }
 
-/// An open editor: which clip, the tool, the selection and the view.
+/// An open editor: which node (it shows all of that node's notes, in song
+/// time), the tool, the selection and the view.
 pub struct NoteEditor {
     pub node: NodeId,
-    pub clip: ClipId,
+    /// Where new notes go when a row is played by several nodes in the
+    /// branch below `node` (the pen in the tree).
+    pub target: NodeId,
     pub tool: Tool,
     pub selection: Selection,
     pub height: f32,
@@ -154,9 +155,14 @@ pub struct NoteEditor {
     drag_grid: Point<Pixels>,
     /// The pointer and keys during a drag, to follow while auto-scrolling.
     pointer: Option<(Point<Pixels>, gpui::Modifiers)>,
-    /// Opened on a clip just added, which the snapshot does not show yet:
-    /// until it does, its absence does not close the editor.
-    waiting: bool,
+    /// After an edit, the selected notes by value, until the snapshot
+    /// with them arrives (notes may change order between clips), and the
+    /// revision the edit was made at.
+    pending: Option<(Vec<MidiNote>, u64)>,
+    /// Where to scroll to on the next draw, in beats.
+    scroll_to: Option<f64>,
+    /// A tree row to flash, and since when.
+    flash: Option<(NodeId, Instant)>,
     /// The rows as last drawn.
     pub rows: Rows,
     /// Folded to the notes that play; `None` folds when the note map is
@@ -167,10 +173,10 @@ pub struct NoteEditor {
 }
 
 impl NoteEditor {
-    pub fn new(node: NodeId, clip: ClipId, height: f32) -> Self {
+    pub fn new(node: NodeId, height: f32) -> Self {
         Self {
             node,
-            clip,
+            target: node,
             tool: Tool::Select,
             selection: Selection::new(),
             height,
@@ -182,11 +188,27 @@ impl NoteEditor {
             opened: Instant::now(),
             drag_grid: Point::default(),
             pointer: None,
-            waiting: false,
+            pending: None,
+            scroll_to: None,
+            flash: None,
             rows: Rows::all(),
             folded: None,
             hover: None,
         }
+    }
+
+    /// Selects one note by value (it is found once the snapshot holds it).
+    pub fn select_by_value(&mut self, note: MidiNote) {
+        self.selection.clear();
+        self.pending = Some((vec![note], u64::MAX));
+    }
+
+    pub fn flash_row(&mut self, node: NodeId) {
+        self.flash = Some((node, Instant::now()));
+    }
+
+    pub fn flash(&self) -> Option<(NodeId, Instant)> {
+        self.flash
     }
 
     pub fn dragging(&self) -> bool {
@@ -221,51 +243,94 @@ impl ProjectView {
     /// The clip open in the editor, if it still exists.
     fn editor_clip(&self) -> Option<(&NoteEditor, MidiClip)> {
         let editor = self.note_editor.as_ref()?;
-        let node = self.session.snapshot().node(editor.node)?;
-        let (_, clip) = node.clips.iter().find(|(id, _)| *id == editor.clip)?;
-        Some((editor, clip.clone()))
+        let snapshot = self.session.snapshot();
+        let node = snapshot.node(editor.node)?;
+        // The node's whole timeline: song time from the start, a little
+        // past the song's last clip.
+        Some((
+            editor,
+            MidiClip {
+                start: Ticks::ZERO,
+                length: song_length(snapshot),
+                notes: crate::timeline::notes_of(&node.clips),
+            },
+        ))
     }
 
-    /// Where the open clip starts, in beats.
+    /// Where the editor's time starts, in beats: the song's start.
     pub(crate) fn note_editor_start(&self) -> Option<f32> {
-        self.editor_clip()
-            .map(|(_, clip)| clip.start.as_beats() as f32)
+        self.note_editor.as_ref().map(|_| 0.)
     }
 
-    /// Opens a clip just added to `node` (not in the snapshot yet).
-    pub(crate) fn open_new_clip(&mut self, node: NodeId, clip: ClipId) {
-        let mut editor = NoteEditor::new(node, clip, DEFAULT_HEIGHT);
+    /// Opens the editor on a node at `beat` (song time), or points the
+    /// open editor there without sliding it up again.
+    pub(crate) fn open_node_editor(&mut self, node: NodeId, beat: f64) {
+        let mut editor = NoteEditor::new(node, DEFAULT_HEIGHT);
         if let Some(open) = &self.note_editor {
             editor.height = open.height;
             editor.tool = open.tool;
             editor.opened = open.opened;
+            editor.folded = open.folded;
         }
-        editor.waiting = true;
+        editor.target = self.default_target(node);
+        editor.scroll_to = Some(beat);
         self.note_editor = Some(editor);
+        self.selected_node = Some(node);
     }
 
-    /// Opens a clip's notes in the bottom panel.
+    /// Opens the editor on a clip's node, at the clip.
     pub(crate) fn open_note_editor(&mut self, clip: ClipId) {
         let snapshot = self.session.snapshot();
-        let Some(node) = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.clips.iter().any(|(id, _)| *id == clip))
-        else {
+        let found = snapshot.nodes.iter().find_map(|n| {
+            n.clips
+                .iter()
+                .find(|(id, _)| *id == clip)
+                .map(|(_, c)| (n.id, c.start.as_beats()))
+        });
+        if let Some((node, beat)) = found {
+            self.open_node_editor(node, beat);
+        }
+    }
+
+    /// The pen's first place for a node: itself if it plays notes, else
+    /// the first node below it that does.
+    fn default_target(&self, node: NodeId) -> NodeId {
+        crate::tree_editor::tree_nodes(self.session.snapshot(), node)
+            .into_iter()
+            .find(|(n, _)| !crate::tree_editor::own_notes(n).is_empty())
+            .map_or(node, |(n, _)| n.id)
+    }
+
+    /// The open editor follows the node selected on Arrange, showing the
+    /// time Arrange shows.
+    fn follow_selection(&mut self) {
+        let Some(selected) = self.selected_node else {
             return;
         };
-        // Already open: nothing to do. Another clip: swap it in without
-        // sliding the panel up again.
-        let mut editor = NoteEditor::new(node.id, clip, DEFAULT_HEIGHT);
-        if let Some(open) = &self.note_editor {
-            if open.clip == clip {
-                return;
-            }
-            editor.height = open.height;
-            editor.tool = open.tool;
-            editor.opened = open.opened;
+        let Some(editor) = &self.note_editor else {
+            return;
+        };
+        if editor.node == selected || editor.dragging() {
+            return;
         }
-        self.note_editor = Some(editor);
+        let takes = self
+            .session
+            .snapshot()
+            .node(selected)
+            .is_some_and(|n| n.kind == daw_engine::NodeKind::Midi);
+        if !takes {
+            return;
+        }
+        let zoom = self.arrange_view.zoom;
+        let shown = f64::from(-self.arrange_view.x.offset().x / px(1.) / zoom.pixels_per_beat);
+        let target = self.default_target(selected);
+        if let Some(editor) = &mut self.note_editor {
+            editor.node = selected;
+            editor.target = target;
+            editor.selection.clear();
+            editor.scroll_to = Some(shown.max(0.));
+            editor.fitted = false;
+        }
     }
 
     pub(crate) fn close_note_editor(&mut self) {
@@ -306,7 +371,8 @@ impl ProjectView {
         }
     }
 
-    /// Replaces the open clip's notes as one edit, and the selection.
+    /// Puts the node's notes back into its clips (new clips where notes
+    /// fall outside them) as one edit, and keeps the selection.
     fn commit_notes(&mut self, notes: Vec<MidiNote>, selection: Selection) {
         let Some((editor, clip)) = self.editor_clip() else {
             return;
@@ -314,18 +380,89 @@ impl ProjectView {
         if notes == clip.notes {
             return;
         }
-        let edit = Edit::SetClip {
-            id: editor.clip,
-            node: editor.node,
-            clip: MidiClip {
-                notes,
-                ..clip.clone()
-            },
-        };
+        let node = editor.node;
+        let chosen: Vec<MidiNote> = selection
+            .iter()
+            .filter_map(|&i| notes.get(i).copied())
+            .collect();
+        self.place_on(node, notes);
+        let revision = self.session.snapshot().revision;
         if let Some(editor) = &mut self.note_editor {
             editor.selection = selection;
+            editor.pending = Some((chosen, revision));
         }
+    }
+
+    /// Makes `node`'s clips hold `notes` (song time), as one edit.
+    fn place_on(&mut self, node: NodeId, notes: Vec<MidiNote>) {
+        let snapshot = self.session.snapshot();
+        let Some(owner) = snapshot.node(node) else {
+            return;
+        };
+        let bar = Ticks::from_beats(4);
+        let next = crate::clip_edit::next_clip_id(snapshot);
+        let mut edits = crate::timeline::place_notes(node, &owner.clips, &notes, bar, next);
+        let edit = match edits.len() {
+            0 => return,
+            1 => edits.remove(0),
+            _ => Edit::Batch(edits),
+        };
         self.session.apply(Command::Edit(edit));
+    }
+
+    /// After an edit lands, the selection follows the notes it held.
+    fn settle_selection(&mut self) {
+        let revision = self.session.snapshot().revision;
+        let Some((editor, clip)) = self.editor_clip() else {
+            return;
+        };
+        let Some((chosen, at)) = &editor.pending else {
+            return;
+        };
+        if *at == revision {
+            return;
+        }
+        let mut taken = vec![false; clip.notes.len()];
+        let selection = chosen
+            .iter()
+            .filter_map(|want| {
+                let i = clip
+                    .notes
+                    .iter()
+                    .enumerate()
+                    .position(|(i, n)| !taken[i] && n == want)?;
+                taken[i] = true;
+                Some(i)
+            })
+            .collect();
+        if let Some(editor) = &mut self.note_editor {
+            editor.selection = selection;
+            editor.pending = None;
+        }
+    }
+
+    /// With the editor on a node that has nodes below it, a new note goes
+    /// to the one node that plays its row, or to the pen's node; true if
+    /// it went to another node than the editor's.
+    fn add_routed_note(&mut self, note: MidiNote) -> bool {
+        let Some(editor) = self.note_editor.as_ref() else {
+            return false;
+        };
+        let owner = self.new_note_owner(editor, note.pitch);
+        if owner == editor.node {
+            return false;
+        }
+        let Some(target) = self.session.snapshot().node(owner) else {
+            return false;
+        };
+        let mut notes = crate::timeline::notes_of(&target.clips);
+        notes.push(note);
+        self.place_on(owner, notes);
+        self.preview_note(owner, note.pitch, note.velocity);
+        if let Some(editor) = &mut self.note_editor {
+            editor.flash = Some((owner, Instant::now()));
+        }
+        true
     }
 
     /// The grid step for new notes and snapping.
@@ -374,6 +511,9 @@ impl ProjectView {
                         pitch,
                         velocity,
                     };
+                    if self.add_routed_note(note) {
+                        return;
+                    }
                     let (notes, index) = note_edit::added(&notes, note);
                     self.preview_note(node, pitch, velocity);
                     self.commit_notes(notes, [index].into());
@@ -449,6 +589,9 @@ impl ProjectView {
                         pitch,
                         velocity,
                     };
+                    if self.add_routed_note(note) {
+                        return;
+                    }
                     let (with, index) = note_edit::added(&notes, note);
                     self.preview_note(node, pitch, velocity);
                     if let Some(editor) = &mut self.note_editor {
@@ -808,21 +951,25 @@ impl ProjectView {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        // A clip that is gone closes the editor (unless it is a new clip
-        // still on its way into the snapshot).
-        let found = self.editor_clip().is_some();
-        if let Some(editor) = &mut self.note_editor {
-            if found {
-                editor.waiting = false;
-            } else if !editor.waiting {
-                self.note_editor = None;
-            }
+        // A node that is gone closes the editor.
+        if self.note_editor.is_some() && self.editor_clip().is_none() {
+            self.note_editor = None;
         }
+        self.follow_selection();
+        self.settle_selection();
         self.update_rows();
         self.fit_note_editor();
-        let ghosts: Vec<AnyElement> = Vec::new();
-        let drawing_to: Option<AnyElement> = None;
-        let tree: Option<AnyElement> = None;
+        let zoom_now = self.notes_view.zoom;
+        let (editor, _) = self.editor_clip()?;
+        let ghosts = self.inherited_notes(
+            editor,
+            zoom_now.pixels_per_beat,
+            zoom_now.row_height,
+            theme,
+            cx,
+        );
+        let drawing_to = self.drawing_to(editor, theme);
+        let tree = self.render_tree(editor, theme, cx);
         let (editor, clip) = self.editor_clip()?;
         let snapshot = self.session.snapshot();
         let node = snapshot.node(editor.node)?;
@@ -958,7 +1105,15 @@ impl ProjectView {
             outside.a = 0.55;
             (black, theme.grid, theme.hairline, outside)
         };
-        let clip_width = clip_beats * ppb;
+        // The node's clips, as spans of beats; time outside them is shaded.
+        let spans: Vec<(f32, f32)> = node
+            .clips
+            .iter()
+            .map(|(_, c)| {
+                let start = c.start.as_beats() as f32;
+                (start, start + c.length.as_beats() as f32)
+            })
+            .collect();
         let paint_rows = rows.clone();
         let paint = canvas(
             move |bounds, _, _| grid_cell.set(bounds),
@@ -1006,13 +1161,21 @@ impl ProjectView {
                         color,
                     ));
                 }
-                window.paint_quad(fill(
-                    Bounds::new(
-                        origin + point(px(clip_width), px(0.)),
-                        size(px((width - clip_width).max(0.)), px(height)),
-                    ),
-                    outside,
-                ));
+                let mut at = 0.;
+                let mut sorted = spans.clone();
+                sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+                for (start, end) in sorted.into_iter().chain([(width / ppb, width / ppb)]) {
+                    if start > at {
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                origin + point(px(at * ppb), px(0.)),
+                                size(px((start - at) * ppb), px(height)),
+                            ),
+                            outside,
+                        ));
+                    }
+                    at = f32::max(at, end);
+                }
             },
         )
         .absolute()
@@ -1400,6 +1563,7 @@ impl ProjectView {
         let rows = if fold {
             let mut pitches: Vec<u8> = plays.iter().collect();
             pitches.extend(clip.notes.iter().map(|n| n.pitch));
+            pitches.extend(self.inherited_pitches(editor));
             Rows::of(pitches)
         } else {
             Rows::all()
@@ -1430,7 +1594,7 @@ impl ProjectView {
             return None;
         }
         let start = self.note_grid.floor(Ticks::from_beats_f64(beat)).as_beats() as f32;
-        let owner = editor.node;
+        let owner = self.new_note_owner(editor, pitch);
         let node = self.session.snapshot().node(owner)?;
         let colors = theme.content(node.color);
         let mut body = colors.detail;
@@ -1466,7 +1630,7 @@ impl ProjectView {
         let Some((editor, clip)) = self.editor_clip() else {
             return;
         };
-        if editor.fitted {
+        if editor.fitted && editor.scroll_to.is_none() {
             return;
         }
         let view = self.notes_view.x.bounds();
@@ -1475,28 +1639,53 @@ impl ProjectView {
         }
         let view_width = view.size.width / px(1.);
         let view_height = view.size.height / px(1.);
-        let ppb = ((view_width - 20.) / (clip.length.as_beats() as f32 + 1.))
-            .clamp(FIT_ZOOM.0, FIT_ZOOM.1);
+        let ppb = self.notes_view.zoom.pixels_per_beat;
         let key = self.notes_view.zoom.row_height;
+        let from = editor.scroll_to.unwrap_or(0.);
+        let to = from + f64::from(view_width / ppb);
+        // Centre on the notes in view (or all of them).
         let rows = &editor.rows;
         let row = |pitch: u8| rows.row_of(pitch).unwrap_or(0) as f32;
-        let middle = if clip.notes.is_empty() {
+        let in_view: Vec<&MidiNote> = clip
+            .notes
+            .iter()
+            .filter(|n| (from..to).contains(&n.start.as_beats()))
+            .collect();
+        let notes: Vec<&MidiNote> = if in_view.is_empty() {
+            clip.notes.iter().collect()
+        } else {
+            in_view
+        };
+        let middle = if notes.is_empty() {
             row(rows
                 .pitch_at(rows.len() as f32 / 2.)
                 .max(rows.pitch_at(0.).min(60)))
         } else {
-            let (low, high) = clip.notes.iter().fold((f32::MAX, 0f32), |(l, h), n| {
+            let (low, high) = notes.iter().fold((f32::MAX, 0f32), |(l, h), n| {
                 (l.min(row(n.pitch)), h.max(row(n.pitch)))
             });
             (low + high) / 2.
         };
         let y = ((middle + 0.5) * key - view_height / 2.).max(0.);
-        self.notes_view.zoom.pixels_per_beat = ppb;
-        self.notes_view.x.set_offset(point(px(0.), px(-y)));
+        let x = (from as f32 * ppb).max(0.);
+        self.notes_view.x.set_offset(point(px(-x), px(-y)));
         if let Some(editor) = &mut self.note_editor {
             editor.fitted = true;
+            editor.scroll_to = None;
         }
     }
+}
+
+/// The editor's timeline length: past the song's last clip by eight bars,
+/// at least 32 bars.
+fn song_length(snapshot: &daw_engine::Snapshot) -> Ticks {
+    let end = snapshot
+        .nodes
+        .iter()
+        .flat_map(|n| n.clips.iter().map(|(_, c)| c.start + c.length))
+        .max()
+        .unwrap_or(Ticks::ZERO);
+    (end + Ticks::from_bars(8)).max(Ticks::from_bars(32))
 }
 
 #[cfg(test)]
@@ -1511,7 +1700,7 @@ mod tests {
 
     #[test]
     fn the_pointer_maps_to_beat_and_pitch() {
-        let editor = NoteEditor::new(NodeId(1), ClipId(1), DEFAULT_HEIGHT);
+        let editor = NoteEditor::new(NodeId(1), DEFAULT_HEIGHT);
         editor.grid.set(Bounds::new(
             point(px(100.), px(50.)),
             size(px(1000.), px(1536.)),
