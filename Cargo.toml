@@ -36,3 +36,12 @@ missing_debug_implementations = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+
+# The stretcher's FFT loops are ~50x slower unoptimised, which makes debug
+# tests (where the realtime guard runs) crawl. Optimise just those crates.
+[profile.dev.package.daw-stretch]
+opt-level = 3
+[profile.dev.package.rustfft]
+opt-level = 3
+[profile.dev.package.realfft]
+opt-level = 3

@@ -3,15 +3,20 @@
 //! analysis gradient under the time-frequency map (t, f) -> (r t, f). See docs/stretcher.md.
 //! This file holds the parameters and per-frame DSP; `stream.rs` runs it in real time.
 
+#![allow(
+    clippy::needless_range_loop,
+    reason = "per-bin loops index several arrays in step; kept plain so they vectorise"
+)]
+
 use std::f32::consts::{PI, TAU};
 
 use realfft::num_complex::Complex32;
 
 use crate::fastmath::{self, princarg};
-use crate::stream::StemStream;
 use crate::out_len;
+use crate::stream::StemStream;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Stem {
     pub frame: usize,
     /// Synthesis hop = frame / overlap.
@@ -35,14 +40,26 @@ pub struct Stem {
 
 impl Default for Stem {
     fn default() -> Self {
-        Self { frame: 2048, overlap: 4, scale_group_delay: true, tol_db: -70.0, lock: true, onset_db: 9.0, bypass: true, params: String::new() }
+        Self {
+            frame: 2048,
+            overlap: 4,
+            scale_group_delay: true,
+            tol_db: -70.0,
+            lock: true,
+            onset_db: 9.0,
+            bypass: true,
+            params: String::new(),
+        }
     }
 }
 
 impl Stem {
     /// Parses `key=value,...` over the defaults. Unknown keys or bad values give `None`.
     pub fn with_params(params: &str) -> Option<Self> {
-        let mut s = Self { params: params.into(), ..Default::default() };
+        let mut s = Self {
+            params: params.into(),
+            ..Default::default()
+        };
         for kv in params.split(',') {
             let (k, v) = kv.split_once('=')?;
             match k {
@@ -81,7 +98,13 @@ const BUCKETS: usize = (BUCKET_RANGE_DB * BUCKETS_PER_DB) as usize + 2;
 impl Buckets {
     /// `capacity`: most pushes in one frame.
     fn new(capacity: usize) -> Self {
-        Self { head: vec![NIL; BUCKETS], next: vec![NIL; capacity], val: vec![0; capacity], used: 0, top: 0 }
+        Self {
+            head: vec![NIL; BUCKETS],
+            next: vec![NIL; capacity],
+            val: vec![0; capacity],
+            used: 0,
+            top: 0,
+        }
     }
 
     fn reset(&mut self) {
@@ -143,14 +166,19 @@ impl Analysis {
 
     /// Touch every page of the buffers (see `StemStream::prefault`).
     pub(crate) fn prefault(&mut self) {
-        for v in [&mut self.mag, &mut self.db, &mut self.phase, &mut self.omega] {
+        for v in [
+            &mut self.mag,
+            &mut self.db,
+            &mut self.phase,
+            &mut self.omega,
+        ] {
             for x in v.iter_mut().step_by(512) {
-                unsafe { std::ptr::write_volatile(x, *x) };
+                *x = std::hint::black_box(*x);
             }
         }
         for v in [&mut self.spec, &mut self.ext] {
             for x in v.iter_mut().step_by(256) {
-                unsafe { std::ptr::write_volatile(x, *x) };
+                *x = std::hint::black_box(*x);
             }
         }
     }
@@ -221,10 +249,15 @@ impl Pghi {
     pub(crate) fn prefault(&mut self) {
         fn touch<T: Copy>(v: &mut [T]) {
             for x in v.iter_mut().step_by(256) {
-                unsafe { std::ptr::write_volatile(x, *x) };
+                *x = std::hint::black_box(*x);
             }
         }
-        for v in [&mut self.prev_phase, &mut self.prev_omega, &mut self.prev_db, &mut self.phase] {
+        for v in [
+            &mut self.prev_phase,
+            &mut self.prev_omega,
+            &mut self.prev_db,
+            &mut self.phase,
+        ] {
             touch(v);
         }
         touch(&mut self.todo);
@@ -269,7 +302,8 @@ impl Pghi {
             let top = (BUCKETS - 1) as f32;
             for m in 0..bins {
                 self.bucket[m] = ((db[m] - floor) * BUCKETS_PER_DB).clamp(0.0, top) as u16;
-                self.prev_bucket[m] = ((self.prev_db[m] - floor) * BUCKETS_PER_DB).clamp(0.0, top) as u16;
+                self.prev_bucket[m] =
+                    ((self.prev_db[m] - floor) * BUCKETS_PER_DB).clamp(0.0, top) as u16;
             }
             self.queue.reset();
             let mut left = 0;
@@ -289,7 +323,8 @@ impl Pghi {
                     if e & PREV != 0 {
                         if self.todo[m] {
                             // Time direction: trapezoidal integration of instantaneous frequency.
-                            self.phase[m] = self.prev_phase[m] + hs * 0.5 * (self.prev_omega[m] + a.omega[m]);
+                            self.phase[m] =
+                                self.prev_phase[m] + hs * 0.5 * (self.prev_omega[m] + a.omega[m]);
                             self.todo[m] = false;
                             left -= 1;
                             self.queue.push(self.bucket[m], m as u32);
@@ -299,7 +334,8 @@ impl Pghi {
                         // bins encodes group delay; scaling it by r moves events to r·t.
                         for nb in [m.wrapping_sub(1), m + 1] {
                             if nb < bins && self.todo[nb] {
-                                self.phase[nb] = self.phase[m] + r * princarg(a.phase[nb] - a.phase[m]);
+                                self.phase[nb] =
+                                    self.phase[m] + r * princarg(a.phase[nb] - a.phase[m]);
                                 self.todo[nb] = false;
                                 left -= 1;
                                 self.queue.push(self.bucket[nb], nb as u32);
@@ -312,7 +348,10 @@ impl Pghi {
                 }
                 if left > 0 {
                     // Isolated region: seed it from its loudest bin's analysis phase.
-                    let m = (0..bins).filter(|&m| self.todo[m]).max_by(|&x, &y| a.mag[x].total_cmp(&a.mag[y])).unwrap();
+                    let m = (0..bins)
+                        .filter(|&m| self.todo[m])
+                        .max_by(|&x, &y| a.mag[x].total_cmp(&a.mag[y]))
+                        .expect("`left` counts bins still to do");
                     self.phase[m] = a.phase[m];
                     self.todo[m] = false;
                     left -= 1;
@@ -380,13 +419,20 @@ mod tests {
     fn reassigned_frequency_is_exact_for_sinusoid() {
         let n = 1024;
         let f = 0.0731f32; // cycles/sample, off-bin
-        let mut time: Vec<f32> = (0..n).map(|i| (TAU * f * ((i + n / 2) % n) as f32 + 0.3).sin()).collect();
+        let mut time: Vec<f32> = (0..n)
+            .map(|i| (TAU * f * ((i + n / 2) % n) as f32 + 0.3).sin())
+            .collect();
         let mut planner = realfft::RealFftPlanner::<f32>::new();
         let mut spec = vec![Complex32::default(); n / 2 + 1];
-        planner.plan_fft_forward(n).process(&mut time, &mut spec).unwrap();
+        planner
+            .plan_fft_forward(n)
+            .process(&mut time, &mut spec)
+            .unwrap();
         let mut a = Analysis::new(n / 2 + 1);
         a.compute(&spec, n, true);
-        let peak = (0..a.mag.len()).max_by(|&x, &y| a.mag[x].total_cmp(&a.mag[y])).unwrap();
+        let peak = (0..a.mag.len())
+            .max_by(|&x, &y| a.mag[x].total_cmp(&a.mag[y]))
+            .unwrap();
         for m in peak - 1..=peak + 1 {
             let got = a.omega[m] / TAU;
             assert!((got - f).abs() < 1e-4, "bin {m}: {got} vs {f}");

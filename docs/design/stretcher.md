@@ -1,7 +1,9 @@
 # The `stem` stretcher
 
+*Brought over 2026-10-19 from the user's `audioperformerv2` project, where it was built against a test gym (synthetic cases with known correct answers, a scorer and a listening dashboard). The gym, the baseline stretchers, `StemPool` and the benchmarks stayed there; mentions of them below refer to that project. Here it is `crates/daw-stretch`, used by audio clips (`audio-clips.md`), which render on the engine's own worker pool instead of `StemPool`.*
+
 Goal: one general-purpose engine that is transparent on drums, tonal parts and full mixes,
-and cheap enough for 16 stereo stems in real time. Code: `crates/stretch/src/stem.rs`.
+and cheap enough for 16 stereo stems in real time. Code: `crates/daw-stretch/src/stem.rs`.
 
 ## Pipeline per frame (synthesis hop `hs`)
 
@@ -58,9 +60,9 @@ Onset detection: 128-sample blocks of first-difference (high-passed) energy, ris
 `onset_db` (9 dB) over the mean of the previous ~30 ms. A frame only asks about onsets
 inside its own window, so this adds no latency beyond the window itself.
 
-## Streaming (`StemStream`, `crates/stretch/src/stream.rs`)
+## Streaming (`StemStream`, `crates/daw-stretch/src/stream.rs`)
 
-The engine is real-time. The offline `Stretcher::stretch` is a loop over it, so the gym
+The engine is real-time. The offline `Stem::stretch` is a loop over it, so the gym
 measures exactly what ships.
 
 ```rust

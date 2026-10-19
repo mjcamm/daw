@@ -23,7 +23,8 @@ pub fn atan2(y: f32, x: f32) -> f32 {
     let (ax, ay) = (x.abs(), y.abs());
     let a = ax.min(ay) / ax.max(ay).max(1e-30);
     let s = a * a;
-    let r = a * (0.999_866 + s * (-0.330_299_5 + s * (0.180_141 + s * (-0.085_133 + s * 0.020_835_1))));
+    let r =
+        a * (0.999_866 + s * (-0.330_299_5 + s * (0.180_141 + s * (-0.085_133 + s * 0.020_835_1))));
     // Octant fix-up as selects so loops around this vectorise.
     let r = if ay > ax { FRAC_PI_2 - r } else { r };
     let r = if x < 0.0 { PI - r } else { r };

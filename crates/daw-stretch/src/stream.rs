@@ -14,15 +14,15 @@
 //! a seek's burst to a block of the host's choosing. See docs/stretcher.md (Streaming).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
-use crate::hann;
 use crate::fastmath::princarg;
-use crate::stem::{rotations, Analysis, Pghi, Stem};
+use crate::hann;
+use crate::stem::{Analysis, Pghi, Stem, rotations};
 
 const ONSET_BLOCK: i64 = 128;
 /// Onsets kept / spans considered per frame. Generous; never reached by music.
@@ -39,11 +39,19 @@ enum Mode {
     Process,
     /// Ratio is exactly 1: phases glide to the input's; once there, `settle` more frames make
     /// every frame overlapping future output identical to the input. Raw index = t + offset.
-    Drain { offset: i64, settle: u32 },
+    Drain {
+        offset: i64,
+        settle: u32,
+    },
     /// No frames: output = remaining frame tails + raw input · (1 − cover).
-    Bypass { offset: i64 },
+    Bypass {
+        offset: i64,
+    },
     /// Ratio moved off 1: frames restart; raw input fills what they don't cover until `until`.
-    Resume { offset: i64, until: i64 },
+    Resume {
+        offset: i64,
+        until: i64,
+    },
 }
 
 #[derive(Clone)]
@@ -105,16 +113,36 @@ pub struct StemStream {
     onsets: Onsets,
 }
 
+impl std::fmt::Debug for StemStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StemStream")
+            .field("frame", &self.n)
+            .field("chans", &self.chans)
+            .field("ratio", &self.ratio)
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
+    }
+}
+
 impl StemStream {
     /// Checked host constructor. Scale the analysis window and onset clock together.
     /// Construction allocates and must happen outside the audio callback.
-    pub fn for_sample_rate(chans: usize, max_block: usize, sample_rate: f64) -> Result<Self, &'static str> {
-        if !(1..=64).contains(&chans) || !(1..=65536).contains(&max_block)
-            || !sample_rate.is_finite() || !(8000.0..=192000.0).contains(&sample_rate) {
+    pub fn for_sample_rate(
+        chans: usize,
+        max_block: usize,
+        sample_rate: f64,
+    ) -> Result<Self, &'static str> {
+        if !(1..=64).contains(&chans)
+            || !(1..=65536).contains(&max_block)
+            || !sample_rate.is_finite()
+            || !(8000.0..=192000.0).contains(&sample_rate)
+        {
             return Err("invalid stream configuration");
         }
-        let mut params = Stem::default();
-        params.frame = 1usize << ((2048.0 * sample_rate / 44100.0).log2().round() as u32);
+        let params = Stem {
+            frame: 1usize << ((2048.0 * sample_rate / 44100.0).log2().round() as u32),
+            ..Stem::default()
+        };
         let mut stream = Self::new(&params, chans, max_block);
         stream.onsets.block = (128.0 * sample_rate / 44100.0).round().max(1.0) as i64;
         Ok(stream)
@@ -152,7 +180,10 @@ impl StemStream {
             bypass_enabled: params.bypass,
             mode: Mode::Process,
             glide: 0.0,
-            cover_win: hann(n).into_iter().map(|w| w * w / (0.375 * params.overlap as f32)).collect(),
+            cover_win: hann(n)
+                .into_iter()
+                .map(|w| w * w / (0.375 * params.overlap as f32))
+                .collect(),
             cover: vec![0.0; ring_len],
             synth_phase: vec![0.0; bins],
             fwd_scratch: vec![Complex32::default(); fwd.get_scratch_len()],
@@ -174,7 +205,8 @@ impl StemStream {
             out_pos: 0,
             next_k: 0,
             // Successive streams compute frames in different blocks without any host setup.
-            grid_offset: (hs * (NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % AUTO_SLOTS) / AUTO_SLOTS) as i64,
+            grid_offset: (hs * (NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % AUTO_SLOTS)
+                / AUTO_SLOTS) as i64,
             ratio: 1.0,
             p_nom: 0.0,
             prev_pos: 0.0,
@@ -191,8 +223,8 @@ impl StemStream {
         fn touch<T: Copy>(v: &mut [T]) {
             for x in v.iter_mut().step_by(512) {
                 // Write each value back unchanged (some buffers, like the window, hold data).
-                // Volatile, so the compiler can't drop a write it can prove is a no-op.
-                unsafe { std::ptr::write_volatile(x, *x) };
+                // `black_box` hides the value, so the compiler cannot drop the write as a no-op.
+                *x = std::hint::black_box(*x);
             }
         }
         touch(&mut self.win);
@@ -245,7 +277,9 @@ impl StemStream {
         if self.unity() {
             // Nothing to prime: the raw input is the output.
             self.out_pos = 0;
-            self.mode = Mode::Bypass { offset: pos.round() as i64 };
+            self.mode = Mode::Bypass {
+                offset: pos.round() as i64,
+            };
             return;
         }
         self.mode = Mode::Process;
@@ -262,7 +296,8 @@ impl StemStream {
 
     fn reset_onsets(&mut self) {
         let lookback = 9.0 * self.half as f64 / self.ratio + 10.0 * self.onsets.block as f64;
-        self.onsets.reset((self.p_nom - lookback).floor() as i64, self.looping);
+        self.onsets
+            .reset((self.p_nom - lookback).floor() as i64, self.looping);
     }
 
     fn unity(&self) -> bool {
@@ -316,7 +351,10 @@ impl StemStream {
     /// next frame, exactly like a tempo change during playback.
     pub fn launch(&mut self, cue: &Cue) {
         let c = &cue.0;
-        assert!(c.n == self.n && c.chans == self.chans && c.ring[0].len() == self.ring[0].len(), "cue from a stream with a different configuration");
+        assert!(
+            c.n == self.n && c.chans == self.chans && c.ring[0].len() == self.ring[0].len(),
+            "cue from a stream with a different configuration"
+        );
         for (dst, src) in self.ring.iter_mut().zip(&c.ring) {
             dst.copy_from_slice(src);
         }
@@ -379,7 +417,9 @@ impl StemStream {
     /// Apply ratio/seek first. Calling this does not advance output; it may enter a
     /// bypass transition. The host must prepare this interval before process_window.
     pub fn source_bounds(&mut self, frames: usize) -> Result<(i64, i64), &'static str> {
-        if frames > self.max_block { return Err("block too large"); }
+        if frames > self.max_block {
+            return Err("block too large");
+        }
         self.update_mode();
         if let Mode::Bypass { offset } = self.mode {
             let start = self.out_pos + offset;
@@ -387,9 +427,12 @@ impl StemStream {
         }
         let ui = self.half as f64 / self.ratio;
         let mut lo = (self.p_nom - 9.0 * ui - self.n as f64 - 2.0).floor() as i64;
-        let mut hi = (self.p_nom + (frames + self.n) as f64 / self.ratio
-            + 9.0 * ui + self.n as f64 + 2.0).ceil() as i64;
-        if self.lock { lo = lo.min(self.onsets.scanned - 1); }
+        let mut hi =
+            (self.p_nom + (frames + self.n) as f64 / self.ratio + 9.0 * ui + self.n as f64 + 2.0)
+                .ceil() as i64;
+        if self.lock {
+            lo = lo.min(self.onsets.scanned - 1);
+        }
         if let Mode::Resume { offset, .. } = self.mode {
             lo = lo.min(self.out_pos + offset);
             hi = hi.max(self.out_pos + offset + frames as i64);
@@ -400,13 +443,19 @@ impl StemStream {
     /// Process a resident window at absolute `origin`. The host has already
     /// applied whole-clip looping/zero padding to this window. No I/O or allocation.
     /// Missing coverage returns an error before consuming any output samples.
-    pub fn process_window(&mut self, source: &[&[f32]], origin: i64,
-        out: &mut [&mut [f32]]) -> Result<(), &'static str> {
+    pub fn process_window(
+        &mut self,
+        source: &[&[f32]],
+        origin: i64,
+        out: &mut [&mut [f32]],
+    ) -> Result<(), &'static str> {
         if source.len() != self.chans || out.len() != self.chans || out.is_empty() {
             return Err("channel count mismatch");
         }
         let frames = out[0].len();
-        if out.iter().any(|c| c.len() != frames) { return Err("output lengths differ"); }
+        if out.iter().any(|c| c.len() != frames) {
+            return Err("output lengths differ");
+        }
         let (lo, hi) = self.source_bounds(frames)?;
         if origin > lo || source.iter().any(|c| (c.len() as i64) < hi - origin) {
             return Err("source window incomplete");
@@ -427,8 +476,15 @@ impl StemStream {
     }
 
     fn render<O: AsMut<[f32]>>(&mut self, source: &[&[f32]], out: &mut [O], b: usize) {
-        assert!(b <= self.max_block, "block of {b} exceeds max_block {}", self.max_block);
-        assert!(source.len() == self.chans && out.len() == self.chans, "channel count mismatch");
+        assert!(
+            b <= self.max_block,
+            "block of {b} exceeds max_block {}",
+            self.max_block
+        );
+        assert!(
+            source.len() == self.chans && out.len() == self.chans,
+            "channel count mismatch"
+        );
         self.update_mode();
         if !matches!(self.mode, Mode::Bypass { .. }) {
             self.frames_through(source, self.out_pos + b as i64 - 1);
@@ -460,7 +516,9 @@ impl StemStream {
         match self.mode {
             // Frames from the glide's end onwards equal the input; once every frame overlapping
             // future output is one of them, stop computing and let the raw input take over.
-            Mode::Drain { offset, settle } if settle > self.n as u32 / self.hs as u32 => self.mode = Mode::Bypass { offset },
+            Mode::Drain { offset, settle } if settle > self.n as u32 / self.hs as u32 => {
+                self.mode = Mode::Bypass { offset }
+            }
             Mode::Resume { until, .. } if self.out_pos >= until => self.mode = Mode::Process,
             _ => {}
         }
@@ -476,7 +534,12 @@ impl StemStream {
 
         let (pos, locked) = if self.lock {
             let ui = half as f64 / r;
-            self.onsets.scan_to(source, (p_nom + 9.0 * ui + half as f64).ceil() as i64, self.looping, self.source_origin);
+            self.onsets.scan_to(
+                source,
+                (p_nom + 9.0 * ui + half as f64).ceil() as i64,
+                self.looping,
+                self.source_origin,
+            );
             self.onsets.drop_before((p_nom - 9.0 * ui).floor() as i64);
             lock_map(&self.onsets.found, p_nom, r, ui)
         } else {
@@ -492,12 +555,22 @@ impl StemStream {
         };
         self.prev_pos = pos;
         self.first_frame = false;
-        let r_gd = if self.scale_group_delay { r_local as f32 } else { 1.0 };
+        let r_gd = if self.scale_group_delay {
+            r_local as f32
+        } else {
+            1.0
+        };
 
         let centre = pos.round() as isize;
         // Mono material stored as stereo (common for kick, bass, vocal stems): when every
         // channel's frame is identical, analyse and synthesise once and copy. Exact.
-        let dup = self.chans > 1 && frames_identical(source, centre - self.source_origin as isize, half, self.looping);
+        let dup = self.chans > 1
+            && frames_identical(
+                source,
+                centre - self.source_origin as isize,
+                half,
+                self.looping,
+            );
         let analysed = if dup { 1 } else { self.chans };
         let mut silent = true;
         let centre = centre - self.source_origin as isize;
@@ -520,7 +593,9 @@ impl StemStream {
                 self.raw[c].fill(Complex32::default());
             } else {
                 silent = false;
-                self.fwd.process_with_scratch(&mut self.time, &mut self.raw[c], &mut self.fwd_scratch).expect("fft");
+                self.fwd
+                    .process_with_scratch(&mut self.time, &mut self.raw[c], &mut self.fwd_scratch)
+                    .expect("fft");
             }
         }
         if silent {
@@ -572,7 +647,9 @@ impl StemStream {
             }
             self.synth[0].im = 0.0;
             self.synth[bins - 1].im = 0.0;
-            self.inv.process_with_scratch(&mut self.synth, &mut self.time, &mut self.inv_scratch).expect("ifft");
+            self.inv
+                .process_with_scratch(&mut self.synth, &mut self.time, &mut self.inv_scratch)
+                .expect("ifft");
             // Undo the zero-phase layout while windowing: output j comes from time[j ± half].
             for j in 0..half {
                 self.frame_out[j] = self.time[j + half] * self.win[j];
@@ -580,22 +657,23 @@ impl StemStream {
             }
             // Duplicated channels all receive channel 0's frame.
             let targets = if dup { 0..self.chans } else { c..c + 1 };
+            // Ring index: `start` may be negative; masking the wrapped value is exact.
             let base = start as usize;
             for ring in &mut self.ring[targets] {
                 for j in skip..n {
-                    ring[(base + j) & self.mask] += self.frame_out[j];
+                    ring[base.wrapping_add(j) & self.mask] += self.frame_out[j];
                 }
             }
         }
         let base = start as usize;
         for j in skip..n {
-            self.cover[(base + j) & self.mask] += self.cover_win[j];
+            self.cover[base.wrapping_add(j) & self.mask] += self.cover_win[j];
         }
     }
 }
 
 /// A primed stream state for instant launch (see `StemStream::cue`).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Cue(StemStream);
 
 impl Cue {
@@ -611,10 +689,14 @@ fn frames_identical(source: &[&[f32]], centre: isize, half: usize, looping: bool
     let first = source[0];
     if lo >= 0 && hi as usize <= first.len() {
         let r = lo as usize..hi as usize;
-        source[1..].iter().all(|c| c.len() == first.len() && c[r.clone()] == first[r.clone()])
+        source[1..]
+            .iter()
+            .all(|c| c.len() == first.len() && c[r.clone()] == first[r.clone()])
     } else {
         let get = |c: &[f32], j: isize| source_sample(c, j as i64, looping);
-        source[1..].iter().all(|c| (lo..hi).all(|j| get(c, j) == get(first, j)))
+        source[1..]
+            .iter()
+            .all(|c| (lo..hi).all(|j| get(c, j) == get(first, j)))
     }
 }
 
@@ -628,7 +710,10 @@ fn lock_map(onsets: &VecDeque<i64>, p_nom: f64, r: f64, ui: f64) -> (f64, bool) 
     let mut spans = [(0.0f64, 0.0f64, 0.0f64); MAX_SPANS];
     let mut ns = 0;
     let (lo, hi) = (p_nom - 9.0 * ui, p_nom + 9.0 * ui);
-    for &q in onsets.iter().filter(|&&q| (q as f64) >= lo && (q as f64) <= hi) {
+    for &q in onsets
+        .iter()
+        .filter(|&&q| (q as f64) >= lo && (q as f64) <= hi)
+    {
         let q = q as f64;
         if ns > 0 && q - spans[ns - 1].1 <= ui {
             spans[ns - 1].1 = q + ui;
@@ -645,8 +730,18 @@ fn lock_map(onsets: &VecDeque<i64>, p_nom: f64, r: f64, ui: f64) -> (f64, bool) 
         if p_nom >= s && p_nom <= e {
             return (p_nom + dev(p_nom, a), true);
         }
-        let before = if i > 0 { (s - spans[i - 1].1) / 2.0 } else { 2.0 * ui }.clamp(0.0, 2.0 * ui);
-        let after = if i + 1 < ns { (spans[i + 1].0 - e) / 2.0 } else { 2.0 * ui }.clamp(0.0, 2.0 * ui);
+        let before = if i > 0 {
+            (s - spans[i - 1].1) / 2.0
+        } else {
+            2.0 * ui
+        }
+        .clamp(0.0, 2.0 * ui);
+        let after = if i + 1 < ns {
+            (spans[i + 1].0 - e) / 2.0
+        } else {
+            2.0 * ui
+        }
+        .clamp(0.0, 2.0 * ui);
         if p_nom < s && s - p_nom < before {
             out = (p_nom + dev(s, a) * (1.0 - (s - p_nom) / before), false);
         } else if p_nom > e && p_nom - e < after {
@@ -712,7 +807,8 @@ impl Onsets {
 
     fn reset(&mut self, from: i64, looping: bool) {
         self.found.clear();
-        self.scanned = (if looping { from } else { from.max(0) }).div_euclid(self.block) * self.block;
+        self.scanned =
+            (if looping { from } else { from.max(0) }).div_euclid(self.block) * self.block;
         self.hist_len = 0;
         self.hist_pos = 0;
         self.prev_valid = false;
@@ -721,7 +817,10 @@ impl Onsets {
 
     fn scan_to(&mut self, source: &[&[f32]], to: i64, looping: bool, origin: i64) {
         let mono = |i: i64| -> f32 {
-            source.iter().map(|c| source_sample(c, i - origin, looping)).sum()
+            source
+                .iter()
+                .map(|c| source_sample(c, i - origin, looping))
+                .sum()
         };
         if !self.prev_valid {
             self.prev = mono(self.scanned - 1);
@@ -740,7 +839,7 @@ impl Onsets {
                 let mean = self.hist[..self.hist_len].iter().sum::<f32>() / self.hist_len as f32;
                 // About −70 dB floor: ignore rises out of near-silence noise.
                 let rise = e > 1e-7 && 10.0 * (e / (mean + 1e-12)).log10() > self.thresh_db;
-                if rise && self.last.map_or(true, |l| b0 - l > 4 * self.block) {
+                if rise && self.last.is_none_or(|l| b0 - l > 4 * self.block) {
                     if self.found.len() == MAX_ONSETS {
                         self.found.pop_front();
                     }
