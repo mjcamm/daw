@@ -92,6 +92,45 @@ enum NoteDrag {
     },
 }
 
+/// The roll's rows, top to bottom: every pitch, or (folded) only the notes
+/// something plays and the pitches that already hold notes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rows(Vec<u8>);
+
+impl Rows {
+    pub fn all() -> Self {
+        Self((0..=127u8).rev().collect())
+    }
+
+    /// `pitches` (any order), highest first.
+    pub fn of(mut pitches: Vec<u8>) -> Self {
+        pitches.sort_unstable_by(|a, b| b.cmp(a));
+        pitches.dedup();
+        if pitches.is_empty() {
+            return Self::all();
+        }
+        Self(pitches)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn row_of(&self, pitch: u8) -> Option<usize> {
+        self.0.iter().position(|&p| p == pitch)
+    }
+
+    /// The pitch on a row; rows past either end are the nearest row's.
+    pub fn pitch_at(&self, row: f32) -> u8 {
+        let index = (row.max(0.) as usize).min(self.0.len().saturating_sub(1));
+        self.0.get(index).copied().unwrap_or(60)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (usize, u8)> + '_ {
+        self.0.iter().copied().enumerate()
+    }
+}
+
 /// An open editor: which clip, the tool, the selection and the view.
 pub struct NoteEditor {
     pub node: NodeId,
@@ -121,6 +160,13 @@ pub struct NoteEditor {
     /// Set when the editor is open on a group clip: the tree, the focused
     /// node's member clip (`node`, `clip`), and where new notes go.
     pub group: Option<crate::tree_editor::GroupMode>,
+    /// The rows as last drawn.
+    pub rows: Rows,
+    /// Folded to the notes that play; `None` folds when the note map is
+    /// limited (a drum kit) and not for full-range instruments.
+    pub folded: Option<bool>,
+    /// Where the pointer is over the grid, for the pen's preview note.
+    hover: Option<Point<Pixels>>,
 }
 
 impl NoteEditor {
@@ -141,6 +187,9 @@ impl NoteEditor {
             pointer: None,
             waiting: false,
             group: None,
+            rows: Rows::all(),
+            folded: None,
+            hover: None,
         }
     }
 
@@ -172,7 +221,7 @@ impl NoteEditor {
         let x = (position.x - origin.x) / px(1.);
         let y = (position.y - origin.y) / px(1.);
         let beat = f64::from(x / zoom.pixels_per_beat);
-        let pitch = (127. - (y / zoom.row_height).floor()).clamp(0., 127.) as u8;
+        let pitch = self.rows.pitch_at((y / zoom.row_height).floor());
         (beat, pitch)
     }
 }
@@ -804,6 +853,7 @@ impl ProjectView {
                 self.note_editor = None;
             }
         }
+        self.update_rows();
         self.fit_note_editor();
         let (editor, _) = self.editor_clip()?;
         // On a group: the tree, other members' notes, and where notes go.
@@ -836,7 +886,32 @@ impl ProjectView {
             .unwrap_or_else(|| editor.selection.clone());
         let clip_beats = clip.length.as_beats() as f32;
         let width = (clip_beats + 4.) * ppb;
-        let height = 128. * key;
+        let rows = editor.rows.clone();
+        let fold_on = rows.len() < 128;
+        let fold_button = small_button("note-fold", theme)
+            .when(fold_on, |d| d.bg(theme.control))
+            .child(icon(
+                if fold_on { Icon::Unfold } else { Icon::Fold },
+                if fold_on {
+                    theme.accent
+                } else {
+                    theme.text_secondary
+                },
+                14.,
+            ))
+            .tooltip(tooltip::text(if fold_on {
+                "Folded to the notes that play: click for every key"
+            } else {
+                "Fold to the notes that play"
+            }))
+            .on_click(cx.listener(move |this, _, _, _| {
+                if let Some(editor) = &mut this.note_editor {
+                    editor.folded = Some(!fold_on);
+                    editor.fitted = false;
+                }
+            }));
+        let height = rows.len() as f32 * key;
+        let folded = rows.len() < 128;
         let offset = self.notes_view.x.offset();
         let position = self.session.position_beats() - clip.start.as_beats();
 
@@ -883,6 +958,7 @@ impl ProjectView {
             .child(tool_button("tool-select", Icon::Pointer, Tool::Select, "Select (1): drag to move, edges to resize, Ctrl to copy, double-click to add or delete"))
             .child(tool_button("tool-pen", Icon::Pencil, Tool::Pen, "Pen (2): click to add a note and drag its length, click a note to delete it"))
             .child(tool_button("tool-scissors", Icon::Scissors, Tool::Scissors, "Scissors (3): click a note to split it"))
+            .child(fold_button)
             .child(div().w(px(12.)))
             .children(drawing_to)
             .child(div().flex_1())
@@ -927,23 +1003,27 @@ impl ProjectView {
             (black, theme.grid, theme.hairline, outside)
         };
         let clip_width = clip_beats * ppb;
+        let paint_rows = rows.clone();
         let paint = canvas(
             move |bounds, _, _| grid_cell.set(bounds),
             move |bounds, (), window, _| {
                 let origin = bounds.origin;
-                for pitch in 0..=127u8 {
+                for (row, pitch) in paint_rows.iter() {
+                    let y = row as f32 * key;
                     if is_black(pitch) {
-                        let y = (127 - pitch) as f32 * key;
                         window.paint_quad(fill(
                             Bounds::new(origin + point(px(0.), px(y)), size(px(width), px(key))),
                             black,
                         ));
                     }
-                    if pitch % 12 == 0 {
-                        let y = (128 - pitch) as f32 * key - 1.;
+                    // Octave lines; folded, a line under every row.
+                    if folded || pitch % 12 == 0 {
                         window.paint_quad(fill(
-                            Bounds::new(origin + point(px(0.), px(y)), size(px(width), px(1.))),
-                            bar_line,
+                            Bounds::new(
+                                origin + point(px(0.), px(y + key - 1.)),
+                                size(px(width), px(1.)),
+                            ),
+                            if folded { line } else { bar_line },
                         ));
                     }
                 }
@@ -1011,7 +1091,7 @@ impl ProjectView {
             div()
                 .absolute()
                 .left(px(n.start.as_beats() as f32 * ppb))
-                .top(px((127 - n.pitch) as f32 * key + 1.))
+                .top(px(rows.row_of(n.pitch).unwrap_or(0) as f32 * key + 1.))
                 .w(px(w))
                 .h(px(key - 2.))
                 .rounded(px(2.))
@@ -1066,6 +1146,9 @@ impl ProjectView {
             _ => None,
         };
         let cursor_tool = editor.tool;
+        let pen_preview = (cursor_tool == Tool::Pen && editor.drag.is_none())
+            .then(|| self.pen_preview(editor, &clip, theme))
+            .flatten();
         let resizing = matches!(editor.drag, Some(NoteDrag::Resize { .. }));
         let grid = div()
             .id("note-grid-scroll")
@@ -1081,10 +1164,26 @@ impl ProjectView {
                     .w(px(width))
                     .h(px(height))
                     .when(cursor_tool == Tool::Pen, |d| d.cursor_crosshair())
+                    // The pen's preview goes when the pointer leaves the grid.
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if !hovered && let Some(editor) = &mut this.note_editor {
+                            editor.hover = None;
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                        if let Some(editor) = &mut this.note_editor
+                            && editor.tool == Tool::Pen
+                        {
+                            editor.hover = Some(event.position);
+                            cx.notify();
+                        }
+                    }))
                     .when(resizing, |d| d.cursor_ew_resize())
                     .child(paint)
                     .children(ghosts)
                     .children(notes.collect::<Vec<_>>())
+                    .children(pen_preview)
                     .children(playhead)
                     .children(rubber)
                     .on_mouse_down(
@@ -1095,8 +1194,25 @@ impl ProjectView {
 
         // The keyboard follows the grid's vertical scroll.
         let node_id = editor.node;
-        let keys = (0..=127u8).rev().map(|pitch| {
-            let label = (pitch % 12 == 0).then(|| note_name(pitch));
+        let (plays, names, owners) = self.row_names(editor);
+        let keys = rows.iter().map(|(_, pitch)| {
+            // A drum's row shows its name; a row several instruments play
+            // shows how many (where new notes go depends on the pen).
+            let name = names
+                .iter()
+                .filter(|(p, _)| *p == pitch)
+                .map(|(_, n)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(" / ");
+            let label = if !name.is_empty() {
+                Some(name)
+            } else if folded || pitch % 12 == 0 {
+                Some(note_name(pitch))
+            } else {
+                None
+            };
+            let shared = owners(pitch);
+            let silent = !plays.contains(pitch);
             div()
                 .id(("key", usize::from(pitch)))
                 .h(px(key))
@@ -1111,11 +1227,28 @@ impl ProjectView {
                 } else {
                     theme.key_white
                 })
-                .when(is_black(pitch), |d| d.mr(px(18.)))
+                .when(is_black(pitch) && !folded, |d| d.mr(px(18.)))
                 .hover(move |s| s.bg(hover))
                 .text_size(px(8.))
-                .text_color(theme.key_black)
+                .text_color(if silent {
+                    theme.text_tertiary
+                } else {
+                    theme.key_black
+                })
+                .overflow_hidden()
+                .whitespace_nowrap()
                 .children(label)
+                .when(shared > 1, |d| {
+                    d.child(
+                        div()
+                            .ml(px(3.))
+                            .px(px(3.))
+                            .rounded(px(3.))
+                            .bg(theme.control)
+                            .text_color(theme.text_secondary)
+                            .child(shared.to_string()),
+                    )
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, _| this.preview_note(node_id, pitch, 100)),
@@ -1299,6 +1432,91 @@ impl ProjectView {
         )
     }
 
+    /// The rows for the focused node: folded to its note map and the
+    /// pitches holding notes, or every key.
+    fn update_rows(&mut self) {
+        let Some((editor, clip)) = self.editor_clip() else {
+            return;
+        };
+        let (plays, _, _) = self.row_names(editor);
+        let limited = plays.len() < 128;
+        let fold = editor.folded.unwrap_or(limited && !plays.is_empty());
+        let rows = if fold {
+            let mut pitches: Vec<u8> = plays.iter().collect();
+            pitches.extend(clip.notes.iter().map(|n| n.pitch));
+            pitches.extend(self.ghost_pitches(editor));
+            Rows::of(pitches)
+        } else {
+            Rows::all()
+        };
+        if let Some(editor) = &mut self.note_editor
+            && editor.rows != rows
+        {
+            editor.rows = rows;
+        }
+    }
+
+    /// The pen's preview note under the pointer, in the colour of the node
+    /// it would go to, with that node's name.
+    fn pen_preview(
+        &self,
+        editor: &NoteEditor,
+        clip: &MidiClip,
+        theme: &Theme,
+    ) -> Option<AnyElement> {
+        let hover = editor.hover?;
+        let zoom = self.notes_view.zoom;
+        let grid = editor.grid.get();
+        if !grid.contains(&hover) {
+            return None;
+        }
+        let (beat, pitch) = editor.at(hover, zoom);
+        if beat < 0. || beat >= clip.length.as_beats() {
+            return None;
+        }
+        let start = self.note_grid.floor(Ticks::from_beats_f64(beat)).as_beats() as f32;
+        let owner = self.new_note_owner(editor, pitch);
+        let node = self.session.snapshot().node(owner)?;
+        let colors = theme.content(node.color);
+        let mut body = colors.detail;
+        body.a = 0.45;
+        let key = zoom.row_height;
+        let ppb = zoom.pixels_per_beat;
+        let row = editor.rows.row_of(pitch)? as f32;
+        let width = self.grid_length().as_beats() as f32 * ppb;
+        Some(
+            div()
+                .absolute()
+                .left(px(start * ppb))
+                .top(px(row * key + 1.))
+                .h(px(key - 2.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .w(px((width - 1.).max(3.)))
+                        .h_full()
+                        .rounded(px(2.))
+                        .bg(body)
+                        .border_1()
+                        .border_color(colors.detail),
+                )
+                .when(editor.group.is_some(), |d| {
+                    d.child(
+                        div()
+                            .px(px(4.))
+                            .rounded(px(3.))
+                            .bg(colors.detail)
+                            .text_size(px(9.))
+                            .text_color(theme.on_accent)
+                            .child(node.name.clone()),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     /// On first draw, zooms to fit the clip and scrolls to its notes.
     fn fit_note_editor(&mut self) {
         let Some((editor, clip)) = self.editor_clip() else {
@@ -1316,16 +1534,19 @@ impl ProjectView {
         let ppb = ((view_width - 20.) / (clip.length.as_beats() as f32 + 1.))
             .clamp(FIT_ZOOM.0, FIT_ZOOM.1);
         let key = self.notes_view.zoom.row_height;
+        let rows = &editor.rows;
+        let row = |pitch: u8| rows.row_of(pitch).unwrap_or(0) as f32;
         let middle = if clip.notes.is_empty() {
-            60.
+            row(rows
+                .pitch_at(rows.len() as f32 / 2.)
+                .max(rows.pitch_at(0.).min(60)))
         } else {
-            let (low, high) = clip
-                .notes
-                .iter()
-                .fold((127u8, 0u8), |(l, h), n| (l.min(n.pitch), h.max(n.pitch)));
-            (f32::from(low) + f32::from(high)) / 2.
+            let (low, high) = clip.notes.iter().fold((f32::MAX, 0f32), |(l, h), n| {
+                (l.min(row(n.pitch)), h.max(row(n.pitch)))
+            });
+            (low + high) / 2.
         };
-        let y = ((127. - middle) * key - view_height / 2.).max(0.);
+        let y = ((middle + 0.5) * key - view_height / 2.).max(0.);
         self.notes_view.zoom.pixels_per_beat = ppb;
         self.notes_view.x.set_offset(point(px(0.), px(-y)));
         if let Some(editor) = &mut self.note_editor {

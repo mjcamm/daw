@@ -281,7 +281,9 @@ impl ProjectView {
                             .id(("member-note", (clip_id.0 as usize) << 16 | index))
                             .absolute()
                             .left(px(n.start.as_beats() as f32 * ppb))
-                            .top(px((127 - n.pitch) as f32 * key + 1.))
+                            .top(px(
+                                editor.rows.row_of(n.pitch).unwrap_or(0) as f32 * key + 1.
+                            ))
                             .w(px((n.length.as_beats() as f32 * ppb - 1.).max(3.)))
                             .h(px(key - 2.))
                             .rounded(px(2.))
@@ -304,6 +306,61 @@ impl ProjectView {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    /// For the focused node: the notes it and everything below it play,
+    /// the names of named rows (a drum's trigger note), and how many nodes
+    /// play a pitch.
+    pub(crate) fn row_names(
+        &self,
+        editor: &NoteEditor,
+    ) -> (NoteSet, Vec<(u8, String)>, impl Fn(u8) -> usize + use<>) {
+        let snapshot = self.session.snapshot();
+        let nodes: Vec<(NodeSnapshot, NoteSet)> = tree_nodes(snapshot, editor.node)
+            .into_iter()
+            .map(|(n, _)| (n.clone(), own_notes(n)))
+            .collect();
+        let plays = nodes
+            .iter()
+            .fold(NoteSet::NONE, |set, (_, p)| set.union(*p));
+        let names = nodes
+            .iter()
+            .flat_map(|(n, _)| {
+                n.devices
+                    .iter()
+                    .filter_map(|d| d.trigger)
+                    .map(|t| (t, n.name.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let sets: Vec<NoteSet> = nodes.iter().map(|(_, p)| *p).collect();
+        let owners = move |pitch: u8| sets.iter().filter(|s| s.contains(pitch)).count();
+        (plays, names, owners)
+    }
+
+    /// Pitches of the other members' notes shown with the group's node
+    /// focused, so folded rows keep them.
+    pub(crate) fn ghost_pitches(&self, editor: &NoteEditor) -> Vec<u8> {
+        let Some(mode) = editor.group.as_ref() else {
+            return Vec::new();
+        };
+        if editor.node != mode.root {
+            return Vec::new();
+        }
+        self.group(mode.id).map_or_else(Vec::new, |group| {
+            members(self.session.snapshot(), group)
+                .into_iter()
+                .flat_map(|(_, _, c)| c.notes.iter().map(|n| n.pitch).collect::<Vec<_>>())
+                .collect()
+        })
+    }
+
+    /// The node a new note on `pitch` would go to.
+    pub(crate) fn new_note_owner(&self, editor: &NoteEditor, pitch: u8) -> NodeId {
+        match &editor.group {
+            Some(mode) if editor.node == mode.root => route(self.session.snapshot(), mode, pitch),
+            _ => editor.node,
+        }
     }
 
     /// "Drawing to ● Name" for the header, in the target's colour.

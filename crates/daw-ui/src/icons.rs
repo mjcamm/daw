@@ -34,10 +34,12 @@ pub enum Icon {
     Pointer,
     Scissors,
     Layers,
+    Fold,
+    Unfold,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 25] = [
+const ICONS: [(Icon, &str, &[u8]); 27] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -162,6 +164,16 @@ const ICONS: [(Icon, &str, &[u8]); 25] = [
         Icon::Layers,
         "icons/layers.svg",
         include_bytes!("../assets/icons/layers.svg"),
+    ),
+    (
+        Icon::Fold,
+        "icons/fold-vertical.svg",
+        include_bytes!("../assets/icons/fold-vertical.svg"),
+    ),
+    (
+        Icon::Unfold,
+        "icons/unfold-vertical.svg",
+        include_bytes!("../assets/icons/unfold-vertical.svg"),
     ),
 ];
 
