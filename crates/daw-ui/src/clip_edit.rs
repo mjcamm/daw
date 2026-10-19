@@ -100,18 +100,13 @@ pub struct Landing {
     pub clip: MidiClip,
 }
 
-/// An id no clip or group clip uses yet (they share ids).
+/// An id no clip uses yet.
 pub fn next_clip_id(snapshot: &Snapshot) -> ClipId {
     ClipId(
         snapshot
             .nodes
             .iter()
-            .flat_map(|n| {
-                n.clips
-                    .iter()
-                    .map(|(id, _)| id.0)
-                    .chain(n.groups.iter().map(|(id, _)| id.0))
-            })
+            .flat_map(|n| n.clips.iter().map(|(id, _)| id.0))
             .max()
             .unwrap_or(0)
             + 1,

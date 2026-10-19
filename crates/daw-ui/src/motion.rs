@@ -235,7 +235,6 @@ mod tests {
             muted: false,
             soloed: false,
             clips: Vec::new(),
-            groups: Vec::new(),
             devices: Vec::new(),
         }
     }

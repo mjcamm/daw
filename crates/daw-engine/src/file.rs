@@ -8,8 +8,8 @@
 use crate::devices::CHANNEL_PARAMS;
 use crate::project::{Project, song};
 use daw_protocol::{
-    ClipGroup, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument, LoopRange,
-    MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef, Signal, SignalId,
+    ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument, LoopRange, MidiClip, Node,
+    NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef, Signal, SignalId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -23,7 +23,8 @@ pub const FORMAT: &str = "daw-project";
 /// the pitch range and the clamp; version 7 made the nodes a tree under the
 /// Song; version 8 let a node layer several instruments; version 9 added
 /// the sample table and the SingleSampler's sample; version 10 added group
-/// clips and trigger notes; version 11 made every branch one kind.
+/// clips (since removed: their "groups" are ignored) and trigger notes;
+/// version 11 made every branch one kind.
 pub const VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,13 +42,6 @@ pub struct ProjectFile {
     /// Audio files the project uses. Missing before version 9.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub samples: Vec<SampleFile>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GroupFile {
-    pub id: ClipId,
-    #[serde(flatten)]
-    pub group: ClipGroup,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,9 +75,6 @@ pub struct NodeFile {
     /// Volume and pan, in parameter order.
     pub channel: Vec<ParamState>,
     pub clips: Vec<ClipFile>,
-    /// Group clips. Missing before version 10.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<GroupFile>,
     #[serde(default)]
     pub children: Vec<NodeFile>,
 }
@@ -193,14 +184,6 @@ fn node_file(id: NodeId, node: &Node) -> NodeFile {
                 clip: clip.clone(),
             })
             .collect(),
-        groups: node
-            .groups
-            .iter()
-            .map(|(id, group)| GroupFile {
-                id: *id,
-                group: group.clone(),
-            })
-            .collect(),
         children: node
             .children
             .iter()
@@ -232,7 +215,6 @@ fn file_node(file: NodeFile) -> Result<(NodeId, Node), LoadError> {
         effects: file.effects.into_iter().map(|e| (e.id, e.effect)).collect(),
         channel: file.channel,
         clips,
-        groups: file.groups.into_iter().map(|g| (g.id, g.group)).collect(),
         children: file
             .children
             .into_iter()
@@ -399,7 +381,6 @@ impl ProjectFile {
             id: c.id,
             clip: c.clip,
         }));
-        let root_groups = root.groups;
         for (index, child) in root.children.into_iter().enumerate() {
             let (id, node) = file_node(child)?;
             edits.push(Edit::AddNode {
@@ -409,12 +390,6 @@ impl ProjectFile {
                 node,
             });
         }
-        // The Song's own groups last, once the clips below them exist.
-        edits.extend(root_groups.into_iter().map(|g| Edit::AddGroup {
-            node: song,
-            id: g.id,
-            group: g.group,
-        }));
         for edit in edits {
             project.apply(edit)?;
         }

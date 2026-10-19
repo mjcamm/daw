@@ -6,7 +6,6 @@ mod block_edit;
 mod clip_drag;
 mod clip_edit;
 mod frame;
-mod group_clips;
 mod header;
 mod icons;
 mod inspector;

@@ -10,7 +10,7 @@ use crate::devices::{
 };
 use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
-    Block, BlockId, ClipGroup, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument,
+    Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument,
     InstrumentKind, InvalidClip, Layer, LayerId, MidiClip, Node, NodeId, NodeKind, ParamId,
     ParamState, SampleId, SampleRef, Signal, SignalId, SignalSource, SignalUse,
 };
@@ -337,52 +337,6 @@ impl Project {
             .map(|e| e.id)
     }
 
-    /// The node holding an instrument.
-    /// The node holding a group clip.
-    pub fn group_node(&self, id: ClipId) -> Option<NodeId> {
-        self.nodes()
-            .into_iter()
-            .find(|e| e.node.groups.contains_key(&id))
-            .map(|e| e.id)
-    }
-
-    /// A group on `node` may hold clips on `node` or below it, each in no
-    /// other group.
-    fn check_members(
-        &self,
-        node: NodeId,
-        id: ClipId,
-        group: &ClipGroup,
-    ) -> Result<(), CommandError> {
-        let Some(owner) = self.node(node) else {
-            return Err(CommandError::UnknownNode { id: node });
-        };
-        let mut below = Vec::new();
-        fn gather(node: &Node, out: &mut Vec<ClipId>) {
-            out.extend(node.clips.keys().copied());
-            for (_, child) in &node.children {
-                gather(child, out);
-            }
-        }
-        gather(owner, &mut below);
-        let taken: Vec<ClipId> = self
-            .nodes()
-            .iter()
-            .flat_map(|e| e.node.groups.iter())
-            .filter(|(other, _)| **other != id)
-            .flat_map(|(_, g)| g.members.iter().copied())
-            .collect();
-        for (index, &clip) in group.members.iter().enumerate() {
-            if !below.contains(&clip)
-                || taken.contains(&clip)
-                || group.members[..index].contains(&clip)
-            {
-                return Err(CommandError::InvalidMember { group: id, clip });
-            }
-        }
-        Ok(())
-    }
-
     /// Whether any instrument plays the sample.
     pub fn sample_in_use(&self, id: SampleId) -> bool {
         subtree_instruments(&self.root)
@@ -499,7 +453,6 @@ impl Project {
         for entry in self.nodes() {
             used.nodes.insert(entry.id);
             used.clips.extend(entry.node.clips.keys().copied());
-            used.clips.extend(entry.node.groups.keys().copied());
             used.devices
                 .extend(entry.node.effects.iter().map(|(id, _)| *id));
             used.devices
@@ -958,43 +911,6 @@ impl Project {
                     sample: previous,
                 })
             }
-            Edit::AddGroup { node, id, group } => {
-                self.node(node)
-                    .ok_or(CommandError::UnknownNode { id: node })?;
-                self.used_ids().claim_clip(id)?;
-                check_group(&group)?;
-                self.check_members(node, id, &group)?;
-                self.node_or_err(node)?.groups.insert(id, group);
-                Ok(Edit::RemoveGroup { id })
-            }
-            Edit::RemoveGroup { id } => {
-                let node = self
-                    .group_node(id)
-                    .ok_or(CommandError::UnknownGroup { id })?;
-                let group = self
-                    .node_or_err(node)?
-                    .groups
-                    .remove(&id)
-                    .ok_or(CommandError::UnknownGroup { id })?;
-                Ok(Edit::AddGroup { node, id, group })
-            }
-            Edit::SetGroup { id, group } => {
-                let node = self
-                    .group_node(id)
-                    .ok_or(CommandError::UnknownGroup { id })?;
-                check_group(&group)?;
-                self.check_members(node, id, &group)?;
-                let slot = self
-                    .node_or_err(node)?
-                    .groups
-                    .get_mut(&id)
-                    .ok_or(CommandError::UnknownGroup { id })?;
-                let previous = std::mem::replace(slot, group);
-                Ok(Edit::SetGroup {
-                    id,
-                    group: previous,
-                })
-            }
             Edit::SetInstrumentNote { id, note } => {
                 if note > 127 {
                     return Err(CommandError::NoteOutOfRange { note });
@@ -1313,10 +1229,6 @@ fn prepare_node(
         used.claim_clip(*clip_id)?;
         validate_clip(clip).map_err(|reason| CommandError::InvalidClip { reason })?;
     }
-    for (group_id, group) in &node.groups {
-        used.claim_clip(*group_id)?;
-        check_group(group)?;
-    }
     for (child_id, child) in &mut node.children {
         prepare_node(*child_id, child, used, signals)?;
     }
@@ -1414,21 +1326,6 @@ fn prepare_layer(
         used.claim_block(*block_id)?;
         check_block(*block_id, block)?;
         check_no_overlap(&layer.blocks[..i], *block_id, block)?;
-    }
-    Ok(())
-}
-
-/// A group must start at or after the song start and have a length.
-fn check_group(group: &ClipGroup) -> Result<(), CommandError> {
-    if group.start.0 < 0 {
-        return Err(CommandError::InvalidClip {
-            reason: InvalidClip::NegativeStart,
-        });
-    }
-    if group.length.0 <= 0 {
-        return Err(CommandError::InvalidClip {
-            reason: InvalidClip::EmptyLength,
-        });
     }
     Ok(())
 }
