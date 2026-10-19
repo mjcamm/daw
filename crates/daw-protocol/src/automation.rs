@@ -71,6 +71,47 @@ pub struct ParamId {
     pub index: u32,
 }
 
+/// A set of MIDI notes (0..=127): which notes an instrument plays.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct NoteSet([u64; 2]);
+
+impl NoteSet {
+    pub const NONE: Self = Self([0; 2]);
+    pub const ALL: Self = Self([u64::MAX; 2]);
+
+    /// Just one note.
+    pub const fn single(note: u8) -> Self {
+        let mut bits = [0; 2];
+        bits[(note as usize >> 6) & 1] = 1 << (note & 63);
+        Self(bits)
+    }
+
+    pub fn contains(self, note: u8) -> bool {
+        note < 128 && self.0[usize::from(note >> 6)] & (1 << (note & 63)) != 0
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self([self.0[0] | other.0[0], self.0[1] | other.0[1]])
+    }
+
+    pub fn is_empty(self) -> bool {
+        self == Self::NONE
+    }
+
+    pub fn len(self) -> u32 {
+        self.0[0].count_ones() + self.0[1].count_ones()
+    }
+
+    /// The notes, lowest first.
+    pub fn iter(self) -> impl Iterator<Item = u8> {
+        (0..=127u8).filter(move |&n| self.contains(n))
+    }
+}
+
+/// The note a SingleSampler plays until told otherwise: C1, where drum
+/// kits put the kick.
+pub const DEFAULT_TRIGGER_NOTE: u8 = 36;
+
 /// Built-in instruments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum InstrumentKind {
@@ -94,6 +135,10 @@ pub struct Instrument {
     /// other instruments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<SampleId>,
+    /// The one note a SingleSampler plays; `None` is
+    /// [`DEFAULT_TRIGGER_NOTE`]. Other instruments ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<u8>,
 }
 
 impl Instrument {
@@ -104,6 +149,18 @@ impl Instrument {
             enabled: true,
             params: Vec::new(),
             sample: None,
+            note: None,
+        }
+    }
+
+    /// The notes this instrument plays: a SingleSampler its trigger note,
+    /// anything else every note.
+    pub fn plays(&self) -> NoteSet {
+        match self.kind {
+            InstrumentKind::Synth => NoteSet::ALL,
+            InstrumentKind::SingleSampler => {
+                NoteSet::single(self.note.unwrap_or(DEFAULT_TRIGGER_NOTE).min(127))
+            }
         }
     }
 }

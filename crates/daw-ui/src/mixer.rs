@@ -514,6 +514,7 @@ impl ProjectView {
                     .child(menu::float(self.sampler_panel(
                         id,
                         device.sample,
+                        device.trigger.unwrap_or(daw_engine::DEFAULT_TRIGGER_NOTE),
                         theme,
                         cx,
                     )))
@@ -530,6 +531,7 @@ impl ProjectView {
         &self,
         id: DeviceId,
         sample: Option<daw_engine::SampleId>,
+        trigger: u8,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
@@ -584,6 +586,46 @@ impl ProjectView {
                     .text_color(theme.text_secondary)
                     .child(detail),
             )
+            .child({
+                let step = |name: &'static str, glyph: &'static str, delta: i16| {
+                    let note = (i16::from(trigger) + delta).clamp(0, 127) as u8;
+                    div()
+                        .id((name, id.0))
+                        .size(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.))
+                        .bg(theme.control)
+                        .hover(move |s| s.bg(hover))
+                        .child(glyph)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.session
+                                .apply(Command::Edit(Edit::SetInstrumentNote { id, note }));
+                        }))
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(theme.text_secondary)
+                            .child("Plays note"),
+                    )
+                    .child(step("note-down", "−", -1))
+                    .child(
+                        div()
+                            .w(px(40.))
+                            .flex()
+                            .justify_center()
+                            .child(crate::inspector::note_name(trigger)),
+                    )
+                    .child(step("note-up", "+", 1))
+            })
             .children(error.map(|e| div().text_size(px(11.)).text_color(theme.record).child(e)))
             .child(
                 div()
@@ -777,11 +819,15 @@ impl ProjectView {
         let index = snapshot.node(node).map_or(0, |n| {
             n.devices.iter().filter(|d| d.instrument.is_some()).count()
         });
+        let mut instrument = Instrument::new(kind);
+        if kind == InstrumentKind::SingleSampler {
+            instrument.note = Some(crate::tree::next_trigger_note(snapshot, node));
+        }
         self.session.apply(Command::Edit(Edit::AddInstrument {
             node,
             id,
             index,
-            instrument: Instrument::new(kind),
+            instrument,
         }));
         self.selected_node = Some(node);
         self.selected_effect = Some(id);

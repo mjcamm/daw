@@ -888,6 +888,27 @@ impl Project {
                     sample: previous,
                 })
             }
+            Edit::SetInstrumentNote { id, note } => {
+                if note > 127 {
+                    return Err(CommandError::NoteOutOfRange { note });
+                }
+                let node = self
+                    .instrument_node(id)
+                    .ok_or(CommandError::UnknownDevice { id })?;
+                let target = self.node_or_err(node)?;
+                let Some((_, instrument)) = target.instruments.iter_mut().find(|(i, _)| *i == id)
+                else {
+                    return Err(CommandError::UnknownDevice { id });
+                };
+                if instrument.kind != InstrumentKind::SingleSampler {
+                    return Err(CommandError::NotASampler { id });
+                }
+                let previous = instrument
+                    .note
+                    .replace(note)
+                    .unwrap_or(daw_protocol::DEFAULT_TRIGGER_NOTE);
+                Ok(Edit::SetInstrumentNote { id, note: previous })
+            }
             Edit::SetDeviceEnabled { id, enabled } => {
                 let node = self
                     .effect_node(id)

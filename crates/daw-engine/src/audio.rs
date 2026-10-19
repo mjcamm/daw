@@ -333,9 +333,17 @@ impl AudioProcessor {
                     let player = self.players.iter_mut().find(|p| p.node == Some(node));
                     if let Some(player) = player {
                         let id = PREVIEW_NOTE_IDS + u32::from(pitch);
-                        for (_, instrument) in &mut player.instruments {
+                        let states = self
+                            .state
+                            .nodes
+                            .iter()
+                            .find(|n| n.id == node)
+                            .map_or(&[][..], |n| &n.instruments[..]);
+                        for ((_, instrument), state) in player.instruments.iter_mut().zip(states) {
                             if on {
-                                instrument.note_on(id, pitch, velocity);
+                                if state.plays.contains(pitch) {
+                                    instrument.note_on(id, pitch, velocity);
+                                }
                             } else {
                                 instrument.note_off(id);
                             }
@@ -938,7 +946,7 @@ impl NodePlayer {
                 break;
             }
             self.cursor += 1;
-            self.start_note(note.end_beats, note.pitch, note.velocity);
+            self.start_note(node, note.end_beats, note.pitch, note.velocity);
         }
         // Notes shorter than a frame end on the frame they start.
         self.end_due_notes(transport);
@@ -957,7 +965,7 @@ impl NodePlayer {
         }
     }
 
-    fn start_note(&mut self, end_beats: f64, pitch: u8, velocity: u8) {
+    fn start_note(&mut self, node: &NodeRender, end_beats: f64, pitch: u8, velocity: u8) {
         let note_id = self.next_note_id;
         self.next_note_id = self.next_note_id.wrapping_add(1);
         let slot = match self.pending_ends.iter().position(Option::is_none) {
@@ -978,8 +986,11 @@ impl NodePlayer {
             }
         };
         self.pending_ends[slot] = Some(PendingEnd { note_id, end_beats });
-        for (_, instrument) in &mut self.instruments {
-            instrument.note_on(note_id, pitch, velocity);
+        // Each instrument plays only its own notes.
+        for ((_, instrument), state) in self.instruments.iter_mut().zip(&node.instruments) {
+            if state.plays.contains(pitch) {
+                instrument.note_on(note_id, pitch, velocity);
+            }
         }
     }
 

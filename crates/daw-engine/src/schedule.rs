@@ -30,7 +30,9 @@ pub struct NodeRender {
     /// False while another node is soloed and neither this node nor any
     /// node above it is.
     pub instrument_on: bool,
-    /// Every note on the node's timeline, sorted by start.
+    /// Every note its instruments may play, sorted by start: its own, and
+    /// (when it has instruments) every note from below it, since notes
+    /// pass up the tree.
     pub notes: Vec<ScheduledNote>,
     /// The instruments, layered: each plays every note.
     pub instruments: Vec<InstrumentState>,
@@ -51,6 +53,8 @@ pub struct InstrumentState {
     /// The audio a SingleSampler plays, if its sample was read. The audio
     /// thread only reads it; render states are freed on the control side.
     pub sample: Option<Arc<SampleData>>,
+    /// The notes it plays; others pass it by.
+    pub plays: daw_protocol::NoteSet,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,6 +136,22 @@ pub fn schedule_notes(node: &Node) -> Vec<ScheduledNote> {
     notes
 }
 
+/// Every note on a node's timeline and below it, sorted by start: its own
+/// first, then its children's in order, for notes that start together.
+pub fn subtree_notes(node: &Node) -> Vec<ScheduledNote> {
+    fn gather(node: &Node, out: &mut Vec<ScheduledNote>) {
+        out.extend(schedule_notes(node));
+        for (_, child) in &node.children {
+            gather(child, out);
+        }
+    }
+    let mut notes = Vec::new();
+    gather(node, &mut notes);
+    // Stable: simultaneous notes keep the order above, deterministically.
+    notes.sort_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
+    notes
+}
+
 /// Compiles `node` and its subtree into `out`, children first, and returns
 /// the node's position.
 /// What every node's compilation reads.
@@ -162,7 +182,11 @@ fn compile_node(
         parent: None,
         output_on: !node.muted,
         instrument_on: !any_soloed || soloed,
-        notes: schedule_notes(node),
+        notes: if node.instruments.is_empty() {
+            schedule_notes(node)
+        } else {
+            subtree_notes(node)
+        },
         instruments: node
             .instruments
             .iter()
@@ -175,6 +199,7 @@ fn compile_node(
                     let file = &cx.project.samples.get(&sample)?.file;
                     cx.samples.get(sample, file).cloned()
                 }),
+                plays: instrument.plays(),
             })
             .collect(),
         effects: node

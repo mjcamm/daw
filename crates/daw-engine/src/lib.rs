@@ -24,12 +24,12 @@ mod upgrade;
 
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
-    BlendMode, Block, BlockId, ClipId, Command, CommandError, DeviceId, DeviceRef, DeviceSnapshot,
-    Edit, Effect, EffectKind, Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal,
-    Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote, Node, NodeId, NodeKind, NodeSnapshot,
-    NotesSource, ParamId, ParamSnapshot, ParamState, SampleId, SampleRef, SampleSnapshot,
-    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
-    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    BlendMode, Block, BlockId, ClipId, Command, CommandError, DEFAULT_TRIGGER_NOTE, DeviceId,
+    DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind, Instrument, InstrumentKind, InvalidBlock,
+    InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote, Node, NodeId,
+    NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot, ParamState, SampleId,
+    SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
+    SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -451,6 +451,19 @@ fn node_snapshot(
                         DeviceRef::Instrument(id) => {
                             node.instrument(id).and_then(|(_, i)| i.sample)
                         }
+                        _ => None,
+                    },
+                    plays: match device {
+                        DeviceRef::Instrument(id) => node
+                            .instrument(id)
+                            .map_or(daw_protocol::NoteSet::NONE, |(_, i)| i.plays()),
+                        _ => daw_protocol::NoteSet::NONE,
+                    },
+                    trigger: match device {
+                        DeviceRef::Instrument(id) => node
+                            .instrument(id)
+                            .filter(|(_, i)| i.kind == InstrumentKind::SingleSampler)
+                            .map(|(_, i)| i.note.unwrap_or(daw_protocol::DEFAULT_TRIGGER_NOTE)),
                         _ => None,
                     },
                     enabled: match device {

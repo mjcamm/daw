@@ -8,9 +8,9 @@ mod automation;
 mod time;
 
 pub use automation::{
-    BlendMode, Block, BlockId, DeviceId, DeviceRef, Effect, EffectKind, Instrument, InstrumentKind,
-    Layer, LayerId, NodeId, NotesSource, ParamId, ParamState, SampleId, Scale, Segment, Shape,
-    ShapePoint, Signal, SignalId, SignalSource,
+    BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect, EffectKind,
+    Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId, ParamState,
+    SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSource,
 };
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -189,6 +189,11 @@ pub enum Edit {
     SetInstrumentSample {
         id: DeviceId,
         sample: Option<SampleId>,
+    },
+    /// Choose the one note a SingleSampler plays.
+    SetInstrumentNote {
+        id: DeviceId,
+        note: u8,
     },
     /// Make a layer listen to a signal, or draw its own blocks (`None`).
     /// The blocks are kept either way.
@@ -458,6 +463,10 @@ pub struct DeviceSnapshot {
     pub instrument: Option<InstrumentKind>,
     /// The sample, for a SingleSampler that has one.
     pub sample: Option<SampleId>,
+    /// The notes an instrument plays (none for anything else).
+    pub plays: NoteSet,
+    /// A SingleSampler's trigger note.
+    pub trigger: Option<u8>,
     /// False for an instrument or effect switched off.
     pub enabled: bool,
     pub name: String,
@@ -634,6 +643,10 @@ pub enum CommandError {
     NotASampler {
         id: DeviceId,
     },
+    /// MIDI notes run 0 to 127.
+    NoteOutOfRange {
+        note: u8,
+    },
     /// Colours index the nine-colour content palette.
     ColorOutOfRange {
         color: u8,
@@ -777,6 +790,7 @@ impl fmt::Display for CommandError {
             Self::NotASampler { id } => {
                 write!(f, "device {} is not a SingleSampler", id.0)
             }
+            Self::NoteOutOfRange { note } => write!(f, "note {note} is outside 0..=127"),
             Self::NothingToUndo => f.write_str("nothing to undo"),
             Self::NothingToRedo => f.write_str("nothing to redo"),
         }

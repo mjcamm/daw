@@ -81,6 +81,25 @@ pub fn columns(bars: &[Bar]) -> usize {
     bars.iter().map(|b| b.column + 1).max().unwrap_or(0)
 }
 
+/// The trigger note for a new SingleSampler on `node`: the lowest note from
+/// C1 up that no SingleSampler among it and its siblings plays yet, so the
+/// drums in a folder never clash.
+pub fn next_trigger_note(snapshot: &Snapshot, node: NodeId) -> u8 {
+    let siblings: Vec<NodeId> = snapshot
+        .node(node)
+        .and_then(|n| n.parent)
+        .and_then(|p| snapshot.node(p))
+        .map_or_else(|| vec![node], |p| p.children.clone());
+    let taken: Vec<u8> = siblings
+        .iter()
+        .filter_map(|id| snapshot.node(*id))
+        .flat_map(|n| n.devices.iter().filter_map(|d| d.trigger))
+        .collect();
+    (daw_engine::DEFAULT_TRIGGER_NOTE..=127)
+        .find(|n| !taken.contains(n))
+        .unwrap_or(daw_engine::DEFAULT_TRIGGER_NOTE)
+}
+
 /// A device id (instrument or effect) no device uses yet.
 pub fn next_device_id(snapshot: &Snapshot) -> DeviceId {
     let highest = snapshot
@@ -310,6 +329,7 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
                         enabled: device.enabled,
                         params: copy_params(&device.params, ids),
                         sample: device.sample,
+                        note: device.trigger,
                     };
                     copy.instruments
                         .push((DeviceId(FreshIds::next(&mut ids.device)), instrument));
@@ -573,6 +593,41 @@ mod tests {
             [
                 "Song", "Synth", "Drums", "Kick", "Hats", "Drums 2", "Kick", "Hats"
             ]
+        );
+    }
+
+    #[test]
+    fn new_samplers_take_the_next_free_note_among_their_siblings() {
+        let mut engine = engine();
+        let snapshot = engine.snapshot();
+        assert_eq!(next_trigger_note(&snapshot, KICK), 36, "C1 first");
+        let sampler = |note: u8| daw_engine::Instrument {
+            note: Some(note),
+            ..daw_engine::Instrument::new(daw_engine::InstrumentKind::SingleSampler)
+        };
+        apply(
+            &mut engine,
+            Edit::AddInstrument {
+                node: KICK,
+                id: DeviceId(301),
+                index: 1,
+                instrument: sampler(36),
+            },
+        );
+        let snapshot = apply(
+            &mut engine,
+            Edit::AddInstrument {
+                node: HATS,
+                id: DeviceId(302),
+                index: 1,
+                instrument: sampler(38),
+            },
+        );
+        assert_eq!(next_trigger_note(&snapshot, HATS), 37, "the gap first");
+        assert_eq!(
+            next_trigger_note(&snapshot, FIRST_NODE),
+            36,
+            "notes are counted among siblings only"
         );
     }
 }
