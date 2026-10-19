@@ -167,6 +167,12 @@ pub struct NoteEditor {
     flash: Option<(NodeId, Instant)>,
     /// Counts target changes, so "Drawing to" replays its flash each time.
     flashes: usize,
+    /// The edited node's notes the selection belongs to: a change to them
+    /// the editor did not make (an undo, an edit on Arrange) clears the
+    /// selection, whose indices would point at other notes. (The project
+    /// revision is no use here: every command, even a preview sound,
+    /// advances it.)
+    seen: Option<(NodeId, Vec<MidiNote>)>,
     /// The rows as last drawn.
     pub rows: Rows,
     /// Folded to the notes that play; `None` folds when the note map is
@@ -196,6 +202,7 @@ impl NoteEditor {
             scroll_to: None,
             flash: None,
             flashes: 0,
+            seen: None,
             rows: Rows::all(),
             folded: None,
             hover: None,
@@ -427,6 +434,23 @@ impl ProjectView {
             return;
         };
         let Some((chosen, at)) = &editor.pending else {
+            let changed = match &editor.seen {
+                Some((node, notes)) => *node == editor.target && *notes != clip.notes,
+                None => false,
+            };
+            let fresh = editor
+                .seen
+                .as_ref()
+                .is_none_or(|(node, notes)| *node != editor.target || *notes != clip.notes);
+            if fresh {
+                let seen = Some((editor.target, clip.notes.clone()));
+                if let Some(editor) = &mut self.note_editor {
+                    if changed {
+                        editor.selection.clear();
+                    }
+                    editor.seen = seen;
+                }
+            }
             return;
         };
         if *at == revision {
@@ -445,9 +469,11 @@ impl ProjectView {
                 Some(i)
             })
             .collect();
+        let seen = Some((editor.target, clip.notes.clone()));
         if let Some(editor) = &mut self.note_editor {
             editor.selection = selection;
             editor.pending = None;
+            editor.seen = seen;
         }
     }
 
@@ -490,6 +516,10 @@ impl ProjectView {
 
     /// A press on the grid, with the current tool.
     fn press_grid(&mut self, event: &MouseDownEvent) {
+        // Working in the roll lets go of what Arrange had selected, so
+        // Delete acts on notes.
+        self.selected_clips.clear();
+        self.selected_combined = None;
         if let Some(editor) = &mut self.note_editor {
             editor.drag_grid = editor.grid.get().origin;
             editor.pointer = None;
@@ -1705,6 +1735,25 @@ fn song_length(snapshot: &daw_engine::Snapshot) -> Ticks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_the_edited_node_clears_the_selection_and_flashes() {
+        let mut editor = NoteEditor::new(NodeId(1), DEFAULT_HEIGHT);
+        editor.selection.insert(3);
+        editor.retarget(NodeId(1));
+        assert!(
+            editor.selection.contains(&3),
+            "the same node keeps its selection"
+        );
+        editor.retarget(NodeId(2));
+        assert_eq!(editor.target, NodeId(2));
+        assert!(
+            editor.selection.is_empty(),
+            "indices belong to the old node's notes"
+        );
+        assert_eq!(editor.flash().map(|(n, _)| n), Some(NodeId(2)));
+        assert_eq!(editor.flashes(), 2, "each switch replays the flash");
+    }
 
     #[test]
     fn black_keys_follow_the_octave() {

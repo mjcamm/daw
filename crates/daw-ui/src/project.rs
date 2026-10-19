@@ -570,7 +570,14 @@ impl ProjectView {
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
                         let _ = moved.update(cx, |this, cx| {
-                            this.drag_to(event.position, event.modifiers);
+                            // A quick click can press and release before
+                            // these listeners exist, so the release is never
+                            // seen: moving with no button held ends the drag.
+                            if event.pressed_button.is_none() {
+                                this.finish_drag();
+                            } else {
+                                this.drag_to(event.position, event.modifiers);
+                            }
                             cx.notify();
                         });
                     }

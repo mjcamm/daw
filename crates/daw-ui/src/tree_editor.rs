@@ -64,6 +64,21 @@ pub fn own_notes(node: &NodeSnapshot) -> NoteSet {
         .fold(NoteSet::NONE, |set, d| set.union(d.plays))
 }
 
+/// The notes (song time) of every node in `view`'s branch but `edited`,
+/// the ones shown softer, with their nodes; nodes with none are left out.
+pub fn other_notes(
+    snapshot: &Snapshot,
+    view: NodeId,
+    edited: NodeId,
+) -> Vec<(NodeSnapshot, Vec<MidiNote>)> {
+    tree_nodes(snapshot, view)
+        .into_iter()
+        .filter(|(n, _)| n.id != edited)
+        .map(|(n, _)| (n.clone(), notes_of(&n.clips)))
+        .filter(|(_, notes)| !notes.is_empty())
+        .collect()
+}
+
 /// The nodes from `root` down whose own instruments play `pitch`.
 pub fn owners(snapshot: &Snapshot, root: NodeId, pitch: u8) -> Vec<NodeId> {
     tree_nodes(snapshot, root)
@@ -93,13 +108,7 @@ impl ProjectView {
     /// The notes of the branch in view other than the edited node's, with
     /// their nodes.
     fn inherited(&self, editor: &NoteEditor) -> Vec<(NodeSnapshot, Vec<MidiNote>)> {
-        let snapshot = self.session.snapshot();
-        tree_nodes(snapshot, editor.node)
-            .into_iter()
-            .filter(|(n, _)| n.id != editor.target)
-            .map(|(n, _)| (n.clone(), notes_of(&n.clips)))
-            .filter(|(_, notes)| !notes.is_empty())
-            .collect()
+        other_notes(self.session.snapshot(), editor.node, editor.target)
     }
 
     /// Pitches of the notes below, so folded rows keep them.
@@ -391,5 +400,64 @@ mod tests {
             .map(|(n, _)| n.name.as_str())
             .collect();
         assert_eq!(names, ["Drums", "Kick", "Pad"]);
+    }
+
+    #[test]
+    fn the_branch_shows_softer_all_but_the_edited_nodes_notes() {
+        let (mut engine, _processor) = Engine::new(EngineConfig::default());
+        let mut parent = Node::new("Parent", 0);
+        parent.children = vec![
+            (NodeId(11), Node::new("A", 1)),
+            (NodeId(12), Node::new("B", 2)),
+            (NodeId(13), Node::new("Empty", 3)),
+        ];
+        let apply = |engine: &mut Engine, edit| engine.apply(Command::Edit(edit)).unwrap();
+        apply(
+            &mut engine,
+            Edit::AddNode {
+                id: NodeId(10),
+                parent: NodeId::ROOT,
+                index: 0,
+                node: parent,
+            },
+        );
+        let note = |pitch: u8| MidiNote {
+            start: daw_engine::Ticks::ZERO,
+            length: daw_engine::Ticks::from_beats(1),
+            pitch,
+            velocity: 100,
+        };
+        for (node, id, pitch) in [(10, 1, 40), (11, 2, 50), (12, 3, 60)] {
+            apply(
+                &mut engine,
+                Edit::AddClip {
+                    node: NodeId(node),
+                    id: daw_engine::ClipId(id),
+                    clip: daw_engine::MidiClip {
+                        start: daw_engine::Ticks::from_beats(4),
+                        length: daw_engine::Ticks::from_beats(4),
+                        notes: vec![note(pitch)],
+                    },
+                },
+            );
+        }
+        let snapshot = engine.snapshot();
+        let shown = |edited: u64| -> Vec<(u64, Vec<u8>)> {
+            other_notes(&snapshot, NodeId(10), NodeId(edited))
+                .into_iter()
+                .map(|(n, notes)| (n.id.0, notes.iter().map(|n| n.pitch).collect()))
+                .collect()
+        };
+        assert_eq!(
+            shown(11),
+            [(10, vec![40]), (12, vec![60])],
+            "editing A: the parent's own and B's notes are softer; Empty has none"
+        );
+        assert_eq!(shown(12), [(10, vec![40]), (11, vec![50])]);
+        assert_eq!(
+            other_notes(&snapshot, NodeId(10), NodeId(10))[0].1[0].start,
+            daw_engine::Ticks::from_beats(4),
+            "notes are in song time"
+        );
     }
 }
