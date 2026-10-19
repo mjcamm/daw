@@ -82,6 +82,7 @@ impl ProjectView {
     /// Starts a press on a clip: selects it and, unless Shift took it out
     /// of the selection, begins a drag of the selection.
     pub(crate) fn press_clip(&mut self, id: ClipId, grab: Grab, event: &MouseDownEvent) {
+        self.selected_group = None;
         if event.modifiers.shift {
             if !self.selected_clips.remove(&id) {
                 self.selected_clips.insert(id);
@@ -212,8 +213,21 @@ impl ProjectView {
                 let moving = drag.moving();
                 clip_edit::land(snapshot, &landings, &moving, extra)
             });
+        let moved = self
+            .clip_drag
+            .as_ref()
+            .filter(|d| !(d.copy && d.grab == Grab::Body))
+            .map(ClipDrag::moving)
+            .unwrap_or_default();
         self.clip_drag = None;
         if let Some((edit, landed)) = landing {
+            // A member moved on its own leaves its group.
+            let unlink = self.unlink_edits(&moved);
+            let edit = if unlink.is_empty() {
+                edit
+            } else {
+                Edit::Batch([vec![edit], unlink].concat())
+            };
             self.session.apply(Command::Edit(edit));
             // The clips just placed (copies included) are the selection.
             self.selected_clips = landed.into_iter().collect();

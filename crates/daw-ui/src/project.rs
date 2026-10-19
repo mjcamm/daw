@@ -114,6 +114,10 @@ pub struct ProjectView {
     pub(crate) note_preview: Option<(NodeId, u8, std::time::Instant)>,
     /// Notes copied in the editor.
     pub(crate) note_clipboard: Vec<daw_engine::MidiNote>,
+    /// The group clip selected on Arrange.
+    pub(crate) selected_group: Option<daw_engine::ClipId>,
+    /// A group clip being moved or resized.
+    pub(crate) group_drag: Option<crate::group_clips::GroupDrag>,
     /// Clips selected on Arrange.
     pub(crate) selected_clips: std::collections::BTreeSet<daw_engine::ClipId>,
     /// Clips being dragged on Arrange; one edit on release.
@@ -222,6 +226,8 @@ impl ProjectView {
             strip_motion: crate::motion::RowMotion::default(),
             selected_effect: None,
             selected_clips: std::collections::BTreeSet::new(),
+            selected_group: None,
+            group_drag: None,
             sample_error: None,
             note_editor: None,
             note_preview: None,
@@ -529,6 +535,7 @@ impl ProjectView {
             || self.notes_drag.is_some()
             || self.clip_drag.is_some()
             || self.mixer_drag.is_some()
+            || self.group_drag.is_some()
             || self.note_editor.as_ref().is_some_and(|e| e.dragging())
     }
 

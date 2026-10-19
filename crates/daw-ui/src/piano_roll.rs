@@ -118,6 +118,9 @@ pub struct NoteEditor {
     /// Opened on a clip just added, which the snapshot does not show yet:
     /// until it does, its absence does not close the editor.
     waiting: bool,
+    /// Set when the editor is open on a group clip: the tree, the focused
+    /// node's member clip (`node`, `clip`), and where new notes go.
+    pub group: Option<crate::tree_editor::GroupMode>,
 }
 
 impl NoteEditor {
@@ -137,7 +140,17 @@ impl NoteEditor {
             drag_grid: Point::default(),
             pointer: None,
             waiting: false,
+            group: None,
         }
+    }
+
+    pub fn opened(&self) -> Instant {
+        self.opened
+    }
+
+    /// Keeps the slide-up's start, so a reopened panel does not slide again.
+    pub fn set_opened(&mut self, at: Instant) {
+        self.opened = at;
     }
 
     pub fn dragging(&self) -> bool {
@@ -170,11 +183,19 @@ fn is_black(pitch: u8) -> bool {
 
 impl ProjectView {
     /// The clip open in the editor, if it still exists.
-    fn editor_clip(&self) -> Option<(&NoteEditor, &MidiClip)> {
+    fn editor_clip(&self) -> Option<(&NoteEditor, MidiClip)> {
         let editor = self.note_editor.as_ref()?;
         let node = self.session.snapshot().node(editor.node)?;
-        let (_, clip) = node.clips.iter().find(|(id, _)| *id == editor.clip)?;
-        Some((editor, clip))
+        match node.clips.iter().find(|(id, _)| *id == editor.clip) {
+            Some((_, clip)) => Some((editor, clip.clone())),
+            // A group member not made yet: empty, spanning the group.
+            None => Some((editor, self.virtual_member(editor)?)),
+        }
+    }
+
+    /// Plays a note briefly on a node (one a routed note went to).
+    pub(crate) fn preview_routed(&mut self, node: NodeId, note: MidiNote) {
+        self.preview_note(node, note.pitch, note.velocity);
     }
 
     /// Where the open clip starts, in beats.
@@ -265,13 +286,21 @@ impl ProjectView {
         if notes == clip.notes {
             return;
         }
-        let edit = Edit::SetClip {
-            id: editor.clip,
-            node: editor.node,
-            clip: MidiClip {
-                notes,
-                ..clip.clone()
-            },
+        let edit = if editor.group.is_some() {
+            // A group member: made with its first note if need be.
+            let Some(edit) = self.member_edit(editor.node, editor.clip, notes) else {
+                return;
+            };
+            edit
+        } else {
+            Edit::SetClip {
+                id: editor.clip,
+                node: editor.node,
+                clip: MidiClip {
+                    notes,
+                    ..clip.clone()
+                },
+            }
         };
         if let Some(editor) = &mut self.note_editor {
             editor.selection = selection;
@@ -325,6 +354,9 @@ impl ProjectView {
                         pitch,
                         velocity,
                     };
+                    if self.add_routed_note(note) {
+                        return;
+                    }
                     let (notes, index) = note_edit::added(&notes, note);
                     self.preview_note(node, pitch, velocity);
                     self.commit_notes(notes, [index].into());
@@ -400,6 +432,9 @@ impl ProjectView {
                         pitch,
                         velocity,
                     };
+                    if self.add_routed_note(note) {
+                        return;
+                    }
                     let (with, index) = note_edit::added(&notes, note);
                     self.preview_note(node, pitch, velocity);
                     if let Some(editor) = &mut self.note_editor {
@@ -770,6 +805,18 @@ impl ProjectView {
             }
         }
         self.fit_note_editor();
+        let (editor, _) = self.editor_clip()?;
+        // On a group: the tree, other members' notes, and where notes go.
+        let zoom_now = self.notes_view.zoom;
+        let ghosts = self.member_ghosts(
+            editor,
+            zoom_now.pixels_per_beat,
+            zoom_now.row_height,
+            theme,
+            cx,
+        );
+        let drawing_to = self.drawing_to(editor, theme);
+        let tree = self.render_group_tree(editor, theme, cx);
         let (editor, clip) = self.editor_clip()?;
         let snapshot = self.session.snapshot();
         let node = snapshot.node(editor.node)?;
@@ -836,6 +883,8 @@ impl ProjectView {
             .child(tool_button("tool-select", Icon::Pointer, Tool::Select, "Select (1): drag to move, edges to resize, Ctrl to copy, double-click to add or delete"))
             .child(tool_button("tool-pen", Icon::Pencil, Tool::Pen, "Pen (2): click to add a note and drag its length, click a note to delete it"))
             .child(tool_button("tool-scissors", Icon::Scissors, Tool::Scissors, "Scissors (3): click a note to split it"))
+            .child(div().w(px(12.)))
+            .children(drawing_to)
             .child(div().flex_1())
             .child(
                 div()
@@ -1034,6 +1083,7 @@ impl ProjectView {
                     .when(cursor_tool == Tool::Pen, |d| d.cursor_crosshair())
                     .when(resizing, |d| d.cursor_ew_resize())
                     .child(paint)
+                    .children(ghosts)
                     .children(notes.collect::<Vec<_>>())
                     .children(playhead)
                     .children(rubber)
@@ -1236,7 +1286,14 @@ impl ProjectView {
                 .border_t_1()
                 .border_color(theme.edge)
                 .child(header)
-                .child(frame)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .child(div().flex_1().min_w_0().flex().flex_col().child(frame))
+                        .children(tree),
+                )
                 .child(handle)
                 .into_any_element(),
         )

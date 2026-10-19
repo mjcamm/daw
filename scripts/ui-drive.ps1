@@ -38,6 +38,16 @@ $frontPid = 0
 if ($frontPid -ne $p.Id) {
     [W]::SetForegroundWindow($h) | Out-Null
     Start-Sleep -Milliseconds 150
+    [W]::GetWindowThreadProcessId([W]::GetForegroundWindow(), [ref]$frontPid) | Out-Null
+    if ($frontPid -ne $p.Id) {
+        # Windows refuses focus changes right after other input; holding
+        # Alt during the switch is the standard way through. Alt is
+        # released after the switch, so it lands in the DAW's window.
+        [W]::keybd_event(18, 0, 0, [UIntPtr]::Zero)
+        [W]::SetForegroundWindow($h) | Out-Null
+        [W]::keybd_event(18, 0, 2, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 150
+    }
 }
 # Windows may refuse to bring the window forward (someone is using the
 # machine). Then clicks, keys and screenshots would land on whatever is in

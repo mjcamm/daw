@@ -6,6 +6,7 @@ mod block_edit;
 mod clip_drag;
 mod clip_edit;
 mod frame;
+mod group_clips;
 mod header;
 mod icons;
 mod inspector;
@@ -26,6 +27,7 @@ mod text_input;
 mod theme;
 mod tooltip;
 mod tree;
+mod tree_editor;
 mod zoom;
 
 use app::{AppView, OpenPreferences, Quit};

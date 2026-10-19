@@ -33,10 +33,11 @@ pub enum Icon {
     Trash,
     Pointer,
     Scissors,
+    Layers,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 24] = [
+const ICONS: [(Icon, &str, &[u8]); 25] = [
     (
         Icon::Play,
         "icons/play.svg",
@@ -156,6 +157,11 @@ const ICONS: [(Icon, &str, &[u8]); 24] = [
         Icon::Scissors,
         "icons/scissors.svg",
         include_bytes!("../assets/icons/scissors.svg"),
+    ),
+    (
+        Icon::Layers,
+        "icons/layers.svg",
+        include_bytes!("../assets/icons/layers.svg"),
     ),
 ];
 

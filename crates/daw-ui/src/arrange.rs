@@ -753,6 +753,7 @@ impl ProjectView {
                 };
                 let id = node.id;
                 let takes_clips = node.takes_midi();
+                let is_folder = !node.children.is_empty() && id != NodeId::ROOT;
                 let lane = div()
                     .relative()
                     .h(px(zoom.row_height))
@@ -765,16 +766,43 @@ impl ProjectView {
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, _| {
                             this.selected_clips.clear();
-                            if takes_clips && event.click_count >= 2 {
-                                this.add_clip_at(id, event.position);
+                            this.selected_group = None;
+                            if event.click_count >= 2 {
+                                // A folder gets a group clip; any other
+                                // MIDI node an ordinary clip.
+                                if is_folder {
+                                    this.add_group_at(id, event.position);
+                                } else if takes_clips {
+                                    this.add_clip_at(id, event.position);
+                                }
                             }
                         }),
                     )
                     .children(
+                        node.groups
+                            .iter()
+                            .map(|(gid, group)| self.group_element(*gid, group, theme, cx))
+                            .collect::<Vec<_>>(),
+                    )
+                    .children(
                         node.clips
                             .iter()
-                            .map(|(id, clip)| {
-                                self.clip_element(*id, clip, &node.name, color, theme, cx)
+                            .map(|(cid, clip)| {
+                                // A member shows its group's name, and moves
+                                // with the group while it is dragged.
+                                let snapshot = self.session.snapshot();
+                                let member = crate::group_clips::group_of(snapshot, *cid);
+                                let label = member.map_or_else(
+                                    || node.name.clone(),
+                                    |(_, _, g)| format!("{} · {}", g.name, node.name),
+                                );
+                                let shown = match (&self.group_drag, member) {
+                                    (Some(drag), Some((_, gid, _))) if drag.is(gid) => {
+                                        drag.member(clip)
+                                    }
+                                    _ => clip.clone(),
+                                };
+                                self.clip_element(*cid, &shown, &label, color, theme, cx)
                             })
                             .collect::<Vec<_>>(),
                     );

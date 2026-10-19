@@ -1,6 +1,6 @@
 # Notes in the Tree, Group Clips, and the Tree Editor
 
-*Status: agreed with the user 2026-10-19; being built. Builds on `node-tree.md`, `piano-roll.md` and `samples.md`.*
+*Status: agreed with the user 2026-10-19. Built: notes flowing up and trigger notes (engine), group clips (engine, `group_clips.rs` on Arrange: double-click a folder's empty lane to make one), the tree editor (`tree_editor.rs`: tree, focus, pen, routing, "Drawing to", other members' notes). Next: named and folded rows from the note map, and the preview note under the pointer. Builds on `node-tree.md`, `piano-roll.md` and `samples.md`.*
 
 ## Notes flow up, like sound
 
@@ -18,6 +18,6 @@
 ## The tree editor (piano roll on a group)
 
 - A **tree panel** on the right of the piano roll shows the whole group: the parent, its children, deeper levels nested; each row has colour, name and its note count in the group. The same tree shows whichever node the editor was opened from.
-- **Focus** (click a name): the roll shows only the focused node's notes (others hidden), with rows from its note map, named where an instrument names them (a drum's row is its node's name). Focusing the parent shows everything below, each note in its owner's colour.
+- **Focus** (click a name): the roll shows and edits only the focused node's member clip (others hidden), with rows from its note map, named where an instrument names them (a drum's row is its node's name). Focusing the group's own node shows every member's notes in their owners' colours; clicking one focuses its node with that note selected (the parent view does not move other nodes' notes itself). A node with no member yet edits an empty clip spanning the group, which becomes its member with its first note.
 - **Drawing target** (click the pen column in the tree): where new notes go. Focusing a child moves the pen to it. With the parent focused, a row with **one owner** draws to that owner whatever the pen says; a row with **several owners** (marked with their count on the keyboard) draws to the pen's node.
 - The target is shown three ways in its colour: a **preview note** under the pointer with the owner's name, the lit **pen** in the tree, and a **"Drawing to ● Name"** label in the header (display only). A pen move flashes the new target's row; a drawn note flashes and its owner's count goes up.
