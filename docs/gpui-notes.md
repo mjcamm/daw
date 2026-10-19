@@ -139,6 +139,8 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 - On targets: `.drag_over::<T>(|style, value, window, cx| style.bg(..))` to highlight while hovering, and `.on_drop(cx.listener(|this, value: &T, window, cx| ...))`. Both are filtered by type, so different drag kinds don't interfere.
 - `.cursor_move()` on the handle shows a move cursor.
 
+- **Files dragged in from the system** (Explorer, Finder) arrive as an ordinary drag of `gpui::ExternalPaths`: `.on_drag_move::<ExternalPaths>(cx.listener(|this, e: &DragMoveEvent<ExternalPaths>, _, cx| ...))` follows the pointer (`e.event.position`, `e.drag(cx).paths()`), and `.on_drop(cx.listener(|this, paths: &ExternalPaths, _, _| ...))` receives them. Nothing says when the drag leaves the window, so clear hover state in `render` once `!cx.has_active_drag()` (Arrange's file drop does this).
+
 ## Free-form drags (moving, resizing, scrubbing)
 
 - **Nested handlers both fire:** a press on a child (a clip's resize edge) also reaches its parents' `on_mouse_down` (the clip body, the lane). Call `cx.stop_propagation()` in the child's handler to keep it to the child.

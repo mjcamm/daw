@@ -1425,6 +1425,7 @@ dependencies = [
  "daw-engine",
  "daw-rt",
  "dirs 7.0.0",
+ "hound",
  "serde",
  "serde_json",
 ]

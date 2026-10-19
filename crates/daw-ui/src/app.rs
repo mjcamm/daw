@@ -34,6 +34,13 @@ const PREFERENCES_SHORTCUT: &str = if cfg!(target_os = "macos") {
     "Ctrl+,"
 };
 
+/// A menu in the menu bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopMenu {
+    File,
+    Track,
+}
+
 /// A section of the preferences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -60,10 +67,11 @@ pub struct AppView {
     screen: Screen,
     recent: RecentProjects,
     preferences: StoredPreferences,
-    file_menu_open: bool,
-    /// The current press closed the File menu by landing outside it (see
+    /// The menu bar's open menu, if any.
+    open_menu: Option<TopMenu>,
+    /// The menu the current press closed by landing outside it (see
     /// `ProjectView::toggle_menu`).
-    file_menu_dismissed: bool,
+    menu_dismissed: Option<TopMenu>,
     preferences_open: bool,
     section: Section,
     /// The audio drop-down that is open, if any.
@@ -92,8 +100,8 @@ impl AppView {
             screen,
             recent,
             preferences,
-            file_menu_open: false,
-            file_menu_dismissed: false,
+            open_menu: None,
+            menu_dismissed: None,
             preferences_open: false,
             section: Section::Audio,
             open_choice: None,
@@ -184,7 +192,7 @@ impl AppView {
     }
 
     fn open_preferences(&mut self, cx: &mut Context<Self>) {
-        self.file_menu_open = false;
+        self.open_menu = None;
         self.preferences_open = true;
         self.open_choice = None;
         self.drivers = drivers();
@@ -227,74 +235,131 @@ impl AppView {
             let saved = project.update(cx, |project, _| project.save_if_edited());
             if !saved {
                 // The project shows why; stay open rather than lose work.
-                self.file_menu_open = false;
+                self.open_menu = None;
                 return;
             }
         }
         cx.quit();
     }
 
-    /// The menu bar across the top: File.
-    fn render_menu_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Track → Import Audio…: asks for WAV files, then puts each on a new
+    /// audio node after the selected node (or at the end of the Song), at
+    /// the playhead.
+    fn import_audio(&mut self, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        let Screen::Project(project) = &self.screen else {
+            return;
+        };
+        let project = project.downgrade();
+        let chosen = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn(async move |_, cx| {
+            if let Ok(Ok(Some(paths))) = chosen.await {
+                let _ = project.update(cx, |project, cx| {
+                    project.import_audio_files(&paths);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Opens `menu`, or closes it if it is open (a press on the trigger of
+    /// an open menu first closes it as a press outside; it stays closed).
+    fn toggle_top_menu(&mut self, menu: TopMenu) {
+        if self.menu_dismissed != Some(menu) {
+            self.open_menu = if self.open_menu == Some(menu) {
+                None
+            } else {
+                Some(menu)
+            };
+        }
+    }
+
+    /// One menu bar entry: its title and, when open, its drop-down.
+    fn top_menu(
+        &self,
+        menu: TopMenu,
+        title: &'static str,
+        items: impl FnOnce(gpui::Div) -> gpui::Div,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let hover = theme.hover;
-        let open = self.file_menu_open;
-        let file = div()
-            .id("menu-file")
+        let open = self.open_menu == Some(menu);
+        let trigger = div()
+            .id(title)
             .px(px(8.))
             .py(px(2.))
             .rounded(px(4.))
             .when(open, |d| d.bg(theme.control_selected))
             .hover(move |s| s.bg(hover))
-            .child("File")
-            .on_click(cx.listener(|this, _, _, cx| {
-                if !this.file_menu_dismissed {
-                    this.file_menu_open = !this.file_menu_open;
-                }
+            .child(title)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_top_menu(menu);
                 cx.notify();
             }));
         let dropdown = open.then(|| {
-            menu::float(
-                menu::panel(theme)
-                    .min_w(px(220.))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.file_menu_dismissed = this.file_menu_open;
-                        this.file_menu_open = false;
-                        cx.notify();
-                    }))
-                    .child(
-                        menu::item(
-                            theme,
-                            "menu-preferences",
-                            "Preferences…",
-                            PREFERENCES_SHORTCUT,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.open_preferences(cx))),
-                    )
-                    .child(menu::separator(theme))
-                    .child(
-                        menu::item(theme, "menu-quit", "Quit", QUIT_SHORTCUT)
-                            .on_click(cx.listener(|this, _, _, cx| this.quit(cx))),
-                    ),
-            )
+            menu::float(items(menu::panel(theme).min_w(px(220.)).on_mouse_down_out(
+                cx.listener(move |this, _, _, cx| {
+                    if this.open_menu == Some(menu) {
+                        this.menu_dismissed = Some(menu);
+                    }
+                    this.open_menu = None;
+                    cx.notify();
+                }),
+            )))
         });
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(trigger)
+            .children(dropdown)
+    }
+
+    /// The menu bar across the top: File and Track.
+    fn render_menu_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let file_items = {
+            let preferences = menu::item(
+                theme,
+                "menu-preferences",
+                "Preferences…",
+                PREFERENCES_SHORTCUT,
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.open_preferences(cx)));
+            let quit = menu::item(theme, "menu-quit", "Quit", QUIT_SHORTCUT)
+                .on_click(cx.listener(|this, _, _, cx| this.quit(cx)));
+            let separator = menu::separator(theme);
+            move |panel: gpui::Div| panel.child(preferences).child(separator).child(quit)
+        };
+        let has_project = matches!(self.screen, Screen::Project(_));
+        let track_items = {
+            let import = menu::item(theme, "menu-import-audio", "Import Audio…", "")
+                .when(!has_project, |d| d.text_color(theme.text_tertiary))
+                .when(has_project, |d| {
+                    d.on_click(cx.listener(|this, _, _, cx| this.import_audio(cx)))
+                });
+            move |panel: gpui::Div| panel.child(import)
+        };
         div()
             .h(px(MENU_BAR_HEIGHT))
             .flex_none()
             .flex()
             .items_center()
+            .gap(px(2.))
             .px(px(6.))
             .bg(theme.sidebar)
             .border_b_1()
             .border_color(theme.hairline)
             .text_size(px(12.))
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .child(file)
-                    .children(dropdown),
-            )
+            .child(self.top_menu(TopMenu::File, "File", file_items, theme, cx))
+            .child(self.top_menu(TopMenu::Track, "Track", track_items, theme, cx))
     }
 
     /// The preferences modal: sections down the left, the chosen section's
@@ -873,8 +938,8 @@ impl Render for AppView {
             .text_color(theme.text)
             .font_family(UI_FONT)
             .text_size(px(12.))
-            // Runs before the File menu's press-outside handler.
-            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.file_menu_dismissed = false))
+            // Runs before the menus' press-outside handlers.
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.menu_dismissed = None))
             .on_action(cx.listener(|this, _: &Quit, _, cx| this.quit(cx)))
             .on_action(cx.listener(|this, _: &OpenPreferences, _, cx| this.open_preferences(cx)))
             .child(self.render_menu_bar(&theme, cx))

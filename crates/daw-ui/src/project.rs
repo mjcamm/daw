@@ -108,6 +108,13 @@ pub struct ProjectView {
     pub(crate) folded: std::collections::HashSet<NodeId>,
     /// Why the last sample import failed, shown in the sampler's panel.
     pub(crate) sample_error: Option<String>,
+    /// Why the last audio import left files out, if it did.
+    pub(crate) import_error: Option<String>,
+    /// Where Arrange's lanes were last drawn, for files dragged over them.
+    pub(crate) arrange_lanes_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Files being dragged over Arrange from outside: the pointer and how
+    /// many files. Cleared once no drag is running.
+    pub(crate) file_hover: Option<(gpui::Point<Pixels>, usize)>,
     /// The piano roll in the bottom panel, if a clip is open.
     pub(crate) note_editor: Option<crate::piano_roll::NoteEditor>,
     /// A note being heard from the editor, and since when.
@@ -230,6 +237,9 @@ impl ProjectView {
             combined_drag: None,
 
             sample_error: None,
+            import_error: None,
+            arrange_lanes_bounds: Rc::default(),
+            file_hover: None,
             note_editor: None,
             note_preview: None,
             note_clipboard: Vec::new(),
@@ -396,6 +406,9 @@ impl Render for ProjectView {
         // Redraw every frame: the playhead and meters move continuously.
         window.request_animation_frame();
         self.session.tick();
+        if !cx.has_active_drag() {
+            self.file_hover = None;
+        }
         let title = format!("{} — DAW", self.session.snapshot().song_name);
         if title != self.window_title {
             window.set_window_title(&title);
@@ -499,6 +512,7 @@ impl Render for ProjectView {
                     .map(|e| banner(format!("No audio output: {e}"))),
             )
             .children(self.save_error.clone().map(banner))
+            .children(self.import_error.clone().map(banner))
             .child(self.with_inspector(page, &theme, cx))
     }
 }

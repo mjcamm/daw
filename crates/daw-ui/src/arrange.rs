@@ -1,6 +1,8 @@
 //! The Arrange page: the node list on the left, the timeline beside it,
 //! framed by scrollbars and zoom sliders (see `frame.rs`).
 
+use crate::audio_import::{FileDrop, file_drop};
+use crate::clip_edit;
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
 use crate::layout::{
@@ -18,8 +20,8 @@ use crate::tooltip;
 use crate::tree::{self, Bar, Drop, display_order};
 use daw_engine::{Command, Edit, Node, NodeId, NodeKind, NodeSnapshot};
 use gpui::{
-    ClickEvent, Context, FontWeight, Hsla, MouseButton, MouseDownEvent, ScrollWheelEvent, canvas,
-    div, prelude::*, px,
+    ClickEvent, Context, DragMoveEvent, ExternalPaths, FontWeight, Hsla, MouseButton,
+    MouseDownEvent, ScrollWheelEvent, canvas, div, prelude::*, px,
 };
 use std::time::Instant;
 
@@ -605,6 +607,135 @@ impl ProjectView {
         self.selected_node = Some(id);
     }
 
+    /// Imports audio files onto new audio nodes after the selected node (or
+    /// at the end of the Song), at the playhead (Track → Import Audio…).
+    pub(crate) fn import_audio_files(&mut self, files: &[std::path::PathBuf]) {
+        let snapshot = self.session.snapshot();
+        let (parent, index) = tree::new_node_place(snapshot, self.selected_node, NodeKind::Audio);
+        self.import_error = self
+            .session
+            .import_audio(
+                files,
+                crate::session::ImportTarget::NewNodes { parent, index },
+            )
+            .err();
+    }
+
+    /// Where files dragged over the lanes would go, if any are.
+    fn file_target(&self, rows: &[(NodeId, f32, f32)]) -> Option<(FileDrop, f32, usize)> {
+        let (pointer, count) = self.file_hover?;
+        let bounds = self.arrange_lanes_bounds.get();
+        let x = (pointer.x - bounds.left()) / px(1.);
+        let y = (pointer.y - bounds.top()) / px(1.);
+        Some((file_drop(self.session.snapshot(), rows, y), x, count))
+    }
+
+    /// Files dropped on the lanes: into an audio node, or onto new audio
+    /// nodes between rows, at the playhead.
+    fn drop_files(&mut self, files: &[std::path::PathBuf], rows: &[(NodeId, f32, f32)]) {
+        let target = self.file_target(rows).map(|(target, _, _)| target);
+        self.file_hover = None;
+        let target = match target {
+            Some(FileDrop::Into { node, .. }) => crate::session::ImportTarget::Into(node),
+            Some(FileDrop::NewNodes { parent, index, .. }) => {
+                crate::session::ImportTarget::NewNodes { parent, index }
+            }
+            Some(FileDrop::Refused { .. }) | None => return,
+        };
+        self.import_error = self.session.import_audio(files, target).err();
+    }
+
+    /// The preview while files are dragged over the lanes: the receiving
+    /// row lit (red where audio cannot go) or a line where new nodes would
+    /// go, and a label by the pointer.
+    fn file_drop_overlay(
+        &self,
+        rows: &[(NodeId, f32, f32)],
+        theme: &Theme,
+    ) -> Vec<gpui::AnyElement> {
+        let Some((target, x, count)) = self.file_target(rows) else {
+            return Vec::new();
+        };
+        let snapshot = self.session.snapshot();
+        let row_height = self.arrange_view.zoom.row_height;
+        let top_of = |row: usize| {
+            rows.get(row).map_or_else(
+                || rows.last().map_or(0., |(_, top, height)| top + height),
+                |(_, top, _)| *top,
+            )
+        };
+        let height_of = |row: usize| rows.get(row).map_or(row_height, |(_, _, h)| *h);
+        let files = if count == 1 {
+            "1 file".to_owned()
+        } else {
+            format!("{count} files")
+        };
+        let (mark, text, ok) = match target {
+            FileDrop::Into { node, row } => {
+                let mut tint = theme.accent;
+                tint.a = 0.1;
+                let name = snapshot.node(node).map_or("", |n| n.name.as_str());
+                let mark = div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(top_of(row)))
+                    .h(px(height_of(row)))
+                    .bg(tint)
+                    .border_1()
+                    .border_color(theme.accent);
+                (mark, format!("{files} into {name}"), true)
+            }
+            FileDrop::NewNodes { row, .. } => {
+                let mark = div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(top_of(row) - 1.))
+                    .h(px(2.))
+                    .bg(theme.accent);
+                let nodes = if count == 1 {
+                    "New audio node".to_owned()
+                } else {
+                    format!("{count} new audio nodes")
+                };
+                (mark, nodes, true)
+            }
+            FileDrop::Refused { row } => {
+                let mut tint = theme.record;
+                tint.a = 0.08;
+                let mark = div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(top_of(row)))
+                    .h(px(height_of(row)))
+                    .bg(tint);
+                (mark, "Can't go here".to_owned(), false)
+            }
+        };
+        let label_row = match target {
+            FileDrop::Into { row, .. } | FileDrop::Refused { row } => top_of(row),
+            FileDrop::NewNodes { row, .. } => top_of(row),
+        };
+        let at = clip_edit::bar_beat(daw_engine::Ticks::from_beats_f64(
+            self.session.position_beats().max(0.),
+        ));
+        let label = div()
+            .absolute()
+            .left(px(x + 12.))
+            .top(px((label_row - 20.).max(0.)))
+            .px(px(5.))
+            .py(px(1.))
+            .rounded(px(4.))
+            .bg(if ok { theme.accent } else { theme.record })
+            .text_color(theme.on_accent)
+            .text_size(px(10.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(if ok { format!("{text} · {at}") } else { text });
+        vec![mark.into_any_element(), label.into_any_element()]
+    }
+
     fn group_node(&mut self, id: NodeId) {
         if let Some(edit) = tree::group_edit(self.session.snapshot(), id) {
             self.session.apply(Command::Edit(edit));
@@ -764,7 +895,15 @@ impl ProjectView {
             row_tops.push(y);
             y += layout.height;
         }
-        let overlay = self.clip_drag_overlay(&row_tops, theme);
+        let mut overlay = self.clip_drag_overlay(&row_tops, theme);
+        // Rows on screen with their tops and heights, for dropping files.
+        let drop_rows: Vec<(NodeId, f32, f32)> = rows
+            .iter()
+            .filter(|(_, l)| l.ghost.is_none())
+            .zip(&row_tops)
+            .map(|((node, layout), top)| (node.id, *top, layout.height))
+            .collect();
+        overlay.extend(self.file_drop_overlay(&drop_rows, theme));
         let lanes: Vec<_> = rows
             .iter()
             .map(|(node, layout)| {
@@ -802,16 +941,18 @@ impl ProjectView {
                         self.combined_elements(id, theme, cx)
                     })
                     .children(
-                        node.clips
-                            .iter()
+                        crate::clip_edit::node_clips(node)
                             .map(|(cid, clip)| {
                                 // A clip moves with its block while dragged.
-                                let shown = self
-                                    .combined_drag
-                                    .as_ref()
-                                    .and_then(|d| d.shifted(*cid, clip))
-                                    .unwrap_or_else(|| clip.clone());
-                                self.clip_element(*cid, &shown, &node.name, color, theme, cx)
+                                let shown = match &clip {
+                                    crate::clip_edit::AnyClip::Midi(midi) => self
+                                        .combined_drag
+                                        .as_ref()
+                                        .and_then(|d| d.shifted(cid, midi))
+                                        .map_or(clip, crate::clip_edit::AnyClip::Midi),
+                                    crate::clip_edit::AnyClip::Audio(_) => clip,
+                                };
+                                self.clip_element(cid, &shown, &node.name, color, theme, cx)
                             })
                             .collect::<Vec<_>>(),
                     );
@@ -842,6 +983,22 @@ impl ProjectView {
                     .w(px(width))
                     .flex()
                     .flex_col()
+                    .child({
+                        let cell = self.arrange_lanes_bounds.clone();
+                        canvas(move |bounds, _, _| cell.set(bounds), |_, (), _, _| {})
+                            .absolute()
+                            .size_full()
+                    })
+                    // Audio files dragged in from outside the app.
+                    .on_drag_move::<ExternalPaths>(cx.listener(
+                        |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                            let count = event.drag(cx).paths().len();
+                            this.file_hover = Some((event.event.position, count));
+                        },
+                    ))
+                    .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, _| {
+                        this.drop_files(paths.paths(), &drop_rows);
+                    }))
                     .children(grid_lines(zoom, bars, theme))
                     .children(lanes)
                     .children(overlay)

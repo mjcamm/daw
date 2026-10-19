@@ -9,15 +9,16 @@
 //! drop is one undo step (`clip_edit::land`). The rules live in
 //! `clip_edit.rs`; this file is the hand on the mouse.
 
-use crate::clip_edit::{self, Grab, Held, Landing, Plan};
+use crate::clip_edit::{self, AnyClip, Grab, Held, Landing, Plan};
 use crate::layout::note_rows;
 use crate::project::ProjectView;
 use crate::scroll::{self, Extent};
 use crate::slider::Axis;
 use crate::theme::{ContentColor, Theme};
 use crate::tree::{self, display_order};
+use crate::waveform;
 use crate::zoom::Zoom;
-use daw_engine::{ClipId, Command, Edit, MidiClip, Node, NodeId, Ticks};
+use daw_engine::{ClipId, Command, Edit, MidiClip, Node, NodeId, NodeKind, Ticks};
 use gpui::{
     AnyElement, Context, FontWeight, Modifiers, MouseButton, MouseDownEvent, Pixels, Point, div,
     prelude::*, px,
@@ -46,8 +47,8 @@ pub struct ClipDrag {
     flip_snap: bool,
     pixels_per_beat: f32,
     row_height: f32,
-    /// Each row's node and whether it plays clips, in display order.
-    rows: Vec<(NodeId, bool)>,
+    /// Each row's node and the kind of clips it takes, in display order.
+    rows: Vec<(NodeId, Option<NodeKind>)>,
 }
 
 impl ClipDrag {
@@ -66,9 +67,12 @@ impl ClipDrag {
     }
 }
 
-/// Rows in display order: each node and whether it plays clips.
-fn row_kinds(rows: &[&daw_engine::NodeSnapshot]) -> Vec<(NodeId, bool)> {
-    rows.iter().map(|n| (n.id, n.takes_midi())).collect()
+/// Rows in display order: each node and the kind of clips it takes (the
+/// Song takes none).
+fn row_kinds(rows: &[&daw_engine::NodeSnapshot]) -> Vec<(NodeId, Option<NodeKind>)> {
+    rows.iter()
+        .map(|n| (n.id, n.parent.is_some().then_some(n.kind)))
+        .collect()
 }
 
 impl ProjectView {
@@ -101,14 +105,14 @@ impl ProjectView {
             .iter()
             .enumerate()
             .flat_map(|(row, node)| {
-                node.clips
-                    .iter()
+                clip_edit::node_clips(node)
                     .filter(|(clip, _)| self.selected_clips.contains(clip))
                     .map(move |(clip, c)| Held {
-                        id: *clip,
+                        id: clip,
                         node: node.id,
                         row,
-                        clip: c.clone(),
+                        reach: clip_edit::reach(snapshot, &c),
+                        clip: c,
                     })
             })
             .collect();
@@ -172,6 +176,7 @@ impl ProjectView {
             row_shift,
             &drag.rows,
             |t| snap.round(t),
+            self.session.snapshot().tempo_bpm,
         );
         Some((drag, plan))
     }
@@ -189,15 +194,19 @@ impl ProjectView {
                 if plan.places.iter().any(|(node, _)| node.is_none()) {
                     let source = snapshot.node(drag.held[0].node);
                     let name = source.map_or("Synth", |n| n.name.as_str());
+                    let node =
+                        Node::new(&tree::next_name(snapshot, name), tree::next_color(snapshot));
+                    // A new node of the clips' kind: MIDI with a synth to
+                    // play them, or audio.
+                    let node = match drag.held[0].clip.kind() {
+                        NodeKind::Midi => node.with_instrument(tree::next_device_id(snapshot)),
+                        NodeKind::Audio => node.with_kind(NodeKind::Audio),
+                    };
                     extra.push(Edit::AddNode {
                         id: new_node,
                         parent: NodeId::ROOT,
                         index: snapshot.root().children.len(),
-                        node: Node::new(
-                            &tree::next_name(snapshot, name),
-                            tree::next_color(snapshot),
-                        )
-                        .with_instrument(tree::next_device_id(snapshot)),
+                        node,
                     });
                 }
                 let landings: Vec<Landing> = drag
@@ -281,7 +290,7 @@ impl ProjectView {
     pub(crate) fn clip_element(
         &self,
         id: ClipId,
-        clip: &MidiClip,
+        clip: &AnyClip,
         label: &str,
         color: ContentColor,
         theme: &Theme,
@@ -293,7 +302,7 @@ impl ProjectView {
             .clip_drag
             .as_ref()
             .is_some_and(|d| d.started() && d.moving().contains(&id));
-        let width = zoom.beat_to_x(clip.length.as_beats());
+        let width = zoom.beat_to_x(clip.length().as_beats());
         let edge = |grab: Grab| {
             div()
                 .id((
@@ -320,14 +329,15 @@ impl ProjectView {
                 )
         };
         let edges = (width >= 3. * EDGE).then(|| [edge(Grab::Start), edge(Grab::End)]);
-        clip_body(clip, label, color, zoom, selected, theme)
+        let audio = matches!(clip, AnyClip::Audio(_));
+        self.clip_body(clip, label, color, selected, theme)
             .id(("clip", id.0))
             .when(moving, |d| d.opacity(0.3))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    if event.click_count >= 2 {
+                    if event.click_count >= 2 && !audio {
                         // Double-click opens the clip in the piano roll.
                         this.clip_drag = None;
                         this.open_note_editor(id);
@@ -385,7 +395,7 @@ impl ProjectView {
             let source = snapshot.node(held.node);
             let colors = source.map_or(theme.content(0), |n| theme.content(n.color));
             let label = source.map_or("", |n| n.name.as_str());
-            let mut ghost = clip_body(clip, label, colors, zoom, true, theme);
+            let mut ghost = self.clip_body(clip, label, colors, true, theme);
             if !plan.allowed {
                 ghost = ghost.border_color(warn);
             }
@@ -394,9 +404,9 @@ impl ProjectView {
             // covers rather than mixing with it.
             let backing = div()
                 .absolute()
-                .left(px(zoom.beat_to_x(clip.start.as_beats())))
+                .left(px(zoom.beat_to_x(clip.start().as_beats())))
                 .top(px(CLIP_INSET))
-                .w(px(zoom.beat_to_x(clip.length.as_beats())))
+                .w(px(zoom.beat_to_x(clip.length().as_beats())))
                 .h(px(zoom.row_height - 2. * CLIP_INSET))
                 .rounded(px(5.))
                 .bg(theme.window);
@@ -413,11 +423,8 @@ impl ProjectView {
             );
             if index == drag.grabbed {
                 let (at, text) = match drag.grab {
-                    Grab::Body | Grab::Start => (clip.start, clip_edit::bar_beat(clip.start)),
-                    Grab::End => (
-                        clip_edit::end(clip),
-                        clip_edit::bar_beat(clip_edit::end(clip)),
-                    ),
+                    Grab::Body | Grab::Start => (clip.start(), clip_edit::bar_beat(clip.start())),
+                    Grab::End => (clip.end(), clip_edit::bar_beat(clip.end())),
                 };
                 let new_node = node.is_none();
                 let text = if !plan.allowed {
@@ -450,7 +457,69 @@ impl ProjectView {
     }
 }
 
-/// A clip's look: soft fill, outline (accent when selected), name, notes.
+impl ProjectView {
+    /// A clip's look: soft fill, outline (accent when selected), its label,
+    /// and its notes or waveform.
+    fn clip_body(
+        &self,
+        clip: &AnyClip,
+        label: &str,
+        color: ContentColor,
+        selected: bool,
+        theme: &Theme,
+    ) -> gpui::Div {
+        let zoom = self.arrange_view.zoom;
+        match clip {
+            AnyClip::Midi(c) => clip_body(c, label, color, zoom, selected, theme),
+            AnyClip::Audio(c) => {
+                let snapshot = self.session.snapshot();
+                let bpm = snapshot.tempo_bpm;
+                let sample = snapshot.samples.iter().find(|s| s.id == c.sample);
+                let name = sample.map_or(label, |s| s.name.as_str());
+                // The tag says when the clip is being stretched.
+                let tag = if c.ratio(bpm) == 1.0 {
+                    name.to_owned()
+                } else {
+                    format!("{name} · {} BPM", format_bpm(c.bpm))
+                };
+                let wave = sample.and_then(|s| s.peaks.clone()).map(|peaks| {
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(CLIP_LABEL_HEIGHT))
+                        .bottom(px(2.))
+                        .child(waveform::waveform(
+                            peaks,
+                            waveform::Reading::of(c, bpm, zoom.pixels_per_beat),
+                            color.detail,
+                        ))
+                });
+                frame_body(
+                    c.start.as_beats(),
+                    c.length.as_beats(),
+                    &tag,
+                    color,
+                    zoom,
+                    selected,
+                    theme,
+                )
+                .children(wave)
+            }
+        }
+    }
+}
+
+/// A tempo as typed: whole numbers plain, else to two places.
+fn format_bpm(bpm: f64) -> String {
+    if bpm.fract().abs() < 1e-9 {
+        format!("{bpm:.0}")
+    } else {
+        format!("{bpm:.2}")
+    }
+}
+
+/// A MIDI clip's look: its frame and its notes.
 fn clip_body(
     clip: &MidiClip,
     label: &str,
@@ -459,8 +528,6 @@ fn clip_body(
     selected: bool,
     theme: &Theme,
 ) -> gpui::Div {
-    let left = zoom.beat_to_x(clip.start.as_beats());
-    let width = zoom.beat_to_x(clip.length.as_beats());
     let note_area = (zoom.row_height - 2. * CLIP_INSET - CLIP_LABEL_HEIGHT - 6.).max(0.);
     let notes = clip
         .notes
@@ -479,11 +546,34 @@ fn clip_body(
                 .rounded(px(1.))
                 .bg(color.detail)
         });
+    frame_body(
+        clip.start.as_beats(),
+        clip.length.as_beats(),
+        label,
+        color,
+        zoom,
+        selected,
+        theme,
+    )
+    .children(notes)
+}
+
+/// Any clip's frame: placed in song time, soft fill, outline (accent when
+/// selected) and its label.
+fn frame_body(
+    start_beats: f64,
+    length_beats: f64,
+    label: &str,
+    color: ContentColor,
+    zoom: Zoom,
+    selected: bool,
+    theme: &Theme,
+) -> gpui::Div {
     div()
         .absolute()
-        .left(px(left))
+        .left(px(zoom.beat_to_x(start_beats)))
         .top(px(CLIP_INSET))
-        .w(px(width))
+        .w(px(zoom.beat_to_x(length_beats)))
         .h(px(zoom.row_height - 2. * CLIP_INSET))
         .rounded(px(5.))
         .bg(color.fill)
@@ -504,5 +594,4 @@ fn clip_body(
                 .text_color(color.detail)
                 .child(label.to_owned()),
         )
-        .children(notes)
 }

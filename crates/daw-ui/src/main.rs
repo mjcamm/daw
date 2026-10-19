@@ -2,6 +2,7 @@
 
 mod app;
 mod arrange;
+mod audio_import;
 mod block_edit;
 mod clip_drag;
 mod clip_edit;
@@ -29,6 +30,7 @@ mod timeline;
 mod tooltip;
 mod tree;
 mod tree_editor;
+mod waveform;
 mod zoom;
 
 use app::{AppView, OpenPreferences, Quit};

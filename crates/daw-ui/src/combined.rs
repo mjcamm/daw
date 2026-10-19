@@ -143,10 +143,10 @@ impl ProjectView {
             .map(|(node, id, clip)| Landing {
                 id: Some(*id),
                 node: *node,
-                clip: MidiClip {
+                clip: clip_edit::AnyClip::Midi(MidiClip {
                     start: clip.start + drag.shift,
                     ..clip.clone()
-                },
+                }),
             })
             .collect();
         let moving: Vec<ClipId> = drag.clips.iter().map(|(_, id, _)| *id).collect();

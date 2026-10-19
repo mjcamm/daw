@@ -25,6 +25,15 @@ pub struct AudioInfo {
     pub threads: usize,
 }
 
+/// Where imported audio goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportTarget {
+    /// Each file on a new audio node, `parent`'s children from `index` on.
+    NewNodes { parent: NodeId, index: usize },
+    /// One after another on this audio node.
+    Into(NodeId),
+}
+
 pub struct Session {
     engine: Engine,
     /// Kept alive so audio keeps playing; `None` if no device opened.
@@ -238,6 +247,52 @@ impl Session {
                 },
             ])))
             .map_err(|e| e.to_string())
+    }
+
+    /// Copies audio files into the project and adds them to the song at the
+    /// playhead, as one undoable step: each on a new audio node in
+    /// `parent` from `index` on, or (with `into`) one after another on that
+    /// audio node. Files that cannot be read are skipped and named in the
+    /// error; the rest still go in.
+    pub fn import_audio(&mut self, files: &[PathBuf], target: ImportTarget) -> Result<(), String> {
+        let mut imported = Vec::new();
+        let mut failed = Vec::new();
+        for path in files {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            // Read the length first, so an unreadable file is never copied.
+            let result = projects::wav_seconds(path).and_then(|seconds| {
+                projects::import_sample(&self.folder, path).map(|sample| (sample, seconds))
+            });
+            match result {
+                Ok((sample, seconds)) => {
+                    imported.push(crate::audio_import::Imported { sample, seconds });
+                }
+                Err(e) => failed.push(format!("{name}: {e}")),
+            }
+        }
+        if !imported.is_empty() {
+            let snapshot = self.engine.snapshot();
+            let at = daw_engine::Ticks::from_beats_f64(self.engine.position_beats().max(0.));
+            let edit = match target {
+                ImportTarget::NewNodes { parent, index } => {
+                    crate::audio_import::onto_new_nodes(&snapshot, &imported, parent, index, at)
+                }
+                ImportTarget::Into(node) => {
+                    crate::audio_import::into_node(&snapshot, &imported, node, at)
+                }
+            };
+            self.engine
+                .apply(Command::Edit(edit))
+                .map_err(|e| e.to_string())?;
+        }
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("Could not import {}", failed.join("; ")))
+        }
     }
 
     pub fn folder(&self) -> &Path {

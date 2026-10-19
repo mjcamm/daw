@@ -112,6 +112,13 @@ pub fn import_sample(folder: &Path, source: &Path) -> io::Result<daw_engine::Sam
     unreachable!("ran out of file names")
 }
 
+/// How long a WAV file plays, in seconds, from its header alone.
+pub fn wav_seconds(path: &Path) -> io::Result<f64> {
+    let reader = hound::WavReader::open(path).map_err(io::Error::other)?;
+    let rate = reader.spec().sample_rate.max(1);
+    Ok(f64::from(reader.duration()) / f64::from(rate))
+}
+
 /// Saves a project into its folder. The file is written beside the old one
 /// and then swapped in, so a crash mid-save never damages the existing file.
 pub fn save(folder: &Path, file: &ProjectFile) -> io::Result<()> {
@@ -362,5 +369,23 @@ mod tests {
         );
         let second = import_sample(&project, &source).unwrap();
         assert_eq!(second.file, "audio/Big Kick 2.wav", "never overwrites");
+    }
+
+    #[test]
+    fn a_wav_files_length_comes_from_its_header() {
+        let path = scratch("wav-length").join("half.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for _ in 0..2 * 22_050 {
+            writer.write_sample(0i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        assert_eq!(wav_seconds(&path).unwrap(), 0.5);
+        assert!(wav_seconds(&path.with_file_name("none.wav")).is_err());
     }
 }
