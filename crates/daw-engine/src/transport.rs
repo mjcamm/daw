@@ -32,6 +32,11 @@ impl Transport {
         self.anchor_beats + self.frames_since_anchor as f64 / self.samples_per_beat
     }
 
+    /// Song beats per frame at the current tempo.
+    pub fn beats_per_frame(&self) -> f64 {
+        1.0 / self.samples_per_beat
+    }
+
     pub fn is_playing(&self) -> bool {
         self.playing
     }

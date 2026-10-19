@@ -12,6 +12,7 @@
 //! regularly so queued messages are delivered and retired state is freed.
 
 mod audio;
+mod clips;
 pub mod devices;
 mod file;
 mod history;
@@ -24,12 +25,13 @@ mod upgrade;
 
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
-    BlendMode, Block, BlockId, ClipId, Command, CommandError, DEFAULT_TRIGGER_NOTE, DeviceId,
-    DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind, Instrument, InstrumentKind, InvalidBlock,
-    InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote, Node, NodeId,
-    NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot, ParamState, SampleId,
-    SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
-    SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    AudioClip, BlendMode, Block, BlockId, ClipId, Command, CommandError, DEFAULT_TRIGGER_NOTE,
+    DeviceId, DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind, Instrument, InstrumentKind,
+    InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, Meter, MidiClip, MidiNote,
+    MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot,
+    ParamState, Peaks, SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape,
+    ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot,
+    TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -151,6 +153,8 @@ impl Engine {
         assert!(config.channels > 0, "engine needs at least one channel");
         assert!(config.sample_rate > 0, "engine needs a sample rate");
         let position = self.status.position_beats();
+        self.samples
+            .convert_clips(&self.project, config.sample_rate);
         let (to_audio, from_control) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let (garbage_tx, garbage) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let status = Arc::new(SharedStatus::default());
@@ -159,7 +163,11 @@ impl Engine {
             config.sample_rate,
             usize::from(config.channels),
             config.threads.max(1),
-            Box::new(RenderState::compile_with(&self.project, &self.samples)),
+            Box::new(RenderState::compile_with(
+                &self.project,
+                &self.samples,
+                config.sample_rate,
+            )),
             from_control,
             garbage_tx,
             Arc::clone(&status),
@@ -310,6 +318,7 @@ impl Engine {
                     name: sample.name.clone(),
                     file: sample.file.clone(),
                     status: self.samples.status(id, &sample.file),
+                    peaks: self.samples.peaks(id, &sample.file).cloned(),
                 })
                 .collect(),
             can_undo: self.history.can_undo(),
@@ -407,7 +416,13 @@ impl Engine {
         self.outbox
             .retain(|msg| !matches!(msg, AudioMsg::SwapState(_)));
         self.samples.refresh(&self.project.samples);
-        let state = Box::new(RenderState::compile_with(&self.project, &self.samples));
+        self.samples
+            .convert_clips(&self.project, self.config.sample_rate);
+        let state = Box::new(RenderState::compile_with(
+            &self.project,
+            &self.samples,
+            self.config.sample_rate,
+        ));
         self.outbox.push_back(AudioMsg::SwapState(state));
     }
 }
@@ -430,6 +445,11 @@ fn node_snapshot(
         soloed: node.soloed,
         clips: node
             .clips
+            .iter()
+            .map(|(&id, clip)| (id, clip.clone()))
+            .collect(),
+        audio_clips: node
+            .audio_clips
             .iter()
             .map(|(&id, clip)| (id, clip.clone()))
             .collect(),

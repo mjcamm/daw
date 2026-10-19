@@ -4,14 +4,18 @@
 //! and renders the [`Snapshot`]s it gets back. This crate has no dependency on
 //! the engine, so either side can be replaced without touching the other.
 
+mod audio_clip;
 mod automation;
+mod peaks;
 mod time;
 
+pub use audio_clip::{AudioClip, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB};
 pub use automation::{
     BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect, EffectKind,
     Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId, ParamState,
     SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSource,
 };
+pub use peaks::{FINEST_SPAN, MinMax, PeakLevel, Peaks};
 pub use time::{TICKS_PER_BEAT, Ticks};
 
 use std::fmt;
@@ -99,6 +103,19 @@ pub enum Edit {
         id: ClipId,
         node: NodeId,
         clip: MidiClip,
+    },
+    /// Add an audio clip to an audio node. Removed with `RemoveClip`.
+    AddAudioClip {
+        node: NodeId,
+        id: ClipId,
+        clip: AudioClip,
+    },
+    /// Replace an audio clip, wherever it is, with `clip` on `node`:
+    /// moving, trimming, or changing its settings.
+    SetAudioClip {
+        id: ClipId,
+        node: NodeId,
+        clip: AudioClip,
     },
     /// Silence the node and everything under it.
     SetMute {
@@ -280,6 +297,8 @@ pub struct Node {
     /// Volume and pan in index order. An empty list means the defaults.
     pub channel: Vec<ParamState>,
     pub clips: std::collections::BTreeMap<ClipId, MidiClip>,
+    /// Audio clips, on audio nodes only. They share the clip ids.
+    pub audio_clips: std::collections::BTreeMap<ClipId, AudioClip>,
     /// Children in order; their sound flows into this node.
     pub children: Vec<(NodeId, Node)>,
 }
@@ -298,6 +317,7 @@ impl Node {
             effects: Vec::new(),
             channel: Vec::new(),
             clips: std::collections::BTreeMap::new(),
+            audio_clips: std::collections::BTreeMap::new(),
             children: Vec::new(),
         }
     }
@@ -341,6 +361,8 @@ pub struct SampleSnapshot {
     pub name: String,
     pub file: String,
     pub status: SampleStatus,
+    /// The waveform overview, once the audio has been read.
+    pub peaks: Option<std::sync::Arc<Peaks>>,
 }
 
 /// Identifies a clip. Chosen by whoever creates the clip.
@@ -416,6 +438,8 @@ pub struct NodeSnapshot {
     pub soloed: bool,
     /// Clips in id order.
     pub clips: Vec<(ClipId, MidiClip)>,
+    /// Audio clips in id order.
+    pub audio_clips: Vec<(ClipId, AudioClip)>,
     /// Devices in signal order: instrument (if any), effects, channel.
     pub devices: Vec<DeviceSnapshot>,
 }
@@ -621,6 +645,10 @@ pub enum CommandError {
     NotMidi {
         node: NodeId,
     },
+    /// Audio clips go on audio nodes, never a MIDI node or the Song.
+    NotAudio {
+        node: NodeId,
+    },
     /// Only MIDI nodes have instruments.
     InstrumentOnAudio {
         node: NodeId,
@@ -631,7 +659,7 @@ pub enum CommandError {
     UnknownSample {
         id: SampleId,
     },
-    /// A sample cannot be removed while an instrument plays it.
+    /// A sample cannot be removed while an instrument or clip plays it.
     SampleInUse {
         id: SampleId,
     },
@@ -680,6 +708,14 @@ pub enum InvalidClip {
     NoteLength {
         index: usize,
     },
+    /// An audio clip's offset is negative or not a number.
+    Offset,
+    /// An audio clip's tempo is outside its limits.
+    Bpm,
+    /// An audio clip's gain is outside its limits.
+    Gain,
+    /// An audio clip's fades are negative or longer than the clip.
+    Fades,
 }
 
 /// Why a block was rejected.
@@ -780,6 +816,7 @@ impl fmt::Display for CommandError {
             }
             Self::TooManyNodes { max } => write!(f, "a project holds at most {max} nodes"),
             Self::NotMidi { node } => write!(f, "node {} cannot hold MIDI clips", node.0),
+            Self::NotAudio { node } => write!(f, "node {} cannot hold audio clips", node.0),
             Self::InstrumentOnAudio { node } => {
                 write!(f, "node {} is an audio node and has no instrument", node.0)
             }
@@ -788,7 +825,11 @@ impl fmt::Display for CommandError {
             Self::DuplicateSample { id } => write!(f, "sample {} already exists", id.0),
             Self::UnknownSample { id } => write!(f, "sample {} does not exist", id.0),
             Self::SampleInUse { id } => {
-                write!(f, "sample {} is still played by an instrument", id.0)
+                write!(
+                    f,
+                    "sample {} is still played by an instrument or clip",
+                    id.0
+                )
             }
             Self::InvalidSampleFile { file } => {
                 write!(f, "{file:?} is not a path inside the project folder")
@@ -818,6 +859,13 @@ impl fmt::Display for InvalidClip {
                 write!(f, "note {index} has a velocity outside 1..=127")
             }
             Self::NoteLength { index } => write!(f, "note {index} has no length"),
+            Self::Offset => f.write_str("starts before its file's start"),
+            Self::Bpm => write!(f, "tempo is outside {MIN_CLIP_BPM}..={MAX_CLIP_BPM} BPM"),
+            Self::Gain => write!(
+                f,
+                "gain is outside {MIN_CLIP_GAIN_DB}..={MAX_CLIP_GAIN_DB} dB"
+            ),
+            Self::Fades => f.write_str("fades are negative or longer than the clip"),
         }
     }
 }

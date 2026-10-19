@@ -17,6 +17,7 @@ daw-engine = { path = "crates/daw-engine" }
 daw-host = { path = "crates/daw-host" }
 daw-protocol = { path = "crates/daw-protocol" }
 daw-rt = { path = "crates/daw-rt" }
+daw-stretch = { path = "crates/daw-stretch" }
 daw-testkit = { path = "crates/daw-testkit" }
 
 audio_thread_priority = { version = "0.35.1", default-features = false }
@@ -24,6 +25,7 @@ cpal = { version = "0.18.2", features = ["realtime"] }
 dirs = "7.0.0"
 hound = "3.5.1"
 rtrb = "0.4.0"
+rubato = "5.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
 unicode-segmentation = "1.13.2"
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }

@@ -10,9 +10,10 @@ use crate::devices::{
 };
 use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
-    Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument,
-    InstrumentKind, InvalidClip, Layer, LayerId, MidiClip, Node, NodeId, NodeKind, ParamId,
-    ParamState, SampleId, SampleRef, Signal, SignalId, SignalSource, SignalUse,
+    AudioClip, Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument,
+    InstrumentKind, InvalidClip, Layer, LayerId, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM,
+    MIN_CLIP_GAIN_DB, MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef,
+    Signal, SignalId, SignalSource, SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -296,6 +297,26 @@ impl Project {
         }
     }
 
+    /// A node that exists and takes audio clips: an audio node, not the Song.
+    fn check_takes_audio(&self, node: NodeId) -> Result<(), CommandError> {
+        match self.node(node) {
+            None => Err(CommandError::UnknownNode { id: node }),
+            Some(n) if n.kind != NodeKind::Audio || node == NodeId::ROOT => {
+                Err(CommandError::NotAudio { node })
+            }
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// An audio clip must be valid and name a sample in the table.
+    fn check_audio_clip(&self, clip: &AudioClip) -> Result<(), CommandError> {
+        validate_audio_clip(clip).map_err(|reason| CommandError::InvalidClip { reason })?;
+        if !self.samples.contains_key(&clip.sample) {
+            return Err(CommandError::UnknownSample { id: clip.sample });
+        }
+        Ok(())
+    }
+
     fn node_or_err(&mut self, id: NodeId) -> Result<&mut Node, CommandError> {
         self.node_mut(id).ok_or(CommandError::UnknownNode { id })
     }
@@ -325,7 +346,7 @@ impl Project {
     pub fn clip_node(&self, id: ClipId) -> Option<NodeId> {
         self.nodes()
             .into_iter()
-            .find(|e| e.node.clips.contains_key(&id))
+            .find(|e| e.node.clips.contains_key(&id) || e.node.audio_clips.contains_key(&id))
             .map(|e| e.id)
     }
 
@@ -342,6 +363,10 @@ impl Project {
         subtree_instruments(&self.root)
             .iter()
             .any(|(_, i)| i.sample == Some(id))
+            || self
+                .nodes()
+                .iter()
+                .any(|e| e.node.audio_clips.values().any(|c| c.sample == id))
     }
 
     /// An instrument may only name a sample if it is a SingleSampler and
@@ -453,6 +478,7 @@ impl Project {
         for entry in self.nodes() {
             used.nodes.insert(entry.id);
             used.clips.extend(entry.node.clips.keys().copied());
+            used.clips.extend(entry.node.audio_clips.keys().copied());
             used.devices
                 .extend(entry.node.effects.iter().map(|(id, _)| *id));
             used.devices
@@ -647,7 +673,7 @@ impl Project {
                 let parent_kind = self.node(parent).map_or(NodeKind::Midi, |p| p.kind);
                 check_kinds(parent, parent_kind, id, &node)?;
                 let mut used = self.used_ids();
-                prepare_node(id, &mut node, &mut used, &self.signals)?;
+                prepare_node(id, &mut node, &mut used, &self.signals, &self.samples)?;
                 self.node_or_err(parent)?.children.insert(index, (id, node));
                 Ok(Edit::RemoveNode { id })
             }
@@ -715,12 +741,38 @@ impl Project {
             }
             Edit::RemoveClip { id } => {
                 let node = self.clip_node(id).ok_or(CommandError::UnknownClip { id })?;
-                let clip = self
-                    .node_or_err(node)?
+                let holder = self.node_or_err(node)?;
+                if let Some(clip) = holder.audio_clips.remove(&id) {
+                    return Ok(Edit::AddAudioClip { node, id, clip });
+                }
+                let clip = holder
                     .clips
                     .remove(&id)
                     .ok_or(CommandError::UnknownClip { id })?;
                 Ok(Edit::AddClip { node, id, clip })
+            }
+            Edit::AddAudioClip { node, id, clip } => {
+                self.check_takes_audio(node)?;
+                self.used_ids().claim_clip(id)?;
+                self.check_audio_clip(&clip)?;
+                self.node_or_err(node)?.audio_clips.insert(id, clip);
+                Ok(Edit::RemoveClip { id })
+            }
+            Edit::SetAudioClip { id, node, clip } => {
+                let from = self.clip_node(id).ok_or(CommandError::UnknownClip { id })?;
+                self.check_takes_audio(node)?;
+                self.check_audio_clip(&clip)?;
+                let previous = self
+                    .node_or_err(from)?
+                    .audio_clips
+                    .remove(&id)
+                    .ok_or(CommandError::UnknownClip { id })?;
+                self.node_or_err(node)?.audio_clips.insert(id, clip);
+                Ok(Edit::SetAudioClip {
+                    id,
+                    node: from,
+                    clip: previous,
+                })
             }
             Edit::SetClip { id, node, clip } => {
                 let from = self.clip_node(id).ok_or(CommandError::UnknownClip { id })?;
@@ -1188,6 +1240,7 @@ fn prepare_node(
     node: &mut Node,
     used: &mut UsedIds,
     signals: &BTreeMap<SignalId, Signal>,
+    samples: &BTreeMap<SampleId, SampleRef>,
 ) -> Result<(), CommandError> {
     used.claim_node(id)?;
     node.name = clean_name(&node.name)?;
@@ -1225,12 +1278,22 @@ fn prepare_node(
     if node.kind == NodeKind::Audio && !node.clips.is_empty() {
         return Err(CommandError::NotMidi { node: id });
     }
+    if node.kind == NodeKind::Midi && !node.audio_clips.is_empty() {
+        return Err(CommandError::NotAudio { node: id });
+    }
+    for (clip_id, clip) in &node.audio_clips {
+        used.claim_clip(*clip_id)?;
+        validate_audio_clip(clip).map_err(|reason| CommandError::InvalidClip { reason })?;
+        if !samples.contains_key(&clip.sample) {
+            return Err(CommandError::UnknownSample { id: clip.sample });
+        }
+    }
     for (clip_id, clip) in &node.clips {
         used.claim_clip(*clip_id)?;
         validate_clip(clip).map_err(|reason| CommandError::InvalidClip { reason })?;
     }
     for (child_id, child) in &mut node.children {
-        prepare_node(*child_id, child, used, signals)?;
+        prepare_node(*child_id, child, used, signals, samples)?;
     }
     Ok(())
 }
@@ -1326,6 +1389,28 @@ fn prepare_layer(
         used.claim_block(*block_id)?;
         check_block(*block_id, block)?;
         check_no_overlap(&layer.blocks[..i], *block_id, block)?;
+    }
+    Ok(())
+}
+
+fn validate_audio_clip(clip: &AudioClip) -> Result<(), InvalidClip> {
+    if clip.start.0 < 0 {
+        return Err(InvalidClip::NegativeStart);
+    }
+    if clip.length.0 <= 0 {
+        return Err(InvalidClip::EmptyLength);
+    }
+    if !(clip.offset >= 0.0 && clip.offset.is_finite()) {
+        return Err(InvalidClip::Offset);
+    }
+    if !(MIN_CLIP_BPM..=MAX_CLIP_BPM).contains(&clip.bpm) {
+        return Err(InvalidClip::Bpm);
+    }
+    if !(MIN_CLIP_GAIN_DB..=MAX_CLIP_GAIN_DB).contains(&clip.gain_db) {
+        return Err(InvalidClip::Gain);
+    }
+    if clip.fade_in.0 < 0 || clip.fade_out.0 < 0 || clip.fade_in + clip.fade_out > clip.length {
+        return Err(InvalidClip::Fades);
     }
     Ok(())
 }

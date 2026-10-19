@@ -10,6 +10,8 @@
 - **Phase 5 (node tree): engine done** (2026-10-16, `docs/design/node-tree.md`): nodes form a tree under the Song (the master), parents have no instrument, sound sums up through parents (a centred parent passes sound unchanged; existing songs render bit-for-bit the same), mute and solo work across the tree, per-node meters, project-wide ids, notes signals name their source node, file version 7 (older files nest their node under the Song). **Arrange tree built** (2026-10-16): flat rows with parents after their children and the Song last, the vertical nesting map with folding, a toolbar (add a MIDI or Audio node, group into a new node, duplicate, delete; Delete key too), and drag to move or nest. Rows animate (grow, close, glide; folding slides children into their parent). Parent lanes stay blank until the merged waveform (Phase 6). **Clips** move, copy (Ctrl), resize and cut what they land on, between nodes too, with a live preview; dropping below the last row makes a new node. Driven and checked by Claude; not yet tried by the user. **Mixer built** (`docs/design/mixer.md`): aligned strips with effect slots (add, on/off, remove), pan, fader with automation marker, stereo meters with peak hold, mute and solo; the nesting map along the bottom with folding shared with Arrange.
 - **Publish as signal and the inspector** (2026-10-16): the node row on Arrange publishes its notes as a signal; the **inspector** (right panel, folding into a tray, `docs/design/inspector.md`) configures a selected notes signal: an optional pitch range, ADSR envelope with a live graph, and an optional velocity clamp (Min/Max). The two optional parts have on/off switches, off by default (file version 6). Driven and checked by Claude; tried by the user ("feels great").
 
+- **Audio clips** (2026-10-19, `docs/design/audio-clips.md`): agreed with the user. Stretching is live, at playback, with the user's own stretcher brought over as `crates/daw-stretch` (`docs/design/stretcher.md`). **Engine built:** `AudioClip` (a window onto a sample: offset, own BPM, follow tempo, gain, fades), `AddAudioClip` / `SetAudioClip` / `RemoveClip`, file version 12, conversion to the engine's rate, waveform overviews in `SampleSnapshot.peaks`, playback through one stretcher per audio node (any block size, any thread count). **Next: the UI**: Track → Import Audio…, drag and drop onto Arrange, drawing clips with waveforms, trim and reveal, a scissors tool for MIDI and audio, the clip panel (double-click: waveform with an info column on the right).
+
 ## In the app (`cargo run -p daw-ui`)
 
 - **Menu bar:** File → Preferences… (Ctrl+,: Appearance System/Light/Dark, saved to `preferences.json`) and Quit (Ctrl+Q, saves first).
@@ -60,6 +62,8 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 - On Windows, a running app blocks rebuilding `daw.exe` ("failed to remove file"). `check.sh` still works; ask them to close the app to run it.
 
 ## Known gaps
+
+- **TODO (user, 2026-10-19): audio file types beyond WAV** (MP3, FLAC, AIFF; `symphonia` is the likely crate) for samples and audio clips. Reading files in the background, too.
 
 - MIDI: new clips by double-clicking an empty MIDI lane; quantize and auto-scroll in the piano roll (2026-10-18). Recording, MIDI keyboard input, MIDI file import and more instruments are Phase 9. Effects are added on the mixer; their settings show only on Parameters for now. No node colour picker yet.
 - Parameters update every 32 samples (gains ramp, others step); revisit if anything sounds zippery.

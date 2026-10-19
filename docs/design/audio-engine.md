@@ -1,6 +1,6 @@
 # Audio Engine
 
-How the engine fits together, for picking up work on it. Feature details live in their own docs: `samples.md` (SingleSampler, sample pool), `audio-settings.md` (devices, safety, multicore), `motion-signals.md` and `parameters-and-layers.md` (automation), `node-tree.md` (the tree).
+How the engine fits together, for picking up work on it. Feature details live in their own docs: `samples.md` (SingleSampler, sample pool), `audio-clips.md` (audio clips and stretching), `audio-settings.md` (devices, safety, multicore), `motion-signals.md` and `parameters-and-layers.md` (automation), `node-tree.md` (the tree).
 
 ## Two sides
 
@@ -37,8 +37,10 @@ They meet only through two lock-free `rtrb` queues (`AudioMsg` in, retired state
 | `daw-engine/src/audio.rs` | `AudioProcessor`, `NodePlayer`, instrument and effect instances, the output guard, the test tone |
 | `daw-engine/src/parallel.rs` | The worker pool and `Shards` (the only `unsafe` in the engine) |
 | `daw-engine/src/devices.rs` | Every built-in device's parameters and how values reach the DSP |
-| `daw-engine/src/samples.rs` | WAV decoding and the sample pool |
-| `daw-engine/src/file.rs`, `upgrade.rs` | The project file (version 9) and converting older versions |
+| `daw-engine/src/samples.rs` | WAV decoding, the sample pool, rate conversion for clips, waveform overviews |
+| `daw-engine/src/clips.rs` | Audio clips on the audio thread: `ClipPlayer` (one stretcher per audio node) |
+| `daw-stretch/src/` | The time-stretcher, `StemStream` (`stretcher.md`) |
+| `daw-engine/src/file.rs`, `upgrade.rs` | The project file (version 12) and converting older versions |
 | `daw-dsp/src/` | Standalone DSP: synth, sampler, filter, envelopes, pan, smoothing |
 | `daw-rt/src/` | The allocation guard and `without_denormals` |
 | `daw-host/src/lib.rs` | Devices through `cpal`: drivers, device choices, opening a stream, `CallbackStats` load |

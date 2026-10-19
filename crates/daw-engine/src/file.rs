@@ -8,8 +8,8 @@
 use crate::devices::CHANNEL_PARAMS;
 use crate::project::{Project, song};
 use daw_protocol::{
-    ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument, LoopRange, MidiClip, Node,
-    NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef, Signal, SignalId,
+    AudioClip, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument, LoopRange,
+    MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef, Signal, SignalId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -24,8 +24,8 @@ pub const FORMAT: &str = "daw-project";
 /// Song; version 8 let a node layer several instruments; version 9 added
 /// the sample table and the SingleSampler's sample; version 10 added group
 /// clips (since removed: their "groups" are ignored) and trigger notes;
-/// version 11 made every branch one kind.
-pub const VERSION: u32 = 11;
+/// version 11 made every branch one kind; version 12 added audio clips.
+pub const VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -75,8 +75,18 @@ pub struct NodeFile {
     /// Volume and pan, in parameter order.
     pub channel: Vec<ParamState>,
     pub clips: Vec<ClipFile>,
+    /// Audio clips (audio nodes only). Missing before version 12.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_clips: Vec<AudioClipFile>,
     #[serde(default)]
     pub children: Vec<NodeFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioClipFile {
+    pub id: ClipId,
+    #[serde(flatten)]
+    pub clip: AudioClip,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,6 +194,14 @@ fn node_file(id: NodeId, node: &Node) -> NodeFile {
                 clip: clip.clone(),
             })
             .collect(),
+        audio_clips: node
+            .audio_clips
+            .iter()
+            .map(|(id, clip)| AudioClipFile {
+                id: *id,
+                clip: clip.clone(),
+            })
+            .collect(),
         children: node
             .children
             .iter()
@@ -201,6 +219,12 @@ fn file_node(file: NodeFile) -> Result<(NodeId, Node), LoadError> {
             return Err(CommandError::DuplicateClip { id: c.id }.into());
         }
     }
+    let mut audio_clips = std::collections::BTreeMap::new();
+    for c in file.audio_clips {
+        if clips.contains_key(&c.id) || audio_clips.insert(c.id, c.clip).is_some() {
+            return Err(CommandError::DuplicateClip { id: c.id }.into());
+        }
+    }
     let node = Node {
         name: file.name,
         kind: file.kind,
@@ -215,6 +239,7 @@ fn file_node(file: NodeFile) -> Result<(NodeId, Node), LoadError> {
         effects: file.effects.into_iter().map(|e| (e.id, e.effect)).collect(),
         channel: file.channel,
         clips,
+        audio_clips,
         children: file
             .children
             .into_iter()

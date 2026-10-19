@@ -11,6 +11,7 @@
 //! order, children before parents: each adds its output into its parent's
 //! bus, and the Song's output is the processor's.
 
+use crate::clips::{ClipPlayer, ClipRender};
 use crate::devices::{
     CHANNEL_PARAMS, MAX_DEVICE_PARAMS, ParamInfo, channel_settings, effect_params, filter_params,
     instrument_params, sampler_level, synth_params,
@@ -42,6 +43,8 @@ pub const CONTROL_FRAMES: u64 = 32;
 const MAX_PENDING_ENDS: usize = MAX_VOICES * 2;
 /// Marks a slot with no player yet while players are being assigned.
 const NO_PLAYER: usize = usize::MAX;
+/// Clip players made up front: at most this many audio nodes play clips.
+pub const MAX_CLIP_PLAYERS: usize = 64;
 
 /// Control-to-audio messages.
 #[derive(Debug)]
@@ -172,6 +175,13 @@ pub struct AudioProcessor {
     heights: Vec<usize>,
     /// Worker threads that render nodes alongside this one.
     pool: Pool,
+    /// Clip players not lent to a node. Room for all of them, so returning
+    /// one never allocates.
+    #[allow(
+        clippy::vec_box,
+        reason = "players move between this list and nodes; a box moves as one pointer"
+    )]
+    spare_clips: Vec<Box<ClipPlayer>>,
     left: Box<[f32; CHUNK_FRAMES]>,
     right: Box<[f32; CHUNK_FRAMES]>,
     /// Frames rendered since the processor started; sets the control grid.
@@ -222,6 +232,9 @@ impl AudioProcessor {
                     std::mem::forget(handle);
                 }
             }),
+            spare_clips: (0..MAX_CLIP_PLAYERS)
+                .map(|_| Box::new(ClipPlayer::new(sample_rate, CHUNK_FRAMES)))
+                .collect(),
             left: Box::new([0.0; CHUNK_FRAMES]),
             right: Box::new([0.0; CHUNK_FRAMES]),
             frames_processed: 0,
@@ -383,6 +396,9 @@ impl AudioProcessor {
         for (index, player) in self.players.iter_mut().enumerate() {
             if !taken[index] && player.node.is_some() {
                 player.free(&self.status.meters[index]);
+                if let Some(clips) = player.clips.take() {
+                    self.spare_clips.push(clips);
+                }
             }
         }
         for slot in 0..self.slots.len() {
@@ -403,6 +419,16 @@ impl AudioProcessor {
             let player = self.players.get_mut(index);
             player.sync_effects(&node.effects, self.sample_rate);
             player.sync_instruments(&node.instruments);
+            // Audio nodes with clips borrow a clip player; without clips
+            // they give it back.
+            if node.clips.is_empty() {
+                if let Some(mut clips) = player.clips.take() {
+                    clips.reset();
+                    self.spare_clips.push(clips);
+                }
+            } else if player.clips.is_none() {
+                player.clips = self.spare_clips.pop();
+            }
             if player.fresh {
                 // Start at the node's gains rather than ramping up from
                 // silence.
@@ -702,6 +728,8 @@ struct NodePlayer {
     /// instrument's, then processed in place.
     bus_left: Box<[f32; CHUNK_FRAMES]>,
     bus_right: Box<[f32; CHUNK_FRAMES]>,
+    /// Plays its audio clips, while it has some (lent by the processor).
+    clips: Option<Box<ClipPlayer>>,
     /// Where an instrument renders before joining the bus. Each player has
     /// its own, so players render on any thread.
     scratch_left: Box<[f32; CHUNK_FRAMES]>,
@@ -723,6 +751,7 @@ impl NodePlayer {
             cursor: 0,
             pending_ends: [None; MAX_PENDING_ENDS],
             next_note_id: 0,
+            clips: None,
             bus_left: Box::new([0.0; CHUNK_FRAMES]),
             bus_right: Box::new([0.0; CHUNK_FRAMES]),
             scratch_left: Box::new([0.0; CHUNK_FRAMES]),
@@ -805,9 +834,10 @@ impl NodePlayer {
                 if playing {
                     self.fire_due_events(node, &transport);
                     let to_event = self.frames_to_next_event(node, &transport).max(1) as u64;
-                    next = next.min(to_event);
+                    let to_edge = frames_to_clip_edge(&node.clips, &transport).max(1) as u64;
+                    next = next.min(to_event).min(to_edge);
                 }
-                self.render_span(node, done as usize..(done + next) as usize);
+                self.render_span(node, done as usize..(done + next) as usize, &transport);
                 if playing {
                     transport.advance(next);
                 }
@@ -824,7 +854,23 @@ impl NodePlayer {
 
     /// A span with steady parameters: every instrument into the bus (their
     /// sounds add up), then effects, volume and pan.
-    fn render_span(&mut self, node: &NodeRender, span: std::ops::Range<usize>) {
+    fn render_span(
+        &mut self,
+        node: &NodeRender,
+        span: std::ops::Range<usize>,
+        transport: &Transport,
+    ) {
+        if let Some(clips) = &mut self.clips {
+            clips.render(
+                node.id,
+                &node.clips,
+                transport.is_playing(),
+                transport.position(),
+                transport.beats_per_frame(),
+                &mut self.bus_left[span.clone()],
+                &mut self.bus_right[span.clone()],
+            );
+        }
         for ((_, instrument), state) in self.instruments.iter_mut().zip(&node.instruments) {
             let left = &mut self.scratch_left[span.clone()];
             let right = &mut self.scratch_right[span.clone()];
@@ -1026,6 +1072,19 @@ impl NodePlayer {
         }
         self.pending_ends = [None; MAX_PENDING_ENDS];
     }
+}
+
+/// Frames until the next start or end of a clip, among clips sorted by
+/// start (which never overlap).
+fn frames_to_clip_edge(clips: &[ClipRender], transport: &Transport) -> i64 {
+    let beat = transport.position();
+    let from = clips.partition_point(|c| c.end_beats <= beat);
+    clips[from..]
+        .iter()
+        .flat_map(|c| [c.start_beats, c.end_beats])
+        .map(|edge| transport.frames_until(edge))
+        .find(|&frames| frames > 0)
+        .unwrap_or(i64::MAX)
 }
 
 fn peak(samples: &[f32]) -> f32 {

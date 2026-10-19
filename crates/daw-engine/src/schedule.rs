@@ -1,5 +1,6 @@
 //! Compiling the project into the flat, time-sorted form the audio side plays.
 
+use crate::clips::ClipRender;
 use crate::project::Project;
 use crate::samples::{SampleData, SamplePool};
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
@@ -40,6 +41,8 @@ pub struct NodeRender {
     pub effects: Vec<EffectState>,
     /// One automation per channel parameter, in index order.
     pub channel: Vec<Automation>,
+    /// Its audio clips whose audio was read, sorted by start.
+    pub clips: Vec<ClipRender>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,6 +163,36 @@ struct Context<'a> {
     signals: &'a Signals,
     project: &'a Project,
     samples: &'a SamplePool,
+    sample_rate: u32,
+}
+
+/// A node's audio clips ready to play, sorted by start. Clips whose audio
+/// has not been converted to the engine's rate are left out (silent).
+fn compile_clips(node: &Node, cx: &Context<'_>) -> Vec<ClipRender> {
+    let song_bpm = cx.project.tempo_bpm;
+    let rate = f64::from(cx.sample_rate);
+    let mut clips: Vec<ClipRender> = node
+        .audio_clips
+        .iter()
+        .filter_map(|(&id, clip)| {
+            let file = &cx.project.samples.get(&clip.sample)?.file;
+            let audio = cx.samples.at_rate(clip.sample, file, cx.sample_rate)?;
+            Some(ClipRender {
+                id,
+                start_beats: clip.start.as_beats(),
+                end_beats: clip.end().as_beats(),
+                audio: Arc::clone(audio),
+                offset_frames: clip.offset * rate,
+                frames_per_beat: clip.seconds_per_beat(song_bpm) * rate,
+                ratio: clip.ratio(song_bpm),
+                gain: 10.0f64.powf(clip.gain_db / 20.0) as f32,
+                fade_in_beats: clip.fade_in.as_beats(),
+                fade_out_beats: clip.fade_out.as_beats(),
+            })
+        })
+        .collect();
+    clips.sort_by(|a, b| a.start_beats.total_cmp(&b.start_beats));
+    clips
 }
 
 fn compile_node(
@@ -213,6 +246,7 @@ fn compile_node(
             })
             .collect(),
         channel: compile_params(&node.channel, signals),
+        clips: compile_clips(node, cx),
     });
     for child in children {
         out[child].parent = Some(index);
@@ -221,19 +255,21 @@ fn compile_node(
 }
 
 impl RenderState {
-    /// The project with no sample audio (samplers are silent).
+    /// The project with no sample audio (samplers and clips are silent).
     pub fn compile(project: &Project) -> Self {
-        Self::compile_with(project, &SamplePool::default())
+        Self::compile_with(project, &SamplePool::default(), 48_000)
     }
 
-    /// The project, with samples' audio from `samples`.
-    pub fn compile_with(project: &Project, samples: &SamplePool) -> Self {
+    /// The project, with samples' audio from `samples`; audio clips play
+    /// their samples as converted to `sample_rate`.
+    pub fn compile_with(project: &Project, samples: &SamplePool, sample_rate: u32) -> Self {
         let signals = compile_signals(project);
         let cx = Context {
             any_soloed: project.nodes().iter().any(|e| e.node.soloed),
             signals: &signals,
             project,
             samples,
+            sample_rate,
         };
         let mut nodes = Vec::new();
         compile_node(NodeId::ROOT, &project.root, false, &cx, &mut nodes);

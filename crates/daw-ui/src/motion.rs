@@ -235,6 +235,7 @@ mod tests {
             muted: false,
             soloed: false,
             clips: Vec::new(),
+            audio_clips: Vec::new(),
             devices: Vec::new(),
         }
     }

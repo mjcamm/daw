@@ -1,6 +1,6 @@
 # Audio Clips
 
-*Status: agreed with the user 2026-10-19; being built. Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
+*Status: agreed with the user 2026-10-19. **Engine built** (2026-10-19): the clip model and edits, file version 12, rate conversion, waveform overviews in the snapshot, playback through the stretcher (`daw-engine/src/clips.rs`, tests in `daw-engine/tests/audio_clips.rs`). UI (importing, drawing, gestures, scissors, the panel) still to build. Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
 
 ## Stretching happens live, at playback
 
@@ -34,8 +34,9 @@ An audio clip is a window onto a sample (`AudioClip` in `daw-protocol`):
 
 - `Edit::AddAudioClip { node, id, clip }`, `Edit::SetAudioClip { id, node, clip }` (move, trim, change settings, between audio nodes), and `RemoveClip`; each returns its inverse. A clip is refused on anything but an audio node, with an unknown sample, a negative offset or fades longer than the clip.
 - A sample used by a clip cannot be removed (`SampleInUse`), as for samplers.
-- **Sample rate:** a clip plays its sample converted to the engine's rate once, on the control side, and kept in the pool; the stretcher then works at the engine rate.
-- **Audio thread:** each audio node with clips plays them through one `StemStream` (its clips never overlap on the node). Streams are made up front with the processor (`MAX_AUDIO_STREAMS`), so nothing allocates on the audio thread. Clip starts and ends are events on their exact frames, like notes. Gain and fades apply per frame from song position. Stopping fades out over a few milliseconds.
+- **Sample rate:** a clip plays its sample converted to the engine's rate once (band-limited, `rubato`'s FFT resampler), on the control side when the state is published, and kept in the pool; the stretcher then works at the engine rate. Converting a long file pauses the UI briefly until loading moves to the background.
+- **Waveform overviews:** `Peaks` (min and max per 32 frames, then every four times coarser) is made once per sample when it is read and shared in `SampleSnapshot.peaks`.
+- **Audio thread:** each audio node with clips plays them through one `StemStream` (its clips never overlap on the node). Clip players are made up front with the processor (`MAX_CLIP_PLAYERS`, 64, about 0.3 MB each) and lent to audio nodes that have clips, so nothing allocates on the audio thread; past 64 such nodes, the rest are silent. The player never holds a clip's audio `Arc` (it could become the last owner and free it on the audio thread); it remembers where it plays and reads the audio from the current render state. Clip starts and ends are events on their exact frames, like notes. Gain and fades apply per frame from song position. Stopping fades out over a few milliseconds.
 - **Live equals offline:** frames depend only on the stream's frame grid, which is set from the node id (not from how many streams were made before), so output is the same for any block size and any thread count.
 
 ## Importing
