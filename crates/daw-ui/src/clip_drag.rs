@@ -268,6 +268,39 @@ impl ProjectView {
         self.open_node_editor(node, start);
     }
 
+    /// Adds an empty clip where an empty lane of a MIDI node was
+    /// double-clicked: a bar long from the grid line at or before the
+    /// pointer (shorter if the next clip comes sooner), selected, with the
+    /// editor opened on it.
+    pub(crate) fn add_clip_at(&mut self, node: NodeId, position: Point<Pixels>) {
+        let view = &self.arrange_view;
+        let bounds = view.x.bounds();
+        let x = (position.x - bounds.left() - view.x.offset().x) / px(1.);
+        let at = Ticks::from_beats_f64(view.zoom.x_to_beats(x).max(0.));
+        let start = self.snap.floor(at);
+        let snapshot = self.session.snapshot();
+        let Some(lane) = snapshot.node(node).filter(|n| n.takes_midi()) else {
+            return;
+        };
+        let clips: Vec<MidiClip> = lane.clips.iter().map(|(_, c)| c.clone()).collect();
+        let Some(length) = clip_edit::room_for_clip(&clips, start, Ticks::from_beats(4)) else {
+            // No room here: just open the editor at the spot.
+            self.open_editor_at(node, position);
+            return;
+        };
+        let id = clip_edit::next_clip_id(snapshot);
+        let clip = MidiClip {
+            start,
+            length,
+            notes: Vec::new(),
+        };
+        self.session
+            .apply(Command::Edit(Edit::AddClip { node, id, clip }));
+        self.selected_clips = [id].into();
+        // The snapshot may not hold the new clip yet, so open by its node.
+        self.open_node_editor(node, start.as_beats());
+    }
+
     /// While dragging near the timeline's edges, scrolls it. Called every
     /// frame.
     pub(crate) fn autoscroll_clip_drag(&self) {

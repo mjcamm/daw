@@ -1089,15 +1089,15 @@ impl ProjectView {
                     .border_b_1()
                     .border_color(theme.hairline)
                     // A press on empty lane clears the clip selection; a
-                    // double-click on a MIDI node's lane opens the editor
-                    // there.
+                    // double-click on a MIDI node's lane adds a one-bar
+                    // clip there and opens the editor on it.
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, _| {
                             this.selected_clips.clear();
                             this.selected_combined = None;
                             if event.click_count >= 2 && takes_clips {
-                                this.open_editor_at(id, event.position);
+                                this.add_clip_at(id, event.position);
                             } else if event.click_count >= 2 && audio {
                                 this.open_audio_editor(id, 0.);
                             }

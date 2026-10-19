@@ -19,7 +19,7 @@
 
 ## The editor follows the node, not a clip
 
-- **Selecting a node** (its row or lane) points the editor at that node, at the time Arrange is showing. Double-clicking a lane or a clip opens the editor there. The editor's time is song time (its ruler counts song bars).
+- **Selecting a node** (its row or lane) points the editor at that node, at the time Arrange is showing. Double-clicking a clip opens the editor there; double-clicking an empty MIDI lane also adds a one-bar clip there first (`clip_edit::room_for_clip`, as in `piano-roll.md`; restored 2026-10-20 after the node-following editor dropped it by mistake). The editor's time is song time (its ruler counts song bars).
 - The roll shows the node's notes from all its clips. **Drawing where the node has no clip makes a one-bar clip** (snapped to the bar) around the note. Each note belongs to the clip its start falls in; an edit that moves a note out of every clip makes it a new one-bar clip. Each gesture is one undo step.
 
 ## The tree editor

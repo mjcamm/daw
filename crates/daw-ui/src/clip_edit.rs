@@ -334,6 +334,21 @@ pub fn split_at(snapshot: &Snapshot, ids: &[ClipId], at: Ticks) -> Option<(Edit,
     (!edits.is_empty()).then_some((Edit::Batch(edits), pieces))
 }
 
+/// How long a new clip starting at `start` can be, up to `length`: it
+/// stops where the next clip on the lane begins. None when `start` is
+/// inside a clip or there is no room.
+pub fn room_for_clip(clips: &[MidiClip], start: Ticks, length: Ticks) -> Option<Ticks> {
+    if clips
+        .iter()
+        .any(|c| c.start <= start && start < c.start + c.length)
+    {
+        return None;
+    }
+    let next = clips.iter().map(|c| c.start).filter(|&s| s > start).min();
+    let room = next.map_or(length, |n| (n - start).min(length));
+    (room > Ticks::ZERO).then_some(room)
+}
+
 /// Which part of a clip a drag holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grab {
@@ -962,6 +977,38 @@ mod tests {
             spans(&engine),
             [(1, 4.0, 12.0), (2, 12.0, 16.0)],
             "one undo"
+        );
+    }
+
+    #[test]
+    fn a_new_clip_fills_the_room_up_to_the_next_clip() {
+        let lane = [
+            MidiClip {
+                start: beats(4),
+                length: beats(4),
+                notes: vec![],
+            },
+            MidiClip {
+                start: beats(10),
+                length: beats(2),
+                notes: vec![],
+            },
+        ];
+        assert_eq!(room_for_clip(&lane, beats(0), beats(4)), Some(beats(4)));
+        assert_eq!(
+            room_for_clip(&lane, beats(8), beats(4)),
+            Some(beats(2)),
+            "stops at the next clip"
+        );
+        assert_eq!(
+            room_for_clip(&lane, beats(5), beats(4)),
+            None,
+            "inside a clip"
+        );
+        assert_eq!(
+            room_for_clip(&lane, beats(12), beats(4)),
+            Some(beats(4)),
+            "after the last"
         );
     }
 }
