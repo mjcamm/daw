@@ -5,7 +5,7 @@
 //! Dragging a block moves every clip in it (cutting what they land on, as
 //! clip drags do); Delete removes them; each one undo step.
 
-use crate::clip_edit::{self, Landing};
+use crate::clip_edit::{self, AnyClip, Landing};
 use crate::project::ProjectView;
 use crate::theme::Theme;
 use crate::tooltip;
@@ -29,18 +29,40 @@ pub struct CombinedBlock {
     pub clips: Vec<(NodeId, ClipId)>,
 }
 
+/// A MIDI clip and the node it is on.
+pub type PlacedClip = (NodeId, ClipId, MidiClip);
+
+/// Every MIDI clip in the project, where the snapshot has it.
+pub fn all_clips(snapshot: &Snapshot) -> Vec<PlacedClip> {
+    snapshot
+        .nodes
+        .iter()
+        .flat_map(|n| n.clips.iter().map(|(id, c)| (n.id, *id, c.clone())))
+        .collect()
+}
+
 /// The blocks for a node's lane: the clips of every node below it, merged
 /// where they overlap or touch.
 pub fn combined_blocks(snapshot: &Snapshot, node: NodeId) -> Vec<CombinedBlock> {
-    let mut clips: Vec<(NodeId, ClipId, Ticks, Ticks)> = tree_nodes(snapshot, node)
+    combined_blocks_of(snapshot, node, &all_clips(snapshot))
+}
+
+/// The blocks for a node's lane from `clips` (the snapshot's, or where a
+/// drag would put them, so blocks follow a drag as it happens).
+pub fn combined_blocks_of(
+    snapshot: &Snapshot,
+    node: NodeId,
+    clips: &[PlacedClip],
+) -> Vec<CombinedBlock> {
+    let below: Vec<NodeId> = tree_nodes(snapshot, node)
         .into_iter()
         .skip(1)
-        .flat_map(|(n, _)| {
-            n.clips
-                .iter()
-                .map(|(id, c)| (n.id, *id, c.start, c.start + c.length))
-                .collect::<Vec<_>>()
-        })
+        .map(|(n, _)| n.id)
+        .collect();
+    let mut clips: Vec<(NodeId, ClipId, Ticks, Ticks)> = clips
+        .iter()
+        .filter(|(n, _, _)| below.contains(n))
+        .map(|(n, id, c)| (*n, *id, c.start, c.start + c.length))
         .collect();
     clips.sort_by_key(|(_, id, start, _)| (*start, *id));
     let mut blocks: Vec<CombinedBlock> = Vec::new();
@@ -72,6 +94,11 @@ pub(crate) struct CombinedDrag {
 }
 
 impl CombinedDrag {
+    /// Whether this drag holds `clip`.
+    fn holds(&self, clip: ClipId) -> bool {
+        self.started && self.clips.iter().any(|(_, id, _)| *id == clip)
+    }
+
     /// Where a clip shows while dragged with its block.
     pub fn shifted(&self, clip: ClipId, at: &MidiClip) -> Option<MidiClip> {
         (self.started && self.clips.iter().any(|(_, id, _)| *id == clip)).then(|| MidiClip {
@@ -94,8 +121,39 @@ impl ProjectView {
             .collect()
     }
 
+    /// Every MIDI clip where it shows now: moved by a clip or block drag
+    /// under way (copies get ids no clip has), so every parent's blocks
+    /// follow the drag before it lands.
+    pub(crate) fn shown_clips(&self) -> Vec<PlacedClip> {
+        let snapshot = self.session.snapshot();
+        let mut clips = all_clips(snapshot);
+        if let Some(drag) = self.combined_drag.as_ref().filter(|d| d.started) {
+            for (_, id, clip) in &mut clips {
+                if drag.holds(*id) {
+                    clip.start = clip.start + drag.shift;
+                }
+            }
+        }
+        if let Some((drag, plan)) = self.clip_plan() {
+            let moving = drag.moving();
+            clips.retain(|(_, id, _)| !moving.contains(id));
+            for (index, (held, (node, clip))) in drag.held().iter().zip(&plan.places).enumerate() {
+                if let (Some(node), AnyClip::Midi(clip)) = (node, clip) {
+                    let id = if moving.contains(&held.id) {
+                        held.id
+                    } else {
+                        ClipId(u64::MAX - index as u64)
+                    };
+                    clips.push((*node, id, clip.clone()));
+                }
+            }
+        }
+        clips
+    }
+
     fn press_combined(&mut self, node: NodeId, block: &CombinedBlock, event: &MouseDownEvent) {
         self.selected_clips.clear();
+        self.clear_note_selection();
         self.selected_combined = Some((node, block.start));
         self.combined_drag = Some(CombinedDrag {
             node,
@@ -189,22 +247,23 @@ impl ProjectView {
             .combined_drag
             .as_ref()
             .filter(|d| d.node == node && d.started);
-        combined_blocks(snapshot, node)
+        let shown = self.shown_clips();
+        combined_blocks_of(snapshot, node, &shown)
             .into_iter()
             .enumerate()
             .map(|(index, block)| {
-                let dragged = drag.is_some_and(|d| d.start == block.start);
-                let shift = if dragged {
-                    drag.map_or(Ticks::ZERO, |d| d.shift)
-                } else {
-                    Ticks::ZERO
-                };
-                let selected = self.selected_combined == Some((node, block.start));
-                let start = block.start + shift;
-                let left = zoom.beat_to_x(start.as_beats());
+                // The block being dragged stays marked as it moves.
+                let dragged =
+                    drag.is_some_and(|d| block.clips.iter().any(|(_, id)| d.holds(*id)));
+                let selected = dragged || self.selected_combined == Some((node, block.start));
+                let left = zoom.beat_to_x(block.start.as_beats());
                 let width = zoom.beat_to_x((block.end - block.start).as_beats());
                 // One row per pitch across the block, lowest at the bottom.
-                let clips = self.block_clips(&block);
+                let clips: Vec<&PlacedClip> = block
+                    .clips
+                    .iter()
+                    .filter_map(|(n, id)| shown.iter().find(|(m, c, _)| m == n && c == id))
+                    .collect();
                 let (low, high) = clips
                     .iter()
                     .flat_map(|(_, _, c)| c.notes.iter().map(|n| n.pitch))
@@ -239,15 +298,15 @@ impl ProjectView {
                             .collect::<Vec<_>>()
                     })
                     .collect();
-                let names: Vec<String> = {
-                    let mut names: Vec<String> = block
-                        .clips
-                        .iter()
-                        .filter_map(|(n, _)| snapshot.node(*n).map(|n| n.name.clone()))
-                        .collect();
-                    names.dedup();
-                    names
-                };
+                // Each node's name once, in the order its clips come.
+                let mut names: Vec<String> = Vec::new();
+                for (n, _) in &block.clips {
+                    if let Some(n) = snapshot.node(*n)
+                        && !names.contains(&n.name)
+                    {
+                        names.push(n.name.clone());
+                    }
+                }
                 let mut fill = theme.control;
                 fill.a *= 0.6;
                 let press_block = block.clone();
@@ -358,5 +417,17 @@ mod tests {
             ],
             "touching clips merge; the parent's own clip is not in its blocks"
         );
+        // Where a drag would put clip 3 (touching the first block), the
+        // blocks follow before it lands.
+        let mut moved = all_clips(&engine.snapshot());
+        for (_, id, clip) in &mut moved {
+            if *id == ClipId(3) {
+                clip.start = Ticks::from_beats(6);
+            }
+        }
+        let blocks = combined_blocks_of(&engine.snapshot(), NodeId(10), &moved);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].end, Ticks::from_beats(8));
+        assert_eq!(blocks[0].clips.len(), 3);
     }
 }

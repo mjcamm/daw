@@ -13,7 +13,7 @@
 
 - Clips live only on the node whose instruments play them. **A parent's lane shows combined blocks**: wherever any node below it has clips, overlapping or touching clips merge into one block. Nothing is stored; blocks always match the clips below. The Song's row shows everything.
 - In a combined block, **inherited notes are a softer colour**; a parent's **own** clips draw solid as usual (user: "show ITS OWN notes a solider color, and the inherited notes a softer color").
-- Dragging a combined block moves every clip inside it on every node below, one undo step; Delete removes them. No resizing a combined block (which clips would stretch is unclear).
+- Dragging a combined block moves every clip inside it on every node below, one undo step; Delete removes them. No resizing a combined block (which clips would stretch is unclear). Blocks follow any drag as it happens, not on drop (user: "I want all the ghost clips to move in real time"): a clip or block being dragged reshapes every parent's blocks live (`shown_clips`).
 - The stored group clips built first (`ClipGroup`, "Pattern n") are removed: one concept. Older files keep every note (members were ordinary clips).
 
 ## The editor follows the node, not a clip

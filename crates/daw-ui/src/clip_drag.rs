@@ -58,6 +58,11 @@ impl ClipDrag {
     }
 
     /// The clips being moved (left faint in place), unless copying.
+    /// The clips held, in the order the plan places them.
+    pub fn held(&self) -> &[Held] {
+        &self.held
+    }
+
     pub fn moving(&self) -> Vec<ClipId> {
         if self.copy && self.grab == Grab::Body {
             Vec::new()
@@ -87,6 +92,7 @@ impl ProjectView {
     /// of the selection, begins a drag of the selection.
     pub(crate) fn press_clip(&mut self, id: ClipId, grab: Grab, event: &MouseDownEvent) {
         self.selected_combined = None;
+        self.clear_note_selection();
         if event.modifiers.shift {
             if !self.selected_clips.remove(&id) {
                 self.selected_clips.insert(id);

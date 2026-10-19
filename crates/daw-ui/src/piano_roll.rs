@@ -477,6 +477,14 @@ impl ProjectView {
         }
     }
 
+    /// Clears the selected notes: a press on Arrange's clips or blocks
+    /// calls this, so Delete acts on what was picked last.
+    pub(crate) fn clear_note_selection(&mut self) {
+        if let Some(editor) = &mut self.note_editor {
+            editor.selection.clear();
+        }
+    }
+
     /// With the editor on a node that has nodes below it, a new note goes
     /// to the one node that plays its row, or to the pen's node; true if
     /// it went to another node than the editor's.
