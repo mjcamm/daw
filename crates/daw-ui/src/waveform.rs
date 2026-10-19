@@ -32,8 +32,19 @@ impl Reading {
     }
 }
 
-/// The waveform filling its parent, centred, in `color`.
+/// The waveform filling its parent, centred, in `color`: both sides of the
+/// audio together.
 pub fn waveform(peaks: Arc<Peaks>, reading: Reading, color: Hsla) -> impl IntoElement {
+    channel(peaks, reading, None, color)
+}
+
+/// One side of the audio (`Some(channel)`), or all of them (`None`).
+pub fn channel(
+    peaks: Arc<Peaks>,
+    reading: Reading,
+    only: Option<usize>,
+    color: Hsla,
+) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, (), window, _| {
@@ -50,6 +61,7 @@ pub fn waveform(peaks: Arc<Peaks>, reading: Reading, color: Hsla) -> impl IntoEl
             for x in first..last {
                 let (from, to) = reading.frames(x as f32, peaks.sample_rate);
                 let range = (0..peaks.channels())
+                    .filter(|c| only.is_none_or(|only| *c == only))
                     .map(|c| peaks.range(c, from, to))
                     .fold(daw_engine::MinMax::EMPTY, |m, r| m.union(r));
                 if range.is_empty() {

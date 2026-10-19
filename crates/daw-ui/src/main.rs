@@ -3,6 +3,7 @@
 mod app;
 mod arrange;
 mod audio_import;
+mod audio_panel;
 mod block_edit;
 mod clip_drag;
 mod clip_edit;

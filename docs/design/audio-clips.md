@@ -1,6 +1,6 @@
 # Audio Clips
 
-*Status: agreed with the user 2026-10-19. **Engine built** (2026-10-19): the clip model and edits, file version 12, rate conversion, waveform overviews in the snapshot, playback through the stretcher (`daw-engine/src/clips.rs`, tests in `daw-engine/tests/audio_clips.rs`). **UI built** (2026-10-19): Track → Import Audio…, dropping files on Arrange with a live preview, audio clips drawn with waveforms, and moving, copying, trimming and revealing them with the MIDI clip gestures (`clip_edit::AnyClip`); tried by Claude in the app, dropping from Explorer not yet tried. **Scissors built** (2026-10-19, tried by Claude in the app). Still to build: the clip panel. Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
+*Status: agreed with the user 2026-10-19. **Engine built** (2026-10-19): the clip model and edits, file version 12, rate conversion, waveform overviews in the snapshot, playback through the stretcher (`daw-engine/src/clips.rs`, tests in `daw-engine/tests/audio_clips.rs`). **UI built** (2026-10-19): Track → Import Audio…, dropping files on Arrange with a live preview, audio clips drawn with waveforms, and moving, copying, trimming and revealing them with the MIDI clip gestures (`clip_edit::AnyClip`); tried by Claude in the app, dropping from Explorer not yet tried. **Scissors and the audio panel built** (2026-10-19, tried by Claude in the app; not yet by the user). Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
 
 ## Stretching happens live, at playback
 
@@ -49,10 +49,13 @@ An audio clip is a window onto a sample (`AudioClip` in `daw-protocol`):
 - New clips are the whole file, `bpm` = the song tempo, following tempo.
 - WAV only for now (TODO: more formats, see `STATUS.md`).
 
-## Clip panel
+## The audio panel
 
-- **Double-click** an audio clip: the bottom panel opens (the piano roll's panel), showing the clip's waveform with the same frame, ruler, scroll and zoom.
-- An **info column on the right** of the panel, where the tree editor's tree sits for notes: the file's name, length and rate; **BPM**; **Follow tempo**; **Gain**; **Fades**.
+Built in `crates/daw-ui/src/audio_panel.rs`; it takes the piano roll's place in the bottom panel.
+
+- **Opening:** double-click an audio clip (its node opens with the clip selected) or an audio node's empty lane. The bottom panel follows the node selected on Arrange: an audio node shows here, a MIDI node in the piano roll, keeping the panel's height.
+- **Body:** the node's clips along song time with the same frame as the piano roll (ruler, scrollbars, zoom; the row zoom sets the lane's height). Each clip shows each side of its audio in its own half, and its fades as lines. Click a clip to select it.
+- **Settings column on the right** (where the tree editor's tree sits for notes), for the one selected clip of this node: **File** (name, length, rate, stereo or mono), **Tempo** (BPM, typed: click it, Enter applies, and the clip keeps showing the same audio, `AudioClip::with_bpm`; Follow tempo, a switch), **Level** (Gain, −60 to +24 dB) and **Fades** (Fade in, Fade out, on a square-root scale, never overlapping). Sliders preview while dragged and send one edit on release; double-click a slider for its default. The column scrolls when the panel is short.
 
 ## Arrange
 

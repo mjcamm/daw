@@ -1081,6 +1081,7 @@ impl ProjectView {
                 };
                 let id = node.id;
                 let takes_clips = node.takes_midi();
+                let audio = node.kind == NodeKind::Audio && node.parent.is_some();
                 let lane = div()
                     .relative()
                     .h(px(zoom.row_height))
@@ -1097,6 +1098,8 @@ impl ProjectView {
                             this.selected_combined = None;
                             if event.click_count >= 2 && takes_clips {
                                 this.open_editor_at(id, event.position);
+                            } else if event.click_count >= 2 && audio {
+                                this.open_audio_editor(id, 0.);
                             }
                         }),
                     )

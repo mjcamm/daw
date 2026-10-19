@@ -123,6 +123,10 @@ pub struct ProjectView {
     pub(crate) roll_hovered: bool,
     /// The piano roll in the bottom panel, if a clip is open.
     pub(crate) note_editor: Option<crate::piano_roll::NoteEditor>,
+    /// The bottom panel for an audio node, in the piano roll's place.
+    pub(crate) audio_editor: Option<crate::audio_panel::AudioEditor>,
+    /// Typing a clip's BPM in the audio panel.
+    pub(crate) bpm_input: Option<crate::audio_panel::BpmInput>,
     /// A note being heard from the editor, and since when.
     pub(crate) note_preview: Option<(NodeId, u8, std::time::Instant)>,
     /// Notes copied in the editor.
@@ -199,7 +203,7 @@ pub struct ProjectView {
     pub(crate) rename: Option<Rename>,
     pub(crate) save_error: Option<String>,
     window_title: String,
-    focus: FocusHandle,
+    pub(crate) focus: FocusHandle,
 }
 
 impl EventEmitter<ProjectEvent> for ProjectView {}
@@ -250,6 +254,8 @@ impl ProjectView {
             scissors_at: None,
             roll_hovered: false,
             note_editor: None,
+            audio_editor: None,
+            bpm_input: None,
             note_preview: None,
             note_clipboard: Vec::new(),
             clip_drag: None,
@@ -447,7 +453,14 @@ impl Render for ProjectView {
         self.end_note_preview();
         // The piano roll slides up under Arrange.
         let editor = if self.page == Page::Arrange {
-            self.render_note_editor(&theme, cx)
+            // An audio node shows in the audio panel, a MIDI node in the
+            // piano roll; the open one follows the selection.
+            self.switch_bottom_panel();
+            if self.audio_editor.is_some() {
+                self.render_audio_editor(&theme, cx)
+            } else {
+                self.render_note_editor(&theme, cx)
+            }
         } else {
             None
         };
@@ -594,6 +607,7 @@ impl ProjectView {
             || self.mixer_drag.is_some()
             || self.combined_drag.is_some()
             || self.note_editor.as_ref().is_some_and(|e| e.dragging())
+            || self.audio_dragging()
     }
 
     /// While something is being dragged, follows the mouse anywhere in the

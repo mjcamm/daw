@@ -747,7 +747,7 @@ fn empty(theme: &Theme, text: &'static str) -> AnyElement {
 }
 
 /// A heading above a group.
-fn section_label(text: &'static str, theme: &Theme) -> Div {
+pub(crate) fn section_label(text: &'static str, theme: &Theme) -> Div {
     div()
         .px(px(14.))
         .pt(px(14.))
@@ -759,7 +759,7 @@ fn section_label(text: &'static str, theme: &Theme) -> Div {
 }
 
 /// A rounded inset panel of rows.
-fn group(theme: &Theme) -> Div {
+pub(crate) fn group(theme: &Theme) -> Div {
     div()
         .mx(px(GROUP_MARGIN))
         .flex()

@@ -834,6 +834,7 @@ impl ProjectView {
             || self.drag_clips(position, modifiers)
             || self.drag_mixer(position, modifiers.shift)
             || self.drag_note_editor(position, modifiers)
+            || self.drag_audio_editor(position, modifiers.shift)
             || self.drag_combined(position, modifiers)
         {
             return;
@@ -887,6 +888,7 @@ impl ProjectView {
         self.finish_clip_drag();
         self.finish_mixer_drag();
         self.finish_note_drag();
+        self.finish_audio_drag();
         self.finish_combined_drag();
         if let Some(drag) = self.mix_drag.take()
             && drag.preview != drag.original
