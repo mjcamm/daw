@@ -133,8 +133,10 @@ impl Rows {
 /// time), the tool, the selection and the view.
 pub struct NoteEditor {
     pub node: NodeId,
-    /// Where new notes go when a row is played by several nodes in the
-    /// branch below `node` (the pen in the tree).
+    /// The node whose notes are being edited (solid), and where new notes
+    /// go when a row is played by several nodes below `node`: the pen in
+    /// the tree. The rest of the branch shows softer; pressing one of those
+    /// notes makes its node the target.
     pub target: NodeId,
     pub tool: Tool,
     pub selection: Selection,
@@ -163,6 +165,8 @@ pub struct NoteEditor {
     scroll_to: Option<f64>,
     /// A tree row to flash, and since when.
     flash: Option<(NodeId, Instant)>,
+    /// Counts target changes, so "Drawing to" replays its flash each time.
+    flashes: usize,
     /// The rows as last drawn.
     pub rows: Rows,
     /// Folded to the notes that play; `None` folds when the note map is
@@ -191,24 +195,30 @@ impl NoteEditor {
             pending: None,
             scroll_to: None,
             flash: None,
+            flashes: 0,
             rows: Rows::all(),
             folded: None,
             hover: None,
         }
     }
 
-    /// Selects one note by value (it is found once the snapshot holds it).
-    pub fn select_by_value(&mut self, note: MidiNote) {
-        self.selection.clear();
-        self.pending = Some((vec![note], u64::MAX));
-    }
-
-    pub fn flash_row(&mut self, node: NodeId) {
+    /// Makes `node` the one being edited and drawn to, with a flash.
+    pub fn retarget(&mut self, node: NodeId) {
+        if self.target != node {
+            self.target = node;
+            self.selection.clear();
+            self.pending = None;
+        }
         self.flash = Some((node, Instant::now()));
+        self.flashes += 1;
     }
 
     pub fn flash(&self) -> Option<(NodeId, Instant)> {
         self.flash
+    }
+
+    pub fn flashes(&self) -> usize {
+        self.flashes
     }
 
     pub fn dragging(&self) -> bool {
@@ -244,8 +254,8 @@ impl ProjectView {
     fn editor_clip(&self) -> Option<(&NoteEditor, MidiClip)> {
         let editor = self.note_editor.as_ref()?;
         let snapshot = self.session.snapshot();
-        let node = snapshot.node(editor.node)?;
-        // The node's whole timeline: song time from the start, a little
+        let node = snapshot.node(editor.target)?;
+        // The edited node's whole timeline: song time from the start, a little
         // past the song's last clip.
         Some((
             editor,
@@ -380,7 +390,7 @@ impl ProjectView {
         if notes == clip.notes {
             return;
         }
-        let node = editor.node;
+        let node = editor.target;
         let chosen: Vec<MidiNote> = selection
             .iter()
             .filter_map(|&i| notes.get(i).copied())
@@ -449,7 +459,7 @@ impl ProjectView {
             return false;
         };
         let owner = self.new_note_owner(editor, note.pitch);
-        if owner == editor.node {
+        if owner == editor.target {
             return false;
         }
         let Some(target) = self.session.snapshot().node(owner) else {
@@ -491,7 +501,7 @@ impl ProjectView {
         let (beat, pitch) = editor.at(event.position, zoom);
         let notes = clip.notes.clone();
         let hit = note_edit::hit(&notes, beat, pitch, f64::from(zoom.pixels_per_beat));
-        let (node, tool) = (editor.node, editor.tool);
+        let (node, tool) = (editor.target, editor.tool);
         let selection = editor.selection.clone();
         let snap = self.note_snap(event.modifiers.alt);
         let at = Ticks::from_beats_f64(beat.max(0.));
@@ -771,7 +781,7 @@ impl ProjectView {
                 editor.height = (*original - (screen.y - origin.y) / px(1.)).max(MIN_HEIGHT);
             }
         }
-        let node = editor.node;
+        let node = editor.target;
         if let Some((pitch, velocity)) = sound {
             self.preview_note(node, pitch, velocity);
         }
@@ -891,7 +901,7 @@ impl ProjectView {
         let dt = Ticks(self.grid_length().0 * steps);
         let notes = note_edit::moved(&clip.notes, &editor.selection, dt, pitch);
         let selection = editor.selection.clone();
-        let node = editor.node;
+        let node = editor.target;
         if pitch != 0
             && let Some(&first) = selection.iter().next()
         {
@@ -972,8 +982,12 @@ impl ProjectView {
         let tree = self.render_tree(editor, theme, cx);
         let (editor, clip) = self.editor_clip()?;
         let snapshot = self.session.snapshot();
-        let node = snapshot.node(editor.node)?;
+        // The header names the node in view; notes and clip spans are the
+        // edited node's.
+        let viewed = snapshot.node(editor.node)?;
+        let node = snapshot.node(editor.target)?;
         let colors = theme.content(node.color);
+        let viewed_color = theme.content(viewed.color).detail;
         let zoom = self.notes_view.zoom;
         let ppb = zoom.pixels_per_beat;
         let key = zoom.row_height;
@@ -1050,12 +1064,12 @@ impl ProjectView {
             .bg(theme.sidebar)
             .border_b_1()
             .border_color(theme.hairline)
-            .child(div().size(px(8.)).rounded(px(4.)).bg(colors.detail))
+            .child(div().size(px(8.)).rounded(px(4.)).bg(viewed_color))
             .child(
                 div()
                     .text_size(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(format!("{} · notes", node.name)),
+                    .child(format!("{} · notes", viewed.name)),
             )
             .child(div().w(px(16.)))
             .child(tool_button("tool-select", Icon::Pointer, Tool::Select, "Select (1): drag to move, edges to resize, Ctrl to copy, double-click to add or delete"))

@@ -9,13 +9,18 @@ use crate::theme::Theme;
 use crate::timeline::notes_of;
 use crate::tooltip;
 use daw_engine::{MidiNote, NodeId, NodeSnapshot, NoteSet, Snapshot};
-use gpui::{AnyElement, Context, FontWeight, MouseButton, div, prelude::*, px};
+use gpui::{
+    Animation, AnimationExt, AnyElement, Context, FontWeight, MouseButton, div, ease_out_quint,
+    prelude::*, px,
+};
 use std::time::Duration;
 
 /// Width of the tree beside the roll.
 pub const TREE_WIDTH: f32 = 190.;
 /// How long a tree row flashes after it gains a note or the pen.
 const FLASH: Duration = Duration::from_millis(500);
+/// How long "Drawing to" flashes when the edited node changes.
+const BING: Duration = Duration::from_millis(700);
 
 /// The top of a node's branch: its ancestor just under the Song (the Song
 /// itself for the Song).
@@ -85,12 +90,13 @@ impl ProjectView {
         }
     }
 
-    /// The notes of the nodes below the editor's, with their nodes.
+    /// The notes of the branch in view other than the edited node's, with
+    /// their nodes.
     fn inherited(&self, editor: &NoteEditor) -> Vec<(NodeSnapshot, Vec<MidiNote>)> {
         let snapshot = self.session.snapshot();
         tree_nodes(snapshot, editor.node)
             .into_iter()
-            .skip(1)
+            .filter(|(n, _)| n.id != editor.target)
             .map(|(n, _)| (n.clone(), notes_of(&n.clips)))
             .filter(|(_, notes)| !notes.is_empty())
             .collect()
@@ -104,8 +110,9 @@ impl ProjectView {
             .collect()
     }
 
-    /// The notes below the editor's node, softer, in their nodes' colours:
-    /// clicking one selects its node with that note.
+    /// The rest of the branch's notes, softer, in their nodes' colours.
+    /// Pressing one makes its node the edited one; the same press then
+    /// reaches the grid, which picks the note up as usual.
     pub(crate) fn inherited_notes(
         &self,
         editor: &NoteEditor,
@@ -145,13 +152,10 @@ impl ProjectView {
                                 .border_1()
                                 .border_color(edge)
                                 .cursor_pointer()
-                                .tooltip(tooltip::text(format!("{name}: click to edit")))
+                                .tooltip(tooltip::text(format!("{name}: press to edit")))
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.select_note_on(owner, n);
-                                    }),
+                                    cx.listener(move |this, _, _, _| this.set_note_target(owner)),
                                 )
                                 .into_any_element(),
                         )
@@ -161,40 +165,57 @@ impl ProjectView {
             .collect()
     }
 
-    /// Selects a node in the editor (and on Arrange) with one note chosen.
-    fn select_note_on(&mut self, node: NodeId, note: MidiNote) {
-        self.selected_node = Some(node);
-        if let Some(editor) = &mut self.note_editor {
-            editor.node = node;
-            editor.target = node;
-            editor.select_by_value(note);
-        }
-    }
-
     pub(crate) fn set_note_target(&mut self, node: NodeId) {
         if let Some(editor) = &mut self.note_editor {
-            editor.target = node;
-            editor.flash_row(node);
+            editor.retarget(node);
         }
     }
 
-    /// "Drawing to ● Name" in the header: where new notes go.
+    /// "Drawing to ● Name" in the header: the node being edited. When it
+    /// changes, the name flashes in its colour.
     pub(crate) fn drawing_to(&self, editor: &NoteEditor, theme: &Theme) -> Option<AnyElement> {
-        let snapshot = self.session.snapshot();
-        let leaf = snapshot.node(editor.node)?.children.is_empty();
-        let target = if leaf { editor.node } else { editor.target };
-        let node = snapshot.node(target)?;
+        let node = self.session.snapshot().node(editor.target)?;
         let color = theme.content(node.color).detail;
+        let name = div()
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .px(px(6.))
+            .h(px(20.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .child(div().size(px(8.)).rounded(px(4.)).bg(color))
+            .child(div().text_color(color).child(node.name.clone()));
+        let fresh = editor
+            .flash()
+            .is_some_and(|(n, at)| n == editor.target && at.elapsed() < BING);
+        let name = if fresh {
+            name.with_animation(
+                ("drawing-to", editor.flashes()),
+                Animation::new(BING).with_easing(ease_out_quint()),
+                move |el, t| {
+                    // A bright pop that settles.
+                    let mut glow = color;
+                    glow.a = 0.45 * (1. - t);
+                    let mut ring = color;
+                    ring.a = 1. - t;
+                    el.bg(glow).border_color(ring)
+                },
+            )
+            .into_any_element()
+        } else {
+            name.into_any_element()
+        };
         Some(
             div()
                 .flex()
                 .items_center()
-                .gap(px(5.))
+                .gap(px(3.))
                 .text_size(px(11.))
                 .text_color(theme.text_secondary)
                 .child("Drawing to")
-                .child(div().size(px(8.)).rounded(px(4.)).bg(color))
-                .child(div().text_color(color).child(node.name.clone()))
+                .child(name)
                 .into_any_element(),
         )
     }
@@ -213,10 +234,7 @@ impl ProjectView {
         let hover = theme.hover;
         let mut selected = theme.accent;
         selected.a = 0.16;
-        let leaf = snapshot
-            .node(editor.node)
-            .is_some_and(|n| n.children.is_empty());
-        let pen_on = if leaf { editor.node } else { editor.target };
+        let pen_on = editor.target;
         let flash = editor.flash();
         let rows = tree_nodes(snapshot, top).into_iter().map(|(node, depth)| {
             let id = node.id;
