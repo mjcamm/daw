@@ -34,6 +34,7 @@ Application::new()
 - Event handlers that change the view: `cx.listener(|this, event, window, cx| ...)`. Building them only needs `cx`, so render helpers take `&self` and `&mut Context<Self>`.
 - Globals: `impl Global for T {}`, then `cx.set_global(t)` / `cx.global::<T>()`. `Context<V>` derefs to `App`.
 - Continuous redraw (playhead, meters): call `window.request_animation_frame()` inside `render`.
+- Window-level drag listeners registered during paint (our `drag_tracker`) only exist from the frame after the press: a fast click can release before them, and the drag stays live until the next press. End any drag on a `MouseMoveEvent` whose `pressed_button` is `None`.
 - Different branches returning different element types: `.into_any_element()`.
 
 ## Layout and styling

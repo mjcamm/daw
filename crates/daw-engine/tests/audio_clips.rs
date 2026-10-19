@@ -271,6 +271,41 @@ fn audio_clips_go_only_on_audio_nodes_with_a_known_sample() {
 }
 
 #[test]
+fn audio_clips_on_a_node_never_overlap() {
+    let (mut engine, _processor) = engine_with(EngineConfig::default(), counting(10));
+    apply(
+        &mut engine,
+        Edit::AddAudioClip {
+            node: AUDIO,
+            id: CLIP,
+            clip: clip(),
+        },
+    );
+    // `clip()` covers beats 1..3: one at beat 3 touches it, one at beat 2
+    // would overlap it.
+    let at = |beat: i64| AudioClip {
+        start: Ticks::from_beats(beat),
+        ..clip()
+    };
+    let add = |beat: i64| {
+        Command::Edit(Edit::AddAudioClip {
+            node: AUDIO,
+            id: ClipId(8),
+            clip: at(beat),
+        })
+    };
+    assert_eq!(
+        engine.apply(add(2)),
+        Err(CommandError::StackedClips {
+            node: AUDIO,
+            clip: CLIP,
+            over: ClipId(8),
+        })
+    );
+    engine.apply(add(3)).unwrap();
+}
+
+#[test]
 fn clip_edits_undo_and_a_used_sample_stays() {
     let (mut engine, _processor) = engine_with(EngineConfig::default(), counting(10));
     apply(

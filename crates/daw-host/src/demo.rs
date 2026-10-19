@@ -41,12 +41,13 @@ pub fn load(engine: &mut Engine) -> Result<(), CommandError> {
     add_layers(engine)
 }
 
-/// What every new song starts with: the bass and arpeggio clips at the
-/// demo tempo, looping, with no effects or layers yet.
+/// What every new song starts with: one clip of bass and arpeggio at the
+/// demo tempo, looping, with no effects or layers yet. One clip, not one
+/// each: clips on a node never overlap (stacked ones tear apart when one
+/// is cut or moved).
 pub fn add_starter_notes(engine: &mut Engine) -> Result<(), CommandError> {
     engine.apply(Command::Edit(Edit::SetTempo { bpm: TEMPO_BPM }))?;
-    add(engine, 1, bass())?;
-    add(engine, 2, arpeggio())?;
+    add(engine, 1, [bass(), arpeggio()].concat())?;
     engine.apply(Command::SetLoop(Some(LoopRange {
         start: Ticks::ZERO,
         end: Ticks::from_bars(BARS),

@@ -605,20 +605,34 @@ impl UsedIds {
 impl Project {
     /// Applies `edit` and returns the edit that reverts it.
     ///
-    /// A rejected edit leaves the project unchanged: every check happens
-    /// before anything is modified.
+    /// A rejected edit leaves the project unchanged. Each step is checked
+    /// before it changes anything; what only a whole edit can break (clips
+    /// on a node overlapping, which moving several clips may do
+    /// halfway through a batch) is checked after it, reverting it if so.
     pub fn apply(&mut self, edit: Edit) -> Result<Edit, CommandError> {
+        let places_clips = places_clips(&edit);
+        let inverse = self.apply_step(edit)?;
+        if places_clips && let Err(e) = check_unstacked(NodeId::ROOT, &self.root) {
+            if let Err(undo) = self.apply_step(inverse) {
+                unreachable!("an inverse edit was rejected: {undo}");
+            }
+            return Err(e);
+        }
+        Ok(inverse)
+    }
+
+    fn apply_step(&mut self, edit: Edit) -> Result<Edit, CommandError> {
         match edit {
             Edit::Batch(edits) => {
                 let mut inverses = Vec::with_capacity(edits.len());
                 for edit in edits {
-                    match self.apply(edit) {
+                    match self.apply_step(edit) {
                         Ok(inverse) => inverses.push(inverse),
                         Err(e) => {
                             // Undo what was applied, newest first: each
                             // inverse restores exactly what came before.
                             for inverse in inverses.into_iter().rev() {
-                                if let Err(undo) = self.apply(inverse) {
+                                if let Err(undo) = self.apply_step(inverse) {
                                     unreachable!("an inverse edit was rejected: {undo}");
                                 }
                             }
@@ -1411,6 +1425,49 @@ fn validate_audio_clip(clip: &AudioClip) -> Result<(), InvalidClip> {
     }
     if clip.fade_in.0 < 0 || clip.fade_out.0 < 0 || clip.fade_in + clip.fade_out > clip.length {
         return Err(InvalidClip::Fades);
+    }
+    Ok(())
+}
+
+/// Whether `edit` can put clips somewhere (so overlaps need checking).
+fn places_clips(edit: &Edit) -> bool {
+    match edit {
+        Edit::Batch(edits) => edits.iter().any(places_clips),
+        Edit::AddClip { .. }
+        | Edit::SetClip { .. }
+        | Edit::AddAudioClip { .. }
+        | Edit::SetAudioClip { .. }
+        | Edit::AddNode { .. } => true,
+        _ => false,
+    }
+}
+
+/// Fails if two clips (MIDI or audio: a node holds one kind) on any node
+/// from `node` down overlap.
+fn check_unstacked(id: NodeId, node: &Node) -> Result<(), CommandError> {
+    let mut spans: Vec<(daw_protocol::Ticks, daw_protocol::Ticks, ClipId)> = node
+        .clips
+        .iter()
+        .map(|(clip_id, c)| (c.start, c.start + c.length, *clip_id))
+        .chain(
+            node.audio_clips
+                .iter()
+                .map(|(clip_id, c)| (c.start, c.start + c.length, *clip_id)),
+        )
+        .collect();
+    spans.sort();
+    for pair in spans.windows(2) {
+        let ((_, end, clip), (start, _, over)) = (pair[0], pair[1]);
+        if start < end {
+            return Err(CommandError::StackedClips {
+                node: id,
+                clip,
+                over,
+            });
+        }
+    }
+    for (child_id, child) in &node.children {
+        check_unstacked(*child_id, child)?;
     }
     Ok(())
 }
@@ -2241,6 +2298,58 @@ mod tests {
         assert_eq!(
             assert_rejected(&mut project, Edit::RemoveClip { id: ClipId(2) }),
             CommandError::UnknownClip { id: ClipId(2) }
+        );
+    }
+
+    #[test]
+    fn midi_clips_on_a_node_never_overlap() {
+        let mut project = Project::default();
+        let at = |bar: i64| MidiClip {
+            start: Ticks::from_bars(bar),
+            ..clip(vec![])
+        };
+        let add = |id: u64, bar: i64| Edit::AddClip {
+            node: FIRST_NODE,
+            id: ClipId(id),
+            clip: at(bar),
+        };
+        project.apply(add(1, 0)).unwrap();
+        project.apply(add(2, 1)).unwrap();
+        let stacked = Edit::AddClip {
+            node: FIRST_NODE,
+            id: ClipId(3),
+            clip: MidiClip {
+                start: Ticks::from_beats(2),
+                ..clip(vec![])
+            },
+        };
+        assert_eq!(
+            assert_rejected(&mut project, stacked),
+            CommandError::StackedClips {
+                node: FIRST_NODE,
+                clip: ClipId(1),
+                over: ClipId(3),
+            },
+            "a clip may touch another but not overlap it"
+        );
+        // Swapping the two in one batch overlaps halfway, which is fine:
+        // only the whole edit counts.
+        let swap = Edit::Batch(vec![
+            Edit::SetClip {
+                id: ClipId(1),
+                node: FIRST_NODE,
+                clip: at(1),
+            },
+            Edit::SetClip {
+                id: ClipId(2),
+                node: FIRST_NODE,
+                clip: at(0),
+            },
+        ]);
+        project.apply(swap).unwrap();
+        assert_eq!(
+            project.root.children[0].1.clips[&ClipId(1)].start,
+            Ticks::from_bars(1)
         );
     }
 

@@ -183,6 +183,73 @@ pub fn notes_switches(file: &mut Value) {
     }
 }
 
+/// Merges MIDI clips that overlap on a node into one (before version 13
+/// they could stack: the starter song put two clips over the same bars).
+/// The merged clip spans them all and keeps the first one's id; each note
+/// keeps the place and length it was heard with, so it plays the same.
+pub fn merge_stacked_clips(file: &mut Value) {
+    fn int(v: &Value, key: &str) -> i64 {
+        v.get(key).and_then(Value::as_i64).unwrap_or(0)
+    }
+    /// A clip's notes as heard, moved to start from `at`.
+    fn heard(clip: &Value, at: i64) -> Vec<Value> {
+        let (start, length) = (int(clip, "start"), int(clip, "length"));
+        let notes = clip.get("notes").and_then(Value::as_array);
+        notes
+            .into_iter()
+            .flatten()
+            .filter(|n| (0..length).contains(&int(n, "start")))
+            .map(|n| {
+                let mut n = n.clone();
+                let from = int(&n, "start");
+                n["length"] = (int(&n, "length").min(length - from)).into();
+                n["start"] = (from + start - at).into();
+                n
+            })
+            .collect()
+    }
+    fn merge(node: &mut Value) {
+        if let Some(clips) = node.get_mut("clips").and_then(Value::as_array_mut) {
+            let mut sorted = std::mem::take(clips);
+            sorted.sort_by_key(|c| (int(c, "start"), int(c, "id")));
+            let mut runs: Vec<Vec<Value>> = Vec::new();
+            let mut run_end = i64::MIN;
+            for clip in sorted {
+                let end = int(&clip, "start") + int(&clip, "length");
+                match runs.last_mut() {
+                    Some(run) if int(&clip, "start") < run_end => run.push(clip),
+                    _ => runs.push(vec![clip]),
+                }
+                run_end = run_end.max(end);
+            }
+            for run in runs {
+                if run.len() == 1 {
+                    clips.extend(run);
+                    continue;
+                }
+                let start = int(&run[0], "start");
+                let end = run
+                    .iter()
+                    .map(|c| int(c, "start") + int(c, "length"))
+                    .max()
+                    .unwrap_or(start);
+                let notes: Vec<Value> = run.iter().flat_map(|c| heard(c, start)).collect();
+                let mut merged = run[0].clone();
+                merged["length"] = (end - start).into();
+                merged["notes"] = notes.into();
+                clips.push(merged);
+            }
+        }
+        let children = node.get_mut("children").and_then(Value::as_array_mut);
+        for child in children.into_iter().flatten() {
+            merge(child);
+        }
+    }
+    if let Some(root) = file.get_mut("root") {
+        merge(root);
+    }
+}
+
 /// Makes every branch under the Song one kind (before version 11, MIDI and
 /// Audio could mix). Audio nodes held nothing then, so this loses nothing:
 /// a branch is MIDI if any node in it is, else Audio.
@@ -543,6 +610,36 @@ mod tests {
         assert_eq!(switches(0, 127, 0.0, 1.0), (false, false));
         assert_eq!(switches(36, 36, 0.0, 1.0), (true, false));
         assert_eq!(switches(0, 127, 1.0, 1.0), (false, true));
+    }
+
+    #[test]
+    fn stacked_clips_merge_into_one_that_plays_the_same() {
+        let note = |start: i64, length: i64, pitch: u8| json!({ "start": start, "length": length, "pitch": pitch, "velocity": 100 });
+        let mut file = json!({
+            "root": { "id": 0, "clips": [], "children": [{
+                "id": 1,
+                "clips": [
+                    // Bar 1 to 3, with a note running past its end and
+                    // one that starts after it (neither heard in full).
+                    { "id": 5, "start": 0, "length": 7680,
+                      "notes": [note(0, 960, 40), note(7000, 2000, 41), note(8000, 10, 42)] },
+                    { "id": 2, "start": 3840, "length": 7680, "notes": [note(0, 960, 50)] },
+                    // Touching: stays its own clip.
+                    { "id": 9, "start": 11520, "length": 3840, "notes": [note(0, 960, 60)] }
+                ],
+                "children": []
+            }]}
+        });
+        merge_stacked_clips(&mut file);
+        let clips = file["root"]["children"][0]["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), 2);
+        assert_eq!(
+            clips[0],
+            json!({ "id": 5, "start": 0, "length": 11520,
+                    "notes": [note(0, 960, 40), note(7000, 680, 41), note(3840, 960, 50)] }),
+            "one clip over both, each note as it was heard"
+        );
+        assert_eq!(clips[1]["id"], 9);
     }
 
     #[test]

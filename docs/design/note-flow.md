@@ -11,6 +11,7 @@
 
 ## Combined blocks (replacing group clips, user 2026-10-19)
 
+- **Clips on a node are solid: they never overlap** (user, 2026-10-19: "no stacking in a node ... that's always annoyed me in other DAWs"). The engine rejects any edit that would leave two clips on a node overlapping (`CommandError::StackedClips`, checked after a whole edit, so a batch may overlap halfway); touching is fine. Dropping, pasting or drawing cuts what it lands on instead. Files before version 13 merge stacked MIDI clips into one, each note kept as it was heard. Audio clips follow the same rule (a node plays one at a time).
 - Clips live only on the node whose instruments play them. **A parent's lane shows combined blocks**: wherever any node below it has clips, overlapping or touching clips merge into one block. Nothing is stored; blocks always match the clips below. The Song's row shows everything.
 - In a combined block, **inherited notes are a softer colour**; a parent's **own** clips draw solid as usual (user: "show ITS OWN notes a solider color, and the inherited notes a softer color").
 - Dragging a combined block moves every clip inside it on every node below, one undo step; Delete removes them. No resizing a combined block (which clips would stretch is unclear). Blocks follow any drag as it happens, not on drop (user: "I want all the ghost clips to move in real time"): a clip or block being dragged reshapes every parent's blocks live (`shown_clips`).

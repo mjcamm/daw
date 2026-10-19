@@ -24,8 +24,9 @@ pub const FORMAT: &str = "daw-project";
 /// Song; version 8 let a node layer several instruments; version 9 added
 /// the sample table and the SingleSampler's sample; version 10 added group
 /// clips (since removed: their "groups" are ignored) and trigger notes;
-/// version 11 made every branch one kind; version 12 added audio clips.
-pub const VERSION: u32 = 12;
+/// version 11 made every branch one kind; version 12 added audio clips;
+/// version 13 merged MIDI clips stacked on a node (they never overlap now).
+pub const VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -320,6 +321,9 @@ impl ProjectFile {
             }
             if header.version < 11 {
                 crate::upgrade::one_kind_per_branch(&mut value);
+            }
+            if header.version < 13 {
+                crate::upgrade::merge_stacked_clips(&mut value);
             }
             return serde_json::from_value(value).map_err(LoadError::Json);
         }

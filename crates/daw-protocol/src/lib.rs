@@ -649,6 +649,14 @@ pub enum CommandError {
     NotAudio {
         node: NodeId,
     },
+    /// Clips on a node never overlap (touching is fine): stacked MIDI
+    /// clips hide each other's notes and tear apart when one is cut or
+    /// moved, and a node plays one audio clip at a time.
+    StackedClips {
+        node: NodeId,
+        clip: ClipId,
+        over: ClipId,
+    },
     /// Only MIDI nodes have instruments.
     InstrumentOnAudio {
         node: NodeId,
@@ -817,6 +825,11 @@ impl fmt::Display for CommandError {
             Self::TooManyNodes { max } => write!(f, "a project holds at most {max} nodes"),
             Self::NotMidi { node } => write!(f, "node {} cannot hold MIDI clips", node.0),
             Self::NotAudio { node } => write!(f, "node {} cannot hold audio clips", node.0),
+            Self::StackedClips { node, clip, over } => write!(
+                f,
+                "clips {} and {} overlap on node {}; clips on a node never overlap",
+                clip.0, over.0, node.0
+            ),
             Self::InstrumentOnAudio { node } => {
                 write!(f, "node {} is an audio node and has no instrument", node.0)
             }

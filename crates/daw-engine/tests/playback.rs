@@ -141,8 +141,10 @@ fn render_busy_pattern(blocks: &[usize]) -> Rendered {
             notes.push((start, 1.5, 60)); // overlaps the following notes
         }
     }
+    // A note off the grid (clips on a node never overlap, so it is in the
+    // same clip rather than a second one stacked on it).
+    notes.push((1.0 / 3.0, 1.0 / 7.0, 72));
     add_clip(&mut engine, 1, 0.0, 8.0, &notes);
-    add_clip(&mut engine, 2, 1.0 / 3.0, 2.0, &[(0.0, 1.0 / 7.0, 72)]);
     engine
         .apply(Command::SetLoop(Some(LoopRange {
             start: beats(1.0),
@@ -395,19 +397,30 @@ fn constant_editing_during_playback_stays_realtime_safe() {
     // The realtime guard aborts this test if the audio side allocates or frees.
     let (mut engine, mut processor) = engine();
     engine.apply(Command::Play).unwrap();
+    // Sixteen quarter-beat slots, each holding at most one clip: clips on a
+    // node never overlap, so a slot's clip goes before another takes it.
+    let mut slots: [Option<u64>; 16] = [None; 16];
     for i in 0..500_u64 {
-        let start = (i % 16) as f64 * 0.25;
+        let slot = (i % 16) as usize;
+        let start = slot as f64 * 0.25;
+        if let Some(old) = slots[slot].take() {
+            engine
+                .apply(Command::Edit(Edit::RemoveClip { id: ClipId(old) }))
+                .unwrap();
+        }
         add_clip(
             &mut engine,
             i,
             start,
-            1.0,
-            &[(0.0, 0.5, 40 + (i % 40) as u8)],
+            0.25,
+            &[(0.0, 0.2, 40 + (i % 40) as u8)],
         );
         if i % 3 == 0 {
             engine
                 .apply(Command::Edit(Edit::RemoveClip { id: ClipId(i) }))
                 .unwrap();
+        } else {
+            slots[slot] = Some(i);
         }
         if i % 50 == 0 {
             engine
