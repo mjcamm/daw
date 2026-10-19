@@ -31,6 +31,8 @@ mod timeline;
 mod tooltip;
 mod tree;
 mod tree_editor;
+#[cfg(all(test, feature = "ui-tests"))]
+mod ui_tests;
 mod waveform;
 mod zoom;
 

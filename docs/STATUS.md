@@ -46,7 +46,8 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 ## Next up
 
 1. **Phase 5, rest** (`docs/design/node-tree.md`): a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call). The node's strip shows in the panel on Arrange (built 2026-10-16). (`docs/design/mixer.md`), the inspector's channel strip, a richer demo song (drums with a separate kick, music parent).
-2. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI) is still to run; the user chose to start Phase 5 first. Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
+2. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): one test so far (Arrange double-click). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
+3. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI) is still to run; the user chose to start Phase 5 first. Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
 
 ## Design rules the user has set
 
@@ -57,7 +58,8 @@ Nothing open. (2026-10-16: the user tried publish + inspector, "feels great"; da
 
 - **Ask about layout before building each UI element.** They answer in plain numbered text (the multiple-choice tool was rejected once). Offer a recommendation.
 - Calm, dense, native pro-app look (`docs/design/look-and-feel.md`), not "bootstrappy". Lucide icons (pinned `lucide-static@0.460.0`).
-- Run `./scripts/check.sh`, then commit and push when work is done. No GitHub Actions on push.
+- Run `./scripts/check.sh`, then commit and push when work is done. Run `./scripts/full-test.sh` (adds the headless UI tests) when a feature is finished or before a milestone, not every commit.
+- **Don't drop behaviours** (2026-10-20, after the Arrange double-click was lost in a rewrite): `docs/behaviours.md` lists them with their UI tests; ask before removing or changing one. No GitHub Actions on push.
 - **Keep this file and `docs/design/` current** as work lands: decisions and pointers, not narration.
 - Say when their eyes or ears are needed ("Try it", "Listen now").
 - On Windows, a running app blocks rebuilding `daw.exe` ("failed to remove file"). `check.sh` still works; ask them to close the app to run it.

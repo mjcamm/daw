@@ -7,6 +7,7 @@ Read `docs/STATUS.md` first (where things stand, what is next, open questions, h
 
 ```sh
 ./scripts/check.sh                           # everything below, plus release builds; must pass before committing
+./scripts/full-test.sh                       # check.sh plus the headless UI tests; run occasionally (below)
 cargo test --workspace                       # all tests (debug: realtime guard active)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
@@ -17,6 +18,8 @@ cargo run -p daw-ui                          # the app
 ```
 
 Checks run locally. Run `./scripts/check.sh` before every commit.
+
+**The full test run** (`./scripts/full-test.sh`) adds the headless UI tests (`crates/daw-ui/src/ui_tests/`, behind the `ui-tests` feature): the real app view in a test window, driven by simulated clicks and keys. Run it when a feature is finished, after changing shared input or editing code, before a milestone, and when the user asks; not on every commit.
 
 A manual GitHub workflow (`.github/workflows/cross-platform.yml`) runs the same checks on Linux, Windows and macOS. Only run it when the user asks for a cross-platform check; it never runs on push.
 
@@ -44,4 +47,5 @@ Design decisions per phase live in `docs/design/`. Read the relevant one before 
 - **Live and offline render share one code path**: `AudioProcessor::process`. Output must not depend on block size; `output_is_identical_for_any_block_size` guards this.
 - **Song time.** Positions are `Ticks` (960 per beat). The audio side keeps an anchor beat plus whole frames since it, so every event's frame is a pure function of song time. Move anchors only on tempo change, locate and loop jump.
 - Every binary and test harness must install `daw_rt::GuardedAllocator` as the global allocator.
+- **Behaviours are listed and guarded.** `docs/behaviours.md` lists every user-facing behaviour with the UI test that guards it. A new behaviour gets a line and a UI test in the same change. **Removing or changing a listed behaviour needs the user's OK**, even as a side effect of other work. UI tests find elements by `.debug_selector(..)` names, never by pixel positions.
 - Reference audio lives in `<crate>/tests/references/*.wav` (32-bit float). Only bless a change you have listened to or can explain.

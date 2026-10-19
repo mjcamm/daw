@@ -63,7 +63,7 @@ impl Session {
     /// Creates a new project called `name` in `folder`, starting with the
     /// demo notes, and saves it.
     pub fn create(folder: PathBuf, name: &str, audio: &AudioSettings) -> Result<Self, String> {
-        let mut session = Self::boot(folder, audio, |engine| {
+        let mut session = Self::boot(folder, open_device(audio), |engine| {
             engine
                 .apply(Command::Edit(Edit::RenameSong {
                     name: name.to_owned(),
@@ -81,19 +81,29 @@ impl Session {
     /// Opens the project saved in `folder`.
     pub fn open(folder: PathBuf, audio: &AudioSettings) -> Result<Self, String> {
         let file = projects::open(&folder).map_err(|e| e.to_string())?;
-        Self::boot(folder, audio, |engine| {
+        Self::boot(folder, open_device(audio), |engine| {
             engine.load(file).map_err(|e| e.to_string())
         })
     }
 
-    /// Opens the audio device, creates the engine, lets `setup` fill it, then
-    /// starts playback through the device.
+    /// A new project with the starter song and no audio device, for the
+    /// headless UI tests. Nothing is saved until asked.
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub fn headless(folder: PathBuf) -> Result<Self, String> {
+        Self::boot(folder, Err("no audio in tests".into()), |engine| {
+            demo::add_starter_notes(engine).map_err(|e| e.to_string())?;
+            engine.clear_history();
+            Ok(())
+        })
+    }
+
+    /// Creates the engine on `device`, lets `setup` fill it, then starts
+    /// playback through the device.
     fn boot(
         folder: PathBuf,
-        audio: &AudioSettings,
+        device: daw_host::Result<OutputDevice>,
         setup: impl FnOnce(&mut Engine) -> Result<(), String>,
     ) -> Result<Self, String> {
-        let device = open_device(audio);
         let config = device
             .as_ref()
             .map_or_else(|_| EngineConfig::default(), OutputDevice::engine_config);

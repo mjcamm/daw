@@ -113,6 +113,14 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 - To look mid-drag: `down x y`, one or more `move x y`, `shot`, then `up x y`.
 - Separate script calls take hundreds of milliseconds each, too slow to catch a 200 ms animation. Copy the script's Win32 preamble into a scratch script that clicks, then takes a burst of shots a few tens of milliseconds apart.
 
+## Headless UI tests
+
+- `gpui = { features = ["test-support"] }` (our `ui-tests` feature) gives a headless platform that builds and runs on Windows: `TestAppContext::single()`, then `add_window_view(|window, cx| View::new(..))` returns the view and a `VisualTestContext`. Text measures as zero width (no fonts), but layout, hit-testing, `canvas` prepaint and listeners all run.
+- Find elements with `.debug_selector(|| "name".into())` (a no-op without `test-support`) and `cx.debug_bounds("name")`.
+- `simulate_click` only does single clicks; send `MouseDownEvent`/`MouseUpEvent` yourself with `click_count` 1 then 2 for a double-click.
+- Windows only draw when refreshed: `cx.update(|window, _| window.refresh())` then `cx.run_until_parked()`. Twice when a frame's render takes in new state the next frame shows.
+- Our harness is `crates/daw-ui/src/ui_tests/mod.rs` (`Harness`).
+
 ## Animating rows
 
 - GPUI's layout is recomputed every frame, so a row animates by setting its height (and `top` offset, `opacity`) from a progress value each frame; nothing else is needed while the view redraws every frame.

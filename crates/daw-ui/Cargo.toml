@@ -22,3 +22,8 @@ unicode-segmentation.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# The full UI test run: headless app tests that click and type
+# (`scripts/full-test.sh`). Off for everyday checks.
+ui-tests = ["gpui/test-support"]

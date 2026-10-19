@@ -1083,6 +1083,7 @@ impl ProjectView {
                 let takes_clips = node.takes_midi();
                 let audio = node.kind == NodeKind::Audio && node.parent.is_some();
                 let lane = div()
+                    .debug_selector(|| format!("arrange-lane-{}", id.0))
                     .relative()
                     .h(px(zoom.row_height))
                     .flex_none()
