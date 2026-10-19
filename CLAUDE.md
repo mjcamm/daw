@@ -23,14 +23,14 @@ A manual GitHub workflow (`.github/workflows/cross-platform.yml`) runs the same 
 ## Crates
 
 - `daw-protocol`: engine/UI boundary. Commands in, snapshots out. Depends on nothing; a front end depends only on this.
-- `daw-engine`: authoritative state. `Engine` (control thread: commands, undo, snapshots) and `AudioProcessor` (audio thread), connected only by lock-free `rtrb` queues. The control side compiles the project into an immutable `RenderState` and swaps it in whole.
+- `daw-engine`: authoritative state. `Engine` (control thread: commands, undo, snapshots) and `AudioProcessor` (audio thread), connected only by lock-free `rtrb` queues. The control side compiles the project into an immutable `RenderState` and swaps it in whole. Nodes render in parallel on a worker pool (`parallel.rs`); samples are decoded into a pool (`samples.rs`). **Read `docs/design/audio-engine.md` before engine work.**
 - `daw-automation`: pure evaluation of parameter layer stacks (shapes, blend modes, blocks). No engine knowledge; heavily unit tested.
 - `daw-engine/src/devices.rs`: every built-in device's parameters (name, unit, scale, default) and how values map onto DSP settings. Layers and devices meet here.
-- `daw-dsp`: standalone, portable DSP modules (synth, filter, filter effect, envelope, smoothing, pan). No engine knowledge.
-- `daw-host`: runs the engine on a real audio device (`OutputDevice`, callback timing stats) and holds the demo song. Shared by the app and the player.
+- `daw-dsp`: standalone, portable DSP modules (synth, sampler, filter, filter effect, envelope, smoothing, pan). No engine knowledge.
+- `daw-host`: runs the engine on a real audio device (drivers, device choices, `OutputDevice`, callback timing and load), project folders (sample import), preferences (including audio settings), and the demo song. Shared by the app and the player.
 - `daw-player`: command-line host. Live playback, `--compare` (live == offline), offline render to WAV.
 - `daw-ui`: the desktop app (binary `daw`), built with GPUI. Views read snapshots and send commands through `Session`; they never touch engine state. **Read `docs/gpui-notes.md` before UI work and add to it when you learn something.** Icons are Lucide SVGs in `crates/daw-ui/assets/icons/`. Ask the user about layout before building each new UI element.
-- `daw-rt`: realtime safety guard (`GuardedAllocator`, `realtime`, `count_violations`).
+- `daw-rt`: realtime safety guard (`GuardedAllocator`, `realtime`, `count_violations`) and `without_denormals`.
 - `daw-testkit`: headless offline render (`render`), reference audio comparison (`assert_reference!`). Linking it installs the guard.
 
 Design decisions per phase live in `docs/design/`. Read the relevant one before changing that area.
