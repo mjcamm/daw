@@ -1,13 +1,13 @@
 # Notes in the Tree, Group Clips, and the Tree Editor
 
-*Status: agreed with the user 2026-10-19. Built: notes flowing up and trigger notes (engine), group clips (engine, `group_clips.rs` on Arrange: double-click a folder's empty lane to make one), the tree editor (`tree_editor.rs`: tree, focus, pen, routing, "Drawing to", other members' notes). Named and folded rows and the pen's preview note are built too. Not yet: moving other nodes' notes from the group's node, unlinking a member by a button (dragging it alone does it), copying a group, duplicating a node with its groups, scales. Builds on `node-tree.md`, `piano-roll.md` and `samples.md`.*
+*Status: agreed with the user 2026-10-19. Built: notes flowing up and trigger notes (engine), group clips (engine, `group_clips.rs` on Arrange: double-click a parent's empty lane to make one), the tree editor (`tree_editor.rs`: tree, focus, pen, routing, "Drawing to", other members' notes). Named and folded rows and the pen's preview note are built too. Not yet: moving other nodes' notes from the group's node, unlinking a member by a button (dragging it alone does it), copying a group, duplicating a node with its groups, scales. Builds on `node-tree.md`, `piano-roll.md` and `samples.md`.*
 
 ## Notes flow up, like sound
 
-- **Instruments decide which notes exist.** Each instrument plays a set of notes: a Synth all 128, a SingleSampler only its **trigger note**. A node's **note map** is its own instruments' notes plus its children's maps; a node with no instruments (an empty folder) adds nothing of its own. A scale (later) filters a map.
+- **Instruments decide which notes exist.** Each instrument plays a set of notes: a Synth all 128, a SingleSampler only its **trigger note**. A node's **note map** is its own instruments' notes plus its children's maps; a node with no instruments (an empty parent) adds nothing of its own. A scale (later) filters a map.
 - **A node's notes pass up to its parent.** Each instrument plays its own node's notes and every note from below it, if that note is in the instrument's set. Example: a Synth parent with a Piano child; the Piano's own clip holds a few accents. The Piano plays its accents; the Synth plays its own notes and the Piano's.
 - **Notes never travel down.** A note only sounds if an instrument on its node, or above it, plays that pitch; anything else is silent but kept (shown greyed).
-- **SingleSampler trigger notes** start at C1 and go up among siblings, so drums in a folder never clash (C1 Kick, C♯1 Snare, D1 Hat…). Each is changeable in the sampler's panel.
+- **SingleSampler trigger notes** start at C1 and go up among siblings, so drums in a parent never clash (C1 Kick, C♯1 Snare, D1 Hat…). Each is changeable in the sampler's panel.
 
 ## Group clips
 

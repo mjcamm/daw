@@ -23,8 +23,8 @@ pub const FORMAT: &str = "daw-project";
 /// the pitch range and the clamp; version 7 made the nodes a tree under the
 /// Song; version 8 let a node layer several instruments; version 9 added
 /// the sample table and the SingleSampler's sample; version 10 added group
-/// clips and trigger notes.
-pub const VERSION: u32 = 10;
+/// clips and trigger notes; version 11 made every branch one kind.
+pub const VERSION: u32 = 11;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -310,6 +310,9 @@ impl ProjectFile {
             }
             if header.version < 8 {
                 crate::upgrade::instrument_lists(&mut value);
+            }
+            if header.version < 11 {
+                crate::upgrade::one_kind_per_branch(&mut value);
             }
             return serde_json::from_value(value).map_err(LoadError::Json);
         }

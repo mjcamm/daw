@@ -215,6 +215,23 @@ fn walk_into<'a>(
 }
 
 /// How many nodes are in `node`'s subtree, itself included.
+/// Checks that `node` and everything under it are one kind, the kind of
+/// the parent they go under (any kind under the Song).
+fn check_kinds(
+    parent: NodeId,
+    parent_kind: NodeKind,
+    id: NodeId,
+    node: &Node,
+) -> Result<(), CommandError> {
+    if parent != NodeId::ROOT && node.kind != parent_kind {
+        return Err(CommandError::MixedKinds { node: id, parent });
+    }
+    for (child_id, child) in &node.children {
+        check_kinds(id, node.kind, *child_id, child)?;
+    }
+    Ok(())
+}
+
 /// Every instrument in `node` and under it.
 fn subtree_instruments(node: &Node) -> Vec<(DeviceId, &Instrument)> {
     let mut out: Vec<(DeviceId, &Instrument)> =
@@ -674,6 +691,8 @@ impl Project {
                 for (device, instrument) in subtree_instruments(&node) {
                     self.check_instrument_sample(device, instrument)?;
                 }
+                let parent_kind = self.node(parent).map_or(NodeKind::Midi, |p| p.kind);
+                check_kinds(parent, parent_kind, id, &node)?;
                 let mut used = self.used_ids();
                 prepare_node(id, &mut node, &mut used, &self.signals)?;
                 self.node_or_err(parent)?.children.insert(index, (id, node));
@@ -702,6 +721,11 @@ impl Project {
                 if find_node(moving, id, parent).is_some() {
                     return Err(CommandError::NodeInsideItself { id });
                 }
+                let parent_kind = self
+                    .node(parent)
+                    .ok_or(CommandError::UnknownNode { id: parent })?
+                    .kind;
+                check_kinds(parent, parent_kind, id, moving)?;
                 let siblings = self
                     .node(parent)
                     .ok_or(CommandError::UnknownNode { id: parent })?

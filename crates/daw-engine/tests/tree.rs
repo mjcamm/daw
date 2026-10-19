@@ -311,3 +311,70 @@ fn meters_report_each_node() {
     assert_eq!(meters[&FIRST_NODE].left, 0.0, "plays nothing");
     assert!(meters[&NodeId::ROOT].left > 0.0);
 }
+
+#[test]
+fn a_branch_is_all_midi_or_all_audio() {
+    let (mut engine, _processor) = new_engine();
+    let audio = || Node::new("Audio", 2).with_kind(daw_engine::NodeKind::Audio);
+    let refused = engine
+        .apply(Command::Edit(Edit::AddNode {
+            id: NodeId(30),
+            parent: FIRST_NODE,
+            index: 0,
+            node: audio(),
+        }))
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        daw_engine::CommandError::MixedKinds {
+            node: NodeId(30),
+            parent: FIRST_NODE
+        }
+    );
+    // Either kind goes under the Song; moving it under the other kind fails.
+    apply(
+        &mut engine,
+        Edit::AddNode {
+            id: NodeId(30),
+            parent: NodeId::ROOT,
+            index: 0,
+            node: audio(),
+        },
+    );
+    let refused = engine
+        .apply(Command::Edit(Edit::MoveNode {
+            id: NodeId(30),
+            parent: FIRST_NODE,
+            index: 0,
+        }))
+        .unwrap_err();
+    assert!(matches!(
+        refused,
+        daw_engine::CommandError::MixedKinds { .. }
+    ));
+}
+
+#[test]
+fn older_files_with_mixed_branches_open_as_one_kind() {
+    let (mut engine, _processor) = new_engine();
+    add_folder(&mut engine);
+    add_lead(&mut engine, FOLDER);
+    let mut json: serde_json::Value = serde_json::from_str(&engine.to_file().to_json()).unwrap();
+    json["version"] = 10.into();
+    // Before version 11 the folder could be Audio over a MIDI lead.
+    let folder = json["root"]["children"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|n| n["name"] == "Folder")
+        .unwrap();
+    folder["kind"] = "Audio".into();
+    let file = daw_engine::ProjectFile::from_json(&json.to_string()).unwrap();
+    let (mut reopened, _processor) = new_engine();
+    reopened.load(file).unwrap();
+    let snapshot = reopened.snapshot();
+    assert_eq!(
+        snapshot.node(FOLDER).unwrap().kind,
+        daw_engine::NodeKind::Midi
+    );
+}

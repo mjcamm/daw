@@ -183,6 +183,43 @@ pub fn notes_switches(file: &mut Value) {
     }
 }
 
+/// Makes every branch under the Song one kind (before version 11, MIDI and
+/// Audio could mix). Audio nodes held nothing then, so this loses nothing:
+/// a branch is MIDI if any node in it is, else Audio.
+pub fn one_kind_per_branch(file: &mut Value) {
+    fn kind(node: &Value) -> &str {
+        node.get("kind").and_then(Value::as_str).unwrap_or("Midi")
+    }
+    fn any_midi(node: &Value) -> bool {
+        kind(node) == "Midi"
+            || node
+                .get("children")
+                .and_then(Value::as_array)
+                .is_some_and(|c| c.iter().any(any_midi))
+    }
+    fn set(node: &mut Value, to: &str) {
+        if let Some(object) = node.as_object_mut() {
+            object.insert("kind".to_owned(), to.into());
+            if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut) {
+                for child in children {
+                    set(child, to);
+                }
+            }
+        }
+    }
+    let Some(branches) = file
+        .get_mut("root")
+        .and_then(|r| r.get_mut("children"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for branch in branches {
+        let to = if any_midi(branch) { "Midi" } else { "Audio" };
+        set(branch, to);
+    }
+}
+
 /// Turns each node's single `instrument` (before version 8) into a list of
 /// one, with an id one past the highest device id in the file.
 pub fn instrument_lists(file: &mut Value) {

@@ -4,13 +4,13 @@
 
 ## What it is
 
-**SingleSampler** is a built-in instrument that plays one audio sample. Each note starts the sample from the top and it plays to its end (one-shot), whatever the note's length; velocity sets its level. Several hits overlap. It is the first piece of a drum machine built from nodes (a Drums folder of SingleSampler nodes); the trigger note per drum and auto-assigning the next free note come later.
+**SingleSampler** is a built-in instrument that plays one audio sample. Each note starts the sample from the top and it plays to its end (one-shot), whatever the note's length; velocity sets its level. Several hits overlap. It is the first piece of a drum machine built from nodes (a Drums parent of SingleSampler nodes); the trigger note per drum and auto-assigning the next free note come later.
 
 ## Where samples live
 
-- A project is a folder. Imported audio is **copied** into its `audio/` folder (a unique name if the name is taken), so a project carries its own sounds. The project refers to it by a path relative to the folder, always with `/`.
+- A project is a folder. Imported audio is **copied** into its `audio/` folder (a unique name if the name is taken), so a project carries its own sounds. The project refers to it by a path relative to the project folder, always with `/`.
 - The project holds a sample table: `SampleId → SampleRef { name, file }`, saved in the project file (version 9). Adding and removing a sample are undoable edits (`Edit::AddSample`, `Edit::RemoveSample`; a sample in use cannot be removed). An instrument chooses its sample with `Edit::SetInstrumentSample` (undoable).
-- The engine decodes samples on the control side into a **sample pool** (`SampleId → Arc<SampleData>`) the first time the project refers to them, reading from the folder set with `Engine::set_sample_dir`. A file that is missing or cannot be read leaves the instrument silent and shows in the snapshot as missing, with the reason. Decoded audio stays in the pool for the session, so undo and redo never re-read files.
+- The engine decodes samples on the control side into a **sample pool** (`SampleId → Arc<SampleData>`) the first time the project refers to them, reading from the project folder set with `Engine::set_sample_dir`. A file that is missing or cannot be read leaves the instrument silent and shows in the snapshot as missing, with the reason. Decoded audio stays in the pool for the session, so undo and redo never re-read files.
 - WAV only for now (16, 24 or 32-bit integer, or 32-bit float; mono or stereo; any sample rate).
 
 ## Real-time rules
@@ -34,6 +34,6 @@
 
 ## Later
 
-- Trigger note per drum, notes flowing from a folder's clip to its children, auto-assigning the next free note.
+- Trigger note per drum, notes flowing from a parent's clip to its children, auto-assigning the next free note.
 - Sample start and end, pitch, reverse, envelopes, choke groups.
 - Other file types; audio clips on Audio nodes (the same pool and `audio/` folder).

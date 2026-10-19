@@ -235,7 +235,14 @@ impl ProjectView {
         let dragged = DraggedNode {
             id,
             name: node.name.clone(),
+            kind: node.kind,
         };
+        // A node dropped on this row goes under this row's parent.
+        let parent_kind = node
+            .parent
+            .filter(|p| *p != NodeId::ROOT)
+            .and_then(|p| self.session.snapshot().node(p))
+            .map(|p| p.kind);
 
         let mut selected_bg = theme.accent;
         selected_bg.a = 0.16;
@@ -258,7 +265,7 @@ impl ProjectView {
             })
             // Dropped on a row: just after it (on the Song's: last in it).
             .drag_over::<DraggedNode>(move |style, dragged, _, _| {
-                if dragged.id == id {
+                if dragged.id == id || parent_kind.is_some_and(|k| k != dragged.kind) {
                     style
                 } else {
                     style.bg(drop_highlight)
@@ -338,8 +345,8 @@ impl ProjectView {
             });
         let group = action(
             "node-group",
-            Icon::FolderPlus,
-            "Group into a folder",
+            Icon::Group,
+            "Group into a new node (of the same kind)",
             movable.is_some(),
         )
         .when_some(movable, |d, id| {
@@ -416,6 +423,7 @@ impl ProjectView {
             let x = MAP_PAD + bar.column as f32 * MAP_COLUMN;
             let folded = self.folded.contains(&id);
             let foldable = id != NodeId::ROOT && !node.children.is_empty();
+            let bar_kind = node.kind;
             let mut drop_fill = colors.detail;
             drop_fill.a = 0.35;
             let chevron = foldable.then(|| {
@@ -470,7 +478,14 @@ impl ProjectView {
                 .pt(px(1.))
                 .children(chevron)
                 .tooltip(tooltip::text(node.name.clone()))
-                .drag_over::<DraggedNode>(move |style, _, _, _| style.bg(drop_fill))
+                .drag_over::<DraggedNode>(move |style, dragged, _, _| {
+                    // Only a node of this branch's kind can go in.
+                    if dragged.kind == bar_kind {
+                        style.bg(drop_fill)
+                    } else {
+                        style
+                    }
+                })
                 .on_drop(cx.listener(move |this, dragged: &DraggedNode, _, _| {
                     this.move_node(dragged.id, Drop::Into(id));
                 }));
@@ -486,6 +501,7 @@ impl ProjectView {
                 })
                 .map(|(row, (node, _))| {
                     let id = node.id;
+                    let slot_kind = node.kind;
                     let colors = theme.content(node.color);
                     let mut fill = colors.detail;
                     fill.a = 0.35;
@@ -500,7 +516,13 @@ impl ProjectView {
                         .rounded(px(4.))
                         .border_1()
                         .border_color(colors.outline)
-                        .drag_over::<DraggedNode>(move |style, _, _, _| style.bg(fill))
+                        .drag_over::<DraggedNode>(move |style, dragged, _, _| {
+                            if dragged.kind == slot_kind {
+                                style.bg(fill)
+                            } else {
+                                style
+                            }
+                        })
                         .on_drop(cx.listener(move |this, dragged: &DraggedNode, _, _| {
                             this.move_node(dragged.id, Drop::Into(id));
                         }))
@@ -564,7 +586,7 @@ impl ProjectView {
     fn add_node(&mut self, kind: NodeKind) {
         self.open_menu = None;
         let snapshot = self.session.snapshot();
-        let (parent, index) = tree::new_node_place(snapshot, self.selected_node);
+        let (parent, index) = tree::new_node_place(snapshot, self.selected_node, kind);
         let id = tree::next_node_id(snapshot);
         let color = tree::next_color(snapshot);
         let node = match kind {
@@ -954,6 +976,8 @@ fn full_map_width(columns: usize) -> f32 {
 struct DraggedNode {
     id: NodeId,
     name: String,
+    /// A branch is one kind: it only drops where that kind goes.
+    kind: NodeKind,
 }
 
 impl Render for DraggedNode {

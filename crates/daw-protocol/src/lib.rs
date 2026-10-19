@@ -687,6 +687,12 @@ pub enum CommandError {
     UnknownGroup {
         id: ClipId,
     },
+    /// A branch is all MIDI or all Audio: a node goes only under a parent
+    /// of its own kind (the Song takes either).
+    MixedKinds {
+        node: NodeId,
+        parent: NodeId,
+    },
     /// A group's members must be clips on its node or below it, each in
     /// one group only.
     InvalidMember {
@@ -838,6 +844,11 @@ impl fmt::Display for CommandError {
             }
             Self::NoteOutOfRange { note } => write!(f, "note {note} is outside 0..=127"),
             Self::UnknownGroup { id } => write!(f, "group clip {} does not exist", id.0),
+            Self::MixedKinds { node, parent } => write!(
+                f,
+                "node {} is not the same kind (MIDI or Audio) as node {}",
+                node.0, parent.0
+            ),
             Self::InvalidMember { group, clip } => write!(
                 f,
                 "clip {} cannot be a member of group {}: it must be on the group's node or \

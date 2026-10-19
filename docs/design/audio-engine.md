@@ -16,7 +16,7 @@ They meet only through two lock-free `rtrb` queues (`AudioMsg` in, retired state
 
 1. `process` wraps the block in `daw_rt::realtime` (debug builds abort on any allocation) and `without_denormals`.
 2. `receive` applies queued messages: play/stop/locate/loop, previews, the test tone, state swaps (`assign_players` then `plan_levels`).
-3. The block is cut into chunks of at most `CHUNK_FRAMES` (1024). For each chunk, `render` runs the tree **level by level** (leaves first) on the worker pool. Each node's `NodePlayer::render_chunk` walks the chunk with **its own copy of the transport**: parameters update every `CONTROL_FRAMES` (32) counted from the processor's start, notes start and end on their exact frames, loop jumps release and re-seek. A folder's bus starts as its children's buses summed in render order.
+3. The block is cut into chunks of at most `CHUNK_FRAMES` (1024). For each chunk, `render` runs the tree **level by level** (leaves first) on the worker pool. Each node's `NodePlayer::render_chunk` walks the chunk with **its own copy of the transport**: parameters update every `CONTROL_FRAMES` (32) counted from the processor's start, notes start and end on their exact frames, loop jumps release and re-seek. A parent's bus starts as its children's buses summed in render order.
 4. The Song's bus goes out through `safe` (no NaN, clip at ±1) to the device.
 
 ## Invariants (each guarded by tests)

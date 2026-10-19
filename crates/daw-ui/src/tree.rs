@@ -146,12 +146,20 @@ pub fn next_name(snapshot: &Snapshot, base: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Where a new node goes: just after the selected node, in the same
-/// folder; with nothing (or the Song) selected, at the end of the Song.
-pub fn new_node_place(snapshot: &Snapshot, selected: Option<NodeId>) -> (NodeId, usize) {
+/// Where a new node of `kind` goes: just after the selected node, under the
+/// same parent, if that parent takes its kind (a branch is one kind); else
+/// (or with nothing, or the Song, selected) at the end of the Song.
+pub fn new_node_place(
+    snapshot: &Snapshot,
+    selected: Option<NodeId>,
+    kind: daw_engine::NodeKind,
+) -> (NodeId, usize) {
     let after = selected
         .and_then(|id| snapshot.node(id))
-        .and_then(|node| place_of(snapshot, node.id));
+        .and_then(|node| place_of(snapshot, node.id))
+        .filter(|(parent, _)| {
+            *parent == NodeId::ROOT || snapshot.node(*parent).is_some_and(|p| p.kind == kind)
+        });
     after.map_or(
         (NodeId::ROOT, snapshot.root().children.len()),
         |(parent, index)| (parent, index + 1),
@@ -221,7 +229,8 @@ pub fn move_edit(snapshot: &Snapshot, dragged: NodeId, drop: Drop) -> Option<Edi
     })
 }
 
-/// The edit that wraps a node in a new folder in its place, as one step.
+/// The edit that wraps a node in a new parent of its kind, in its place,
+/// as one step.
 pub fn group_edit(snapshot: &Snapshot, id: NodeId) -> Option<Edit> {
     let (parent, index) = place_of(snapshot, id)?;
     let node = snapshot.node(id)?;
@@ -231,7 +240,7 @@ pub fn group_edit(snapshot: &Snapshot, id: NodeId) -> Option<Edit> {
             id: folder,
             parent,
             index,
-            node: Node::new(&next_name(snapshot, "Folder"), node.color).with_kind(node.kind),
+            node: Node::new(&next_name(snapshot, "Group"), node.color).with_kind(node.kind),
         },
         Edit::MoveNode {
             id,
@@ -470,14 +479,20 @@ mod tests {
     #[test]
     fn new_nodes_go_after_the_selection_or_at_the_end() {
         let snapshot = engine().snapshot();
-        assert_eq!(new_node_place(&snapshot, None), (NodeId::ROOT, 2));
-        assert_eq!(new_node_place(&snapshot, Some(KICK)), (DRUMS, 1));
+        let midi = daw_engine::NodeKind::Midi;
+        assert_eq!(new_node_place(&snapshot, None, midi), (NodeId::ROOT, 2));
+        assert_eq!(new_node_place(&snapshot, Some(KICK), midi), (DRUMS, 1));
         assert_eq!(
-            new_node_place(&snapshot, Some(NodeId::ROOT)),
+            new_node_place(&snapshot, Some(NodeId::ROOT), midi),
             (NodeId::ROOT, 2)
         );
+        assert_eq!(
+            new_node_place(&snapshot, Some(KICK), daw_engine::NodeKind::Audio),
+            (NodeId::ROOT, 2),
+            "an Audio node never goes into a MIDI branch"
+        );
         assert_eq!(next_node_id(&snapshot), NodeId(5));
-        assert_eq!(next_name(&snapshot, "Folder"), "Folder");
+        assert_eq!(next_name(&snapshot, "Group"), "Group");
         assert_eq!(next_name(&snapshot, "Drums"), "Drums 2");
         // Drums and Kick are red (0), Hats orange (1), the Synth purple (6).
         assert_eq!(next_color(&snapshot), 2);
@@ -531,7 +546,7 @@ mod tests {
         let rows = display_order(&grouped, &HashSet::new());
         assert_eq!(
             names(&rows),
-            ["Song", "Synth", "Drums", "Folder", "Kick", "Hats"]
+            ["Song", "Synth", "Drums", "Group", "Kick", "Hats"]
         );
         engine.apply(Command::Undo).unwrap();
         assert_eq!(engine.snapshot().nodes.len(), 5, "one undo step");

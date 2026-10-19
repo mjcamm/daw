@@ -31,7 +31,7 @@ In the header, right of the transport: the audio thread's load (processing time 
 
 ## Multicore rendering
 
-- Each node renders its whole chunk on its own (its notes, parameters and a copy of the transport). Nodes are grouped by height in the tree (leaves first); each group renders in parallel on a pool of worker threads (`parallel.rs`) with the audio thread working too. A folder starts from its children's sum, added in render order, so the sound is bit-identical on any number of threads (`tests/parallel.rs`).
+- Each node renders its whole chunk on its own (its notes, parameters and a copy of the transport). Nodes are grouped by height in the tree (leaves first); each group renders in parallel on a pool of worker threads (`parallel.rs`) with the audio thread working too. A parent starts from its children's sum, added in render order, so the sound is bit-identical on any number of threads (`tests/parallel.rs`).
 - Workers are made up front with audio priority; a run allocates nothing, takes tasks from one atomic word, wakes workers with `unpark`, and the audio thread spins for the last tasks. Workers spin briefly for more work, then sleep.
 
 ## Later
