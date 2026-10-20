@@ -121,6 +121,14 @@ pub struct ProjectView {
     pub(crate) file_hover: Option<(gpui::Point<Pixels>, usize)>,
     /// Arrange's tool: the pointer, or the scissors.
     pub(crate) arrange_tool: crate::arrange::ArrangeTool,
+    /// The clip end under the pointer on Arrange (node, clip, which end),
+    /// for the resize cursor.
+    pub(crate) arrange_edge: Option<(NodeId, daw_engine::ClipId, crate::clip_edit::Grab)>,
+    /// A hover effect changed (a cursor, a preview): the pane under the
+    /// pointer redraws. Plain moves redraw nothing otherwise.
+    pub(crate) hover_changed: bool,
+    /// What the pointer shows over a layer or signal lane.
+    pub(crate) lane_hover: Option<crate::parameters::LaneHover>,
     /// The pointer over the lanes while the scissors are out.
     pub(crate) scissors_at: Option<gpui::Point<Pixels>>,
     /// Whether the pointer is over the piano roll panel: tool keys go to it.
@@ -221,6 +229,9 @@ pub struct ProjectView {
     pane_bounds: PaneBounds,
     /// The pane the pointer was last over.
     hovered_pane: Option<PaneKind>,
+    /// The pane the last press landed in: while a drag runs, only it
+    /// redraws every frame.
+    pressed_pane: Option<PaneKind>,
     /// When the last frame was drawn; the engine is serviced on a timer
     /// while no frames run.
     last_frame: std::time::Instant,
@@ -294,6 +305,9 @@ impl ProjectView {
             file_hover: None,
             arrange_tool: crate::arrange::ArrangeTool::Pointer,
             scissors_at: None,
+            arrange_edge: None,
+            hover_changed: false,
+            lane_hover: None,
             roll_hovered: false,
             note_editor: None,
             audio_editor: None,
@@ -336,6 +350,7 @@ impl ProjectView {
             drawn_revision: u64::MAX,
             pane_bounds: Rc::default(),
             hovered_pane: None,
+            pressed_pane: None,
             last_frame: std::time::Instant::now(),
         }
     }
@@ -507,10 +522,27 @@ impl Render for ProjectView {
         }
         self.end_note_preview();
 
-        // While something follows the pointer, every pane redraws each frame.
+        // While something follows the pointer, the pane it started in
+        // redraws each frame (others whose size changes redraw on their
+        // own; the release redraws them all). Drags from outside the
+        // window (files), and drags that preview in other panes, redraw
+        // every pane. A new drag that previews elsewhere belongs here.
         let busy = self.dragging() || cx.has_active_drag();
         if busy {
-            self.invalidate_all(cx);
+            // A notes signal's settings in the inspector preview on the
+            // page's lanes too.
+            let everywhere = self.notes_drag.is_some();
+            match self.pressed_pane.filter(|_| self.dragging() && !everywhere) {
+                Some(kind) => self.invalidate(kind, cx),
+                None => self.invalidate_all(cx),
+            }
+        }
+        // A hover effect changed: redraw where the pointer is (and was).
+        if std::mem::take(&mut self.hover_changed) {
+            match self.hovered_pane {
+                Some(kind) => self.invalidate(kind, cx),
+                None => self.invalidate_all(cx),
+            }
         }
         let now = crate::live::Now {
             beat: self.session.position_beats(),
@@ -668,28 +700,50 @@ impl ProjectView {
         }
     }
 
-    /// Input happened: a plain move or a wheel redraws the pane under the
-    /// pointer (and the one it left); presses, releases, keys and drags
-    /// redraw every pane.
+    /// Input happened: presses, releases, keys and drags redraw every pane;
+    /// a wheel redraws the pane under the pointer.
     fn input(&mut self, at: Option<gpui::Point<Pixels>>, cx: &mut Context<Self>) {
         cx.notify();
         let Some(at) = at else {
             self.invalidate_all(cx);
             return;
         };
-        let under = self
-            .pane_bounds
+        let under = self.pane_at(at);
+        match under {
+            Some(kind) => self.invalidate(kind, cx),
+            None => self.invalidate_all(cx),
+        }
+        self.hovered_pane = under;
+    }
+
+    /// The pointer moved with no button held. Nothing redraws unless a
+    /// hover effect says it changed (`hover_changed`), or the pointer moved
+    /// to another pane (both redraw, so hover effects there settle).
+    fn pointer_moved(&mut self, at: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        let under = self.pane_at(at);
+        if under != self.hovered_pane {
+            for kind in [under, self.hovered_pane].into_iter().flatten() {
+                self.invalidate(kind, cx);
+            }
+            self.hovered_pane = under;
+            cx.notify();
+        }
+    }
+
+    /// Marks that a hover effect changed, so the pane under the pointer
+    /// redraws.
+    pub(crate) fn hover_changed(&mut self, cx: &mut Context<Self>) {
+        self.hover_changed = true;
+        cx.notify();
+    }
+
+    /// The pane at a point in the window, if any.
+    fn pane_at(&self, at: gpui::Point<Pixels>) -> Option<PaneKind> {
+        self.pane_bounds
             .borrow()
             .iter()
             .find(|(_, b)| b.contains(&at))
-            .map(|(k, _)| *k);
-        if let Some(kind) = under {
-            self.invalidate(kind, cx);
-        }
-        if let Some(left) = self.hovered_pane.filter(|k| Some(*k) != under) {
-            self.invalidate(left, cx);
-        }
-        self.hovered_pane = under;
+            .map(|(k, _)| *k)
     }
 
     /// Window-level listeners that send input to `input`. They run before
@@ -702,8 +756,13 @@ impl ProjectView {
                 let v = view.clone();
                 window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
-                        let at = e.pressed_button.is_none().then_some(e.position);
-                        let _ = v.update(cx, |this, cx| this.input(at, cx));
+                        let _ = v.update(cx, |this, cx| {
+                            if e.pressed_button.is_none() {
+                                this.pointer_moved(e.position, cx);
+                            } else {
+                                this.input(None, cx);
+                            }
+                        });
                     }
                 });
                 let v = view.clone();
@@ -713,9 +772,12 @@ impl ProjectView {
                     }
                 });
                 let v = view.clone();
-                window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
+                window.on_mouse_event(move |e: &MouseDownEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
-                        let _ = v.update(cx, |this, cx| this.input(None, cx));
+                        let _ = v.update(cx, |this, cx| {
+                            this.pressed_pane = this.pane_at(e.position);
+                            this.input(None, cx);
+                        });
                     }
                 });
                 let v = view.clone();
@@ -814,6 +876,10 @@ impl ProjectView {
             shown.push(PaneKind::Inspector);
         }
         self.live.keep_only(&shown);
+        // Nor may the pointer be found in a pane that is not there.
+        self.pane_bounds
+            .borrow_mut()
+            .retain(|(kind, _)| shown.contains(kind));
         let inspector = self.inspector_open.then(|| {
             self.pane_element(
                 PaneKind::Inspector,

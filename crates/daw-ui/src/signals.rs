@@ -334,6 +334,12 @@ impl ProjectView {
             .right_0();
         let timeline = scroll::axis_locked(div())
             .id("signal-lanes")
+            // Leaving the lanes drops any lane's hover look.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered && this.lane_hover.take().is_some() {
+                    this.hover_changed(cx);
+                }
+            }))
             .flex_1()
             .min_w_0()
             // A row, so the content stretches to the full height.

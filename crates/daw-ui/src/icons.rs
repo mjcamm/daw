@@ -184,7 +184,7 @@ const ICONS: [(Icon, &str, &[u8]); 28] = [
 ];
 
 impl Icon {
-    fn path(self) -> &'static str {
+    pub fn path(self) -> &'static str {
         ICONS
             .iter()
             .find(|(icon, _, _)| *icon == self)

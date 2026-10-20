@@ -7,6 +7,7 @@ mod audio_panel;
 mod block_edit;
 mod clip_drag;
 mod clip_edit;
+mod clip_paint;
 mod combined;
 mod frame;
 mod frame_log;

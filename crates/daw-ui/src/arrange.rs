@@ -12,6 +12,7 @@ pub enum ArrangeTool {
     Scissors,
 }
 use crate::clip_edit;
+use crate::clip_edit::Grab;
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, ruler_label_step, timeline_bars, x_to_snapped_position};
@@ -723,12 +724,15 @@ impl ProjectView {
                 .size_full()
                 .occlude()
                 .cursor_crosshair()
-                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, _| {
+                // The cut line follows the pointer.
+                .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                     this.scissors_at = Some(event.position);
+                    this.hover_changed(cx);
                 }))
-                .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if !hovered {
                         this.scissors_at = None;
+                        this.hover_changed(cx);
                     }
                 }))
                 .on_mouse_down(
@@ -1123,6 +1127,36 @@ impl ProjectView {
                 let id = node.id;
                 let takes_clips = node.takes_midi();
                 let audio = node.kind == NodeKind::Audio && node.parent.is_some();
+                // The lane's clips near the screen, painted in one drawing.
+                let painted: Vec<crate::clip_paint::Painted> = crate::clip_edit::node_clips(node)
+                    .filter(|_| row_near)
+                    .filter(|(_, clip)| {
+                        near(
+                            clip.start().as_beats(),
+                            (clip.start() + clip.length()).as_beats(),
+                        )
+                    })
+                    .map(|(cid, clip)| {
+                        // A clip moves with its block while dragged.
+                        let shown = match &clip {
+                            crate::clip_edit::AnyClip::Midi(midi) => self
+                                .combined_drag
+                                .as_ref()
+                                .and_then(|d| d.shifted(cid, midi))
+                                .map_or(clip, crate::clip_edit::AnyClip::Midi),
+                            crate::clip_edit::AnyClip::Audio(_) => clip,
+                        };
+                        self.painted_clip(cid, &shown, &node.name, color, theme)
+                    })
+                    .collect();
+                // Where each clip is, for presses and the cursor.
+                let spans: Vec<(daw_engine::ClipId, f32, f32)> =
+                    painted.iter().map(|c| (c.id, c.left, c.width)).collect();
+                // Over a clip's end, the pointer shows it resizes.
+                let over_edge = self.arrange_tool == ArrangeTool::Pointer
+                    && self.clip_drag.is_none()
+                    && self.arrange_edge.is_some_and(|(n, _, _)| n == id);
+                let press_spans = spans.clone();
                 let lane = div()
                     .debug_selector(|| format!("arrange-lane-{}", id.0))
                     .relative()
@@ -1130,12 +1164,37 @@ impl ProjectView {
                     .flex_none()
                     .border_b_1()
                     .border_color(theme.hairline)
-                    // A press on empty lane clears the clip selection; a
-                    // double-click on a MIDI node's lane adds a one-bar
-                    // clip there and opens the editor on it.
+                    // A press on a clip picks it up (or an end, to resize;
+                    // a double-click opens it). A press on empty lane clears
+                    // the clip selection; a double-click on a MIDI node's
+                    // lane adds a one-bar clip there and opens the editor
+                    // on it.
+                    .when(over_edge, |d| d.cursor_ew_resize())
+                    // Which clip end the pointer is on: redraw only when
+                    // that changes.
+                    .on_mouse_move(
+                        cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                            let x = (event.position.x - this.arrange_lanes_bounds.get().left())
+                                / px(1.);
+                            let edge = crate::clip_paint::clip_at(&spans, x)
+                                .filter(|(_, grab)| matches!(grab, Grab::Start | Grab::End))
+                                .map(|(clip, grab)| (id, clip, grab));
+                            if edge != this.arrange_edge {
+                                this.arrange_edge = edge;
+                                this.hover_changed(cx);
+                            }
+                        }),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            let x = (event.position.x - this.arrange_lanes_bounds.get().left())
+                                / px(1.);
+                            if let Some((clip, grab)) = crate::clip_paint::clip_at(&press_spans, x)
+                            {
+                                this.press_painted_clip(clip, grab, audio, event);
+                                return;
+                            }
                             this.selected_clips.clear();
                             this.selected_combined = None;
                             if event.click_count >= 2 && takes_clips {
@@ -1152,28 +1211,12 @@ impl ProjectView {
                     } else {
                         self.combined_elements(id, theme, cx)
                     })
-                    .children(
-                        crate::clip_edit::node_clips(node)
-                            .filter(|_| row_near)
-                            .filter(|(_, clip)| {
-                                near(
-                                    clip.start().as_beats(),
-                                    (clip.start() + clip.length()).as_beats(),
-                                )
-                            })
-                            .map(|(cid, clip)| {
-                                // A clip moves with its block while dragged.
-                                let shown = match &clip {
-                                    crate::clip_edit::AnyClip::Midi(midi) => self
-                                        .combined_drag
-                                        .as_ref()
-                                        .and_then(|d| d.shifted(cid, midi))
-                                        .map_or(clip, crate::clip_edit::AnyClip::Midi),
-                                    crate::clip_edit::AnyClip::Audio(_) => clip,
-                                };
-                                self.clip_element(cid, &shown, &node.name, color, theme, cx)
-                            })
-                            .collect::<Vec<_>>(),
+                    .child(
+                        crate::clip_paint::clips_canvas(painted)
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
                     );
                 animated(layout, zoom.row_height, lane)
             })
@@ -1204,6 +1247,7 @@ impl ProjectView {
             .track_scroll(&self.arrange_view.x)
             .child(
                 div()
+                    .id("arrange-lanes")
                     .relative()
                     .flex_shrink_0()
                     .w(px(width))
@@ -1215,6 +1259,12 @@ impl ProjectView {
                             .absolute()
                             .size_full()
                     })
+                    // Leaving the lanes leaves any clip end.
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if !hovered && this.arrange_edge.take().is_some() {
+                            this.hover_changed(cx);
+                        }
+                    }))
                     // Audio files dragged in from outside the app.
                     .on_drag_move::<ExternalPaths>(cx.listener(
                         |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {

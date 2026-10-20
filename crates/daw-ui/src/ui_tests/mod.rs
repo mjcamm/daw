@@ -55,6 +55,11 @@ impl Harness {
         harness
     }
 
+    /// The project's folder.
+    pub fn folder(&self) -> &std::path::Path {
+        &self.folder
+    }
+
     /// Draws a frame (the app draws every frame; tests draw on demand).
     pub fn redraw(&mut self) {
         // Twice: rendering takes in the engine's latest snapshot, which the

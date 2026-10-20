@@ -14,10 +14,9 @@
 //! becomes one edit when the mouse is released.
 
 use crate::block_edit::{
-    EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, cycle_end_x, decide, drag_block,
-    edge_at, has_loop_handle, hit_test, loop_band, move_point, new_block, next_block_id, phase_at,
-    point_at, point_positions, remove_point, room_around, scrub, value_to_y, window_hit_test,
-    y_to_value,
+    EDGE_ZONE, Hit, LOOP_HANDLE, Room, Setting, Snap, add_point, decide, drag_block, edge_at,
+    has_loop_handle, hit_test, loop_band, move_point, new_block, next_block_id, phase_at, point_at,
+    point_positions, remove_point, room_around, scrub, value_to_y, window_hit_test, y_to_value,
 };
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
@@ -58,8 +57,6 @@ const BLOCK_MARGIN: f32 = 3.;
 const BLOCK_INSET: f32 = BLOCK_MARGIN + 1.;
 /// Radius of a drawn shape point.
 const POINT_DOT: f32 = 3.;
-/// Half the width of the resize zone on a looped block's first cycle end.
-const CYCLE_EDGE_HALF: f32 = 4.;
 /// One line of text in a two-line row.
 const LINE_HEIGHT: f32 = 20.;
 /// How long a layer jumped to from elsewhere stays highlighted.
@@ -281,18 +278,27 @@ fn previewed_layers<'a>(
 /// move cursor: the system cursor hides and an icon is drawn at the pointer.
 #[derive(Debug, Clone, Copy)]
 struct LaneCursor {
-    /// The block it belongs to.
-    block: BlockId,
     kind: CursorKind,
     /// Pointer position within the lane's row.
     x: f32,
     y: f32,
 }
 
+/// What the pointer shows over a lane: the block under it (its loop
+/// handle shows) and the cursor. A pane redraws when it changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LaneHover {
+    lane: Lane,
+    block: Option<BlockId>,
+    kind: Option<CursorKind>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CursorKind {
     Loop,
     Move,
+    /// An edge or a cycle end: the system's sideways cursor.
+    Resize,
 }
 
 /// Size of a custom cursor icon.
@@ -421,6 +427,22 @@ impl ProjectView {
         let zoom = self.parameters_view.zoom;
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
         let rows = rows(node);
+        // Rows far off screen are empty boxes of their height, in both
+        // columns (`paint::visible_y`).
+        let near_y = crate::paint::visible_y(&self.parameters_view.y);
+        let mut near = Vec::with_capacity(rows.len());
+        let mut y = 0.;
+        for row in &rows {
+            let height = row.height(zoom.row_height);
+            near.push(near_y.is_none_or(|(above, below)| y + height >= above && y <= below));
+            y += height;
+        }
+        let blank = |row: &Row<'_>| {
+            div()
+                .flex_none()
+                .h(px(row.height(zoom.row_height)))
+                .into_any_element()
+        };
 
         let left = div()
             .w(px(LEFT_WIDTH))
@@ -430,11 +452,13 @@ impl ProjectView {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.edge)
-            .children(
-                rows.iter()
-                    .enumerate()
-                    .map(|(i, row)| self.left_cell(i, row, theme, cx)),
-            );
+            .children(rows.iter().enumerate().map(|(i, row)| {
+                if near[i] {
+                    self.left_cell(i, row, theme, cx)
+                } else {
+                    blank(row)
+                }
+            }));
 
         // Drawn by the live layer, from beat 0 across the lanes.
         let playhead = self
@@ -453,14 +477,25 @@ impl ProjectView {
         let mut top = 0.;
         let right_cells: Vec<AnyElement> = rows
             .iter()
-            .map(|row| {
-                let cell = self.right_cell(row, top, color, theme, width, pointer, cx);
+            .enumerate()
+            .map(|(i, row)| {
+                let cell = if near[i] {
+                    self.right_cell(row, top, color, theme, width, pointer, cx)
+                } else {
+                    blank(row)
+                };
                 top += row.height(zoom.row_height);
                 cell
             })
             .collect();
         let lanes = scroll::axis_locked(div())
             .id("parameter-lanes")
+            // Leaving the lanes drops any lane's hover look.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered && this.lane_hover.take().is_some() {
+                    this.hover_changed(cx);
+                }
+            }))
             .flex_1()
             .min_w_0()
             // A row, so the content stretches to the full height.
@@ -672,9 +707,10 @@ impl ProjectView {
         let kind_of = |hit: Hit| match hit {
             Hit::Loop => Some(CursorKind::Loop),
             Hit::Point(_) => Some(CursorKind::Move),
-            _ => None,
+            Hit::Start | Hit::End | Hit::CycleEnd => Some(CursorKind::Resize),
+            Hit::Body => None,
         };
-        let at = |block: BlockId, kind| LaneCursor { block, kind, x, y };
+        let at = |kind| LaneCursor { kind, x, y };
         // While dragging, the cursor stays what the drag began as.
         if let Some(drag) = &self.block_drag {
             return blocks
@@ -686,7 +722,7 @@ impl ProjectView {
                     DragKind::Undecided { .. } => Some(CursorKind::Move),
                     DragKind::Setting(_) => None,
                 })
-                .map(|kind| at(drag.id, kind));
+                .map(at);
         }
         if !(0.0..height).contains(&y) {
             return None;
@@ -708,7 +744,7 @@ impl ProjectView {
                 self.selected_block == Some(*id),
             )
         };
-        kind_of(hit).map(|kind| at(*id, kind))
+        kind_of(hit).map(at)
     }
 
     /// The snap to use with `modifiers` held: Alt flips snap and slide.
@@ -1923,6 +1959,26 @@ impl ProjectView {
         let height = zoom.row_height;
         let blocks = previewed_blocks(self.block_drag.as_ref(), blocks);
         let cursor = self.lane_cursor(&blocks, signal.is_some(), top, height, pointer);
+        // What the pointer shows over this lane: redraw only when it
+        // changes, or always while a drawn cursor icon follows it.
+        let hover_blocks = blocks.to_vec();
+        let windows = signal.is_some();
+        let hover = move |this: &mut ProjectView, at: Point<Pixels>| -> LaneHover {
+            let zoom = this.lane_zoom();
+            let lanes = this.lanes_bounds.get();
+            let x = (at.x - lanes.origin.x) / px(1.);
+            let block = hover_blocks
+                .iter()
+                .find(|(_, b)| {
+                    let left = zoom.beat_to_x(b.start.as_beats());
+                    (left..left + zoom.beat_to_x(b.length.as_beats())).contains(&x)
+                })
+                .map(|(id, _)| *id);
+            let kind = this
+                .lane_cursor(&hover_blocks, windows, top, height, at)
+                .map(|c| c.kind);
+            LaneHover { lane, block, kind }
+        };
         // Only blocks near the screen get elements (`paint::visible_x`).
         let near_x = crate::paint::visible_x(match self.page {
             Page::Signals => &self.signals_view.x,
@@ -1948,24 +2004,56 @@ impl ProjectView {
                     .h(px(1.))
                     .bg(theme.grid),
             )
-            .children(
-                blocks
+            .child({
+                // Every block near the screen, painted in one drawing.
+                let lanes = self.lanes_bounds.get();
+                let (pointer_x, pointer_y) = (
+                    (pointer.x - lanes.origin.x) / px(1.),
+                    (pointer.y - lanes.origin.y) / px(1.) - top,
+                );
+                let painted: Vec<PaintedBlock> = blocks
                     .iter()
                     .filter(|(_, block)| near(block))
                     .map(|(id, block)| {
-                        block_view(
-                            *id,
+                        let left = zoom.beat_to_x(block.start.as_beats());
+                        let right = left + zoom.beat_to_x(block.length.as_beats());
+                        let hovered = (0.0..height).contains(&pointer_y)
+                            && (left..right).contains(&pointer_x);
+                        painted_block(
                             block,
                             colors,
                             self.selected_block == Some(*id),
+                            hovered,
                             mix,
                             zoom,
-                            cursor.is_some_and(|c| c.block == *id),
                             height - 2. * BLOCK_INSET,
                             window.clone(),
                             theme,
                         )
-                    }),
+                    })
+                    .collect();
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, (), window, cx| {
+                        for block in &painted {
+                            paint_block(block, bounds, window, cx);
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+            })
+            .on_mouse_move(
+                cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                    let now = hover(this, event.position);
+                    let follows = matches!(now.kind, Some(CursorKind::Loop | CursorKind::Move));
+                    if follows || this.lane_hover != Some(now) {
+                        this.lane_hover = Some(now);
+                        this.hover_changed(cx);
+                    }
+                }),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -1984,6 +2072,7 @@ impl ProjectView {
                 let (glyph, tint) = match cursor.kind {
                     CursorKind::Loop => (Icon::Loop, theme.accent),
                     CursorKind::Move => (Icon::Move, colors.detail),
+                    CursorKind::Resize => return d.cursor_ew_resize(),
                 };
                 d.cursor_none(gpui::CursorStyle::Arrow).child(
                     div()
@@ -1996,36 +2085,53 @@ impl ProjectView {
     }
 }
 
-/// A block on a layer lane: its span and the shape it draws, with stretch
-/// zones at its edges and a loop handle in its top-right corner. Selected
-/// blocks show their points.
+/// A block on a layer lane, ready to paint (`paint_block`): its span, the
+/// shape it draws (or the signal through a window), its repeats, and its
+/// points when selected. Presses and the cursor are the lane's, from the
+/// same hit test (`lane_mouse_down`, `lane_cursor`).
+struct PaintedBlock {
+    left: f32,
+    width: f32,
+    selected: bool,
+    /// Under the pointer: the loop handle shows.
+    hovered: bool,
+    colors: ContentColor,
+    is_window: bool,
+    band: f32,
+    edge: f32,
+    mix: f64,
+    ppb: f32,
+    compiled: CompiledBlock,
+    signal: Option<(Rc<Signals>, SignalId)>,
+    /// Where each cycle of a looped block ends and the next repeat begins.
+    cycle_ends: Vec<f32>,
+    points: Vec<(f32, f64)>,
+    repeat_wash: Hsla,
+    cycle_end: Hsla,
+    outline: Hsla,
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "plain drawing data, passed through"
 )]
-fn block_view(
-    id: BlockId,
+fn painted_block(
     block: &Block,
     colors: ContentColor,
     selected: bool,
+    hovered: bool,
     mix: f64,
     zoom: Zoom,
-    hide_cursor: bool,
     box_height: f32,
     window: Option<(Rc<Signals>, SignalId)>,
     theme: &Theme,
-) -> impl IntoElement {
+) -> PaintedBlock {
     // A window shows its signal, has no points to edit and does not loop.
     let is_window = window.is_some();
-    // Named apart from the painting closure's `window`.
-    let signal = window;
-    let band = loop_band(box_height);
     let ppb = zoom.pixels_per_beat;
-    let left = zoom.beat_to_x(block.start.as_beats());
     let width = zoom.beat_to_x(block.length.as_beats());
     let compiled = CompiledBlock::compile(block);
     let start = compiled.start;
-    // Where each cycle of a looped block ends and the next repeat begins.
     let cycle_ends: Vec<f32> = if !is_window && block.cycle.is_some_and(|c| c < block.length) {
         let (cycle, nudge, length) = (compiled.cycle, compiled.nudge, compiled.end - start);
         let first = (nudge / cycle).floor() as i64 + 1;
@@ -2046,146 +2152,141 @@ fn block_view(
     } else {
         Vec::new()
     };
-    let group = SharedString::from(format!("block-{}", id.0));
-    let edge = EDGE_ZONE.min(width / 4.);
     let mut repeat_wash = theme.window;
     repeat_wash.a = 0.45;
     let mut cycle_end = colors.detail;
     cycle_end.a *= 0.7;
-    // The end of a looped block's first cycle resizes the repeating block.
-    let cycle_edge = cycle_end_x(block, ppb).map(|x| {
-        div()
-            .absolute()
-            .left(px(x - CYCLE_EDGE_HALF))
-            .top_0()
-            .bottom_0()
-            .w(px(2. * CYCLE_EDGE_HALF))
-            .cursor_ew_resize()
-    });
-
-    div()
-        .id(("block", id.0))
-        .group(group.clone())
-        .absolute()
-        .left(px(left))
-        .top(px(BLOCK_MARGIN))
-        .bottom(px(BLOCK_MARGIN))
-        .w(px(width))
-        .rounded(px(4.))
-        .bg(colors.fill)
-        .border_1()
-        .border_color(if selected {
+    PaintedBlock {
+        left: zoom.beat_to_x(block.start.as_beats()),
+        width,
+        selected,
+        hovered,
+        colors,
+        is_window,
+        band: loop_band(box_height),
+        edge: EDGE_ZONE.min(width / 4.),
+        mix,
+        ppb,
+        compiled,
+        signal: window,
+        cycle_ends,
+        points,
+        repeat_wash,
+        cycle_end,
+        outline: if selected {
             theme.accent
         } else {
             colors.outline
-        })
-        .overflow_hidden()
-        .when(hide_cursor, |d| d.cursor_none(gpui::CursorStyle::Arrow))
-        .child(
-            canvas(
-                |_, _, _| {},
-                move |bounds, (), window, _| {
-                    let height = bounds.size.height / px(1.);
-                    let centre = Bounds::new(
-                        point(
-                            bounds.origin.x,
-                            bounds.origin.y + px(value_to_y(0.5, height) - 0.5),
-                        ),
-                        size(bounds.size.width, px(1.)),
-                    );
-                    let mut centre_color = colors.outline;
-                    centre_color.a *= 0.4;
-                    window.paint_quad(fill(centre, centre_color));
-                    // Faint: what the layer actually does, with depth, fades
-                    // and mix applied, around the centre line.
-                    let mut faint = colors.detail;
-                    faint.a *= 0.4;
-                    let signal = signal.as_ref().and_then(|(signals, id)| signals.get(*id));
-                    paint_curve(window, bounds, ppb, faint, None, |beat| {
-                        let beat = start + beat;
-                        if compiled.contains(beat) {
-                            let (x, w) = compiled.sample(beat, signal);
-                            0.5 + (x - 0.5) * w * mix
-                        } else {
-                            f64::NAN
-                        }
-                    });
-                    // The shape as drawn, or the signal through the window.
-                    paint_curve(window, bounds, ppb, colors.detail, None, |beat| {
-                        let beat = start + beat;
-                        if compiled.contains(beat) {
-                            compiled.sample(beat, signal).0
-                        } else {
-                            f64::NAN
-                        }
-                    });
-                    // Repeats of a looped block are softer, and every cycle
-                    // shows its end: block, block, block.
-                    if let Some(first) = cycle_ends.first() {
-                        let soft = Bounds::new(
-                            point(bounds.origin.x + px(*first), bounds.origin.y),
-                            size(bounds.size.width - px(*first), bounds.size.height),
-                        );
-                        window.paint_quad(fill(soft, repeat_wash));
-                    }
-                    for x in &cycle_ends {
-                        let line = Bounds::new(
-                            point(bounds.origin.x + px(*x - 0.5), bounds.origin.y),
-                            size(px(1.5), bounds.size.height),
-                        );
-                        window.paint_quad(fill(line, cycle_end));
-                    }
-                    for (x, value) in &points {
-                        let centre = point(
-                            bounds.origin.x + px(*x),
-                            bounds.origin.y + px(value_to_y(*value, height)),
-                        );
-                        let dot = Bounds::new(
-                            point(centre.x - px(POINT_DOT), centre.y - px(POINT_DOT)),
-                            size(px(2. * POINT_DOT), px(2. * POINT_DOT)),
-                        );
-                        window.paint_quad(fill(dot, colors.detail).corner_radii(px(POINT_DOT)));
-                    }
-                },
-            )
-            .size_full(),
-        )
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
-                .w(px(edge))
-                .cursor_ew_resize(),
-        )
-        .child(
-            // The right edge resizes below its top quarter, which loops.
-            div()
-                .absolute()
-                .right_0()
-                .top(px(band))
-                .bottom_0()
-                .w(px(edge))
-                .cursor_ew_resize(),
-        )
-        .when(!is_window && has_loop_handle(width), |d| {
-            d.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right(px(edge))
-                    .w(px(LOOP_HANDLE))
-                    .h(px(band))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .opacity(if selected { 1. } else { 0. })
-                    .group_hover(group, |s| s.opacity(1.))
-                    .child(icon(Icon::Loop, colors.detail, band.min(10.))),
-            )
-        })
-        .children(cycle_edge.filter(|_| !is_window))
+        },
+    }
+}
+
+/// Paints a block on its lane, `lane` being the lane's box.
+fn paint_block(b: &PaintedBlock, lane: Bounds<Pixels>, window: &mut Window, cx: &mut gpui::App) {
+    let rect = Bounds::new(
+        point(lane.left() + px(b.left), lane.top() + px(BLOCK_MARGIN)),
+        size(px(b.width), lane.size.height - px(2. * BLOCK_MARGIN)),
+    );
+    if !rect.intersects(&window.content_mask().bounds) {
+        return;
+    }
+    window.paint_quad(
+        fill(rect, b.colors.fill)
+            .corner_radii(px(4.))
+            .border_widths(px(1.))
+            .border_color(b.outline),
+    );
+    // Inside the border, as the block's contents were.
+    let bounds = Bounds::new(
+        rect.origin + point(px(1.), px(1.)),
+        size(rect.size.width - px(2.), rect.size.height - px(2.)),
+    );
+    let mask = bounds.intersect(&window.content_mask().bounds);
+    window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+        let height = bounds.size.height / px(1.);
+        let centre = Bounds::new(
+            point(
+                bounds.origin.x,
+                bounds.origin.y + px(value_to_y(0.5, height) - 0.5),
+            ),
+            size(bounds.size.width, px(1.)),
+        );
+        let mut centre_color = b.colors.outline;
+        centre_color.a *= 0.4;
+        window.paint_quad(fill(centre, centre_color));
+        let start = b.compiled.start;
+        let signal = b.signal.as_ref().and_then(|(signals, id)| signals.get(*id));
+        // Faint: what the layer actually does, with depth, fades and mix
+        // applied, around the centre line.
+        let mut faint = b.colors.detail;
+        faint.a *= 0.4;
+        let (compiled, mix) = (&b.compiled, b.mix);
+        paint_curve(window, bounds, b.ppb, faint, None, |beat| {
+            let beat = start + beat;
+            if compiled.contains(beat) {
+                let (x, w) = compiled.sample(beat, signal);
+                0.5 + (x - 0.5) * w * mix
+            } else {
+                f64::NAN
+            }
+        });
+        // The shape as drawn, or the signal through the window.
+        paint_curve(window, bounds, b.ppb, b.colors.detail, None, |beat| {
+            let beat = start + beat;
+            if compiled.contains(beat) {
+                compiled.sample(beat, signal).0
+            } else {
+                f64::NAN
+            }
+        });
+        // Repeats of a looped block are softer, and every cycle shows its
+        // end: block, block, block.
+        if let Some(first) = b.cycle_ends.first() {
+            let soft = Bounds::new(
+                point(bounds.origin.x + px(*first), bounds.origin.y),
+                size(bounds.size.width - px(*first), bounds.size.height),
+            );
+            window.paint_quad(fill(soft, b.repeat_wash));
+        }
+        for x in &b.cycle_ends {
+            let line = Bounds::new(
+                point(bounds.origin.x + px(*x - 0.5), bounds.origin.y),
+                size(px(1.5), bounds.size.height),
+            );
+            window.paint_quad(fill(line, b.cycle_end));
+        }
+        for (x, value) in &b.points {
+            let centre = point(
+                bounds.origin.x + px(*x),
+                bounds.origin.y + px(value_to_y(*value, height)),
+            );
+            let dot = Bounds::new(
+                point(centre.x - px(POINT_DOT), centre.y - px(POINT_DOT)),
+                size(px(2. * POINT_DOT), px(2. * POINT_DOT)),
+            );
+            window.paint_quad(fill(dot, b.colors.detail).corner_radii(px(POINT_DOT)));
+        }
+        // The loop handle in the top-right corner, while selected or under
+        // the pointer.
+        if !b.is_window && has_loop_handle(b.width) && (b.selected || b.hovered) {
+            let glyph = b.band.min(10.);
+            let handle_left = bounds.right() - px(b.edge + LOOP_HANDLE);
+            let at = Bounds::new(
+                point(
+                    handle_left + px((LOOP_HANDLE - glyph) / 2.),
+                    bounds.top() + px((b.band - glyph) / 2.),
+                ),
+                size(px(glyph), px(glyph)),
+            );
+            let _ = window.paint_svg(
+                at,
+                Icon::Loop.path().into(),
+                gpui::TransformationMatrix::unit(),
+                b.colors.detail,
+                cx,
+            );
+        }
+    });
 }
 
 /// Draws `value(beat)` (0..=1, NaN for "nothing here") across `bounds`, with

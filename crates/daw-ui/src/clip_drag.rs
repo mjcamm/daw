@@ -19,17 +19,12 @@ use crate::tree::{self, display_order};
 use crate::waveform;
 use crate::zoom::Zoom;
 use daw_engine::{ClipId, Command, Edit, MidiClip, Node, NodeId, NodeKind, Ticks};
-use gpui::{
-    AnyElement, Context, FontWeight, Modifiers, MouseButton, MouseDownEvent, Pixels, Point, div,
-    prelude::*, px,
-};
+use gpui::{AnyElement, FontWeight, Modifiers, MouseDownEvent, Pixels, Point, div, prelude::*, px};
 
 /// Pixels the pointer moves before a press becomes a drag.
 const DRAG_THRESHOLD: f32 = 3.;
 /// Width of the resize zone at each end of a clip.
-const EDGE: f32 = 6.;
-const CLIP_INSET: f32 = 4.;
-const CLIP_LABEL_HEIGHT: f32 = 16.;
+use crate::clip_paint::{CLIP_INSET, CLIP_LABEL_HEIGHT};
 
 /// A drag of the selected clips, previewed until release.
 #[derive(Debug, Clone)]
@@ -324,74 +319,27 @@ impl ProjectView {
         }
     }
 
-    /// A clip on its lane: selectable, draggable, with resize zones at both
-    /// ends. Moving clips stay faint in place while dragged.
-    pub(crate) fn clip_element(
-        &self,
+    /// A press on a painted clip (`clip_paint`): a double-click opens its
+    /// node in the bottom panel (the piano roll, or the audio panel for an
+    /// audio clip); otherwise it selects and picks up the clip, or the end
+    /// it landed on to resize.
+    pub(crate) fn press_painted_clip(
+        &mut self,
         id: ClipId,
-        clip: &AnyClip,
-        label: &str,
-        color: ContentColor,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let zoom = self.arrange_view.zoom;
-        let selected = self.selected_clips.contains(&id);
-        let moving = self
-            .clip_drag
-            .as_ref()
-            .is_some_and(|d| d.started() && d.moving().contains(&id));
-        let width = zoom.beat_to_x(clip.length().as_beats());
-        let edge = |grab: Grab| {
-            div()
-                .id((
-                    if grab == Grab::Start {
-                        "clip-start"
-                    } else {
-                        "clip-end"
-                    },
-                    id.0,
-                ))
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .w(px(EDGE))
-                .when(grab == Grab::Start, |d| d.left_0())
-                .when(grab == Grab::End, |d| d.right_0())
-                .cursor_ew_resize()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.press_clip(id, grab, event);
-                    }),
-                )
-        };
-        let edges = (width >= 3. * EDGE).then(|| [edge(Grab::Start), edge(Grab::End)]);
-        let audio = matches!(clip, AnyClip::Audio(_));
-        self.clip_body(clip, label, color, selected, theme)
-            .id(("clip", id.0))
-            .when(moving, |d| d.opacity(0.3))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    if event.click_count >= 2 {
-                        // Double-click opens the clip's node in the bottom
-                        // panel: the piano roll, or the audio panel.
-                        this.clip_drag = None;
-                        if audio {
-                            this.open_audio_clip(id);
-                        } else {
-                            this.open_note_editor(id);
-                        }
-                        return;
-                    }
-                    this.press_clip(id, Grab::Body, event);
-                }),
-            )
-            .children(edges.into_iter().flatten())
-            .into_any_element()
+        grab: Grab,
+        audio: bool,
+        event: &MouseDownEvent,
+    ) {
+        if event.click_count >= 2 {
+            self.clip_drag = None;
+            if audio {
+                self.open_audio_clip(id);
+            } else {
+                self.open_note_editor(id);
+            }
+            return;
+        }
+        self.press_clip(id, grab, event);
     }
 
     /// The drag's preview over the lanes: receiving rows lit, ghosts where
@@ -555,7 +503,7 @@ impl ProjectView {
 }
 
 /// A tempo as typed: whole numbers plain, else to two places.
-fn format_bpm(bpm: f64) -> String {
+pub(crate) fn format_bpm(bpm: f64) -> String {
     if bpm.fract().abs() < 1e-9 {
         format!("{bpm:.0}")
     } else {
@@ -563,18 +511,11 @@ fn format_bpm(bpm: f64) -> String {
     }
 }
 
-/// A MIDI clip's look: its frame and its notes.
-fn clip_body(
-    clip: &MidiClip,
-    label: &str,
-    color: ContentColor,
-    zoom: Zoom,
-    selected: bool,
-    theme: &Theme,
-) -> gpui::Div {
+/// A MIDI clip's notes as bars, from the clip's top-left: each at its row
+/// in the clip's span of pitches, under the label.
+pub(crate) fn note_bars(clip: &MidiClip, color: gpui::Hsla, zoom: Zoom) -> Vec<crate::paint::Bar> {
     let note_area = (zoom.row_height - 2. * CLIP_INSET - CLIP_LABEL_HEIGHT - 6.).max(0.);
-    let notes = clip
-        .notes
+    clip.notes
         .iter()
         .zip(note_rows(clip))
         .filter(|(note, _)| note.start < clip.length && note.start + note.length > Ticks::ZERO)
@@ -586,13 +527,24 @@ fn clip_body(
                 y: CLIP_LABEL_HEIGHT + row * note_area,
                 w: (zoom.beat_to_x((end - start).as_beats()) - 1.).max(2.),
                 h: 3.,
-                color: color.detail,
+                color,
                 radius: 1.,
             }
         })
-        .collect();
+        .collect()
+}
+
+/// A MIDI clip's look: its frame and its notes.
+fn clip_body(
+    clip: &MidiClip,
+    label: &str,
+    color: ContentColor,
+    zoom: Zoom,
+    selected: bool,
+    theme: &Theme,
+) -> gpui::Div {
     // Every note in one drawing.
-    let notes = crate::paint::bars(notes)
+    let notes = crate::paint::bars(note_bars(clip, color.detail, zoom))
         .absolute()
         .top_0()
         .left_0()

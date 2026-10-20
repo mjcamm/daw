@@ -216,13 +216,25 @@ impl ProjectView {
             .collect();
         let content_width = x;
 
+        // Strips far off screen are empty boxes of the same width
+        // (`paint::visible_x`); the first is always drawn, as every fader's
+        // length is measured from it.
+        let near_x = crate::paint::visible_x(&self.mixer_view.x);
         let strips = placed
             .iter()
             .enumerate()
             .map(|(i, (node, layout))| {
+                let near = i == 0
+                    || near_x.is_none_or(|(left, right)| {
+                        lefts[i] + widths[i] >= left && lefts[i] <= right
+                    });
+                if !near {
+                    return div().flex_none().w(px(widths[i])).into_any_element();
+                }
                 let place = StripPlace::Mixer { first: i == 0 };
                 let strip = self.strip(node, instrument_slots, slots, place, theme, cx);
                 animated_strip(layout, widths[i], self.strip_width(node.id), strip)
+                    .into_any_element()
             })
             .collect::<Vec<_>>();
         let map = self.mixer_map(

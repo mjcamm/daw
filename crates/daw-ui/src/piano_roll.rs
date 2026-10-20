@@ -181,6 +181,10 @@ pub struct NoteEditor {
     pub folded: Option<bool>,
     /// Where the pointer is over the grid, for the pen's preview note.
     hover: Option<Point<Pixels>>,
+    /// What the pointer shows at `hover`: the pen's cell (snapped start and
+    /// pitch) and whether it is on a note's end. A redraw happens only when
+    /// it changes.
+    hover_key: Option<(Ticks, u8, bool)>,
 }
 
 impl NoteEditor {
@@ -207,6 +211,7 @@ impl NoteEditor {
             rows: Rows::all(),
             folded: None,
             hover: None,
+            hover_key: None,
         }
     }
 
@@ -278,6 +283,19 @@ impl ProjectView {
     /// Where the editor's time starts, in beats: the song's start.
     pub(crate) fn note_editor_start(&self) -> Option<f32> {
         self.note_editor.as_ref().map(|_| 0.)
+    }
+
+    /// What the pointer shows at `at` in the grid (`NoteEditor::hover_key`).
+    fn roll_hover_key(&self, at: Point<Pixels>) -> Option<(Ticks, u8, bool)> {
+        let (editor, clip) = self.editor_clip()?;
+        let zoom = self.notes_view.zoom;
+        let (beat, pitch) = editor.at(at, zoom);
+        let cell = self.note_grid.floor(Ticks::from_beats_f64(beat.max(0.)));
+        let edge = matches!(
+            note_edit::hit(&clip.notes, beat, pitch, f64::from(zoom.pixels_per_beat)),
+            Some((_, note_edit::Part::Start | note_edit::Part::End))
+        );
+        Some((cell, pitch, edge))
     }
 
     /// Readies the bottom panel under Arrange for this frame: the panel
@@ -1398,14 +1416,20 @@ impl ProjectView {
                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                         if !hovered && let Some(editor) = &mut this.note_editor {
                             editor.hover = None;
-                            cx.notify();
+                            editor.hover_key = None;
+                            this.hover_changed(cx);
                         }
                     }))
                     .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                        // The pen's preview and the resize cursor follow it.
+                        // The pen's preview and the resize cursor follow it;
+                        // redraw only when the cell or the edge changes.
+                        let key = this.roll_hover_key(event.position);
                         if let Some(editor) = &mut this.note_editor {
                             editor.hover = Some(event.position);
-                            cx.notify();
+                            if editor.hover_key != key {
+                                editor.hover_key = key;
+                                this.hover_changed(cx);
+                            }
                         }
                     }))
                     .when(resizing || over_edge, |d| d.cursor_ew_resize())
