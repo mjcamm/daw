@@ -245,6 +245,7 @@ struct Panes {
     main: Entity<Pane>,
     bottom: Entity<Pane>,
     inspector: Entity<Pane>,
+    arrange_list: Entity<Pane>,
 }
 
 impl Panes {
@@ -253,11 +254,17 @@ impl Panes {
             PaneKind::Main => &self.main,
             PaneKind::Bottom => &self.bottom,
             PaneKind::Inspector => &self.inspector,
+            PaneKind::ArrangeList => &self.arrange_list,
         }
     }
 }
 
-const PANES: [PaneKind; 3] = [PaneKind::Main, PaneKind::Bottom, PaneKind::Inspector];
+const PANES: [PaneKind; 4] = [
+    PaneKind::Main,
+    PaneKind::Bottom,
+    PaneKind::Inspector,
+    PaneKind::ArrangeList,
+];
 
 impl EventEmitter<ProjectEvent> for ProjectView {}
 
@@ -654,6 +661,7 @@ impl ProjectView {
             main: pane(PaneKind::Main),
             bottom: pane(PaneKind::Bottom),
             inspector: pane(PaneKind::Inspector),
+            arrange_list: pane(PaneKind::ArrangeList),
         });
         // Idle: no frames, but the engine still needs servicing (garbage,
         // meters, autosave) and a new state must show.
@@ -685,6 +693,12 @@ impl ProjectView {
             }
         })
         .detach();
+    }
+
+    /// A pane's view, for tests that redraw one pane.
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub(crate) fn pane(&self, kind: PaneKind) -> Entity<Pane> {
+        self.panes.as_ref().expect("panes made").get(kind).clone()
     }
 
     /// Redraws every pane next frame.
@@ -739,10 +753,15 @@ impl ProjectView {
 
     /// The pane at a point in the window, if any.
     fn pane_at(&self, at: gpui::Point<Pixels>) -> Option<PaneKind> {
+        // Panes nest (the node list sits inside Arrange): the smallest wins.
         self.pane_bounds
             .borrow()
             .iter()
-            .find(|(_, b)| b.contains(&at))
+            .filter(|(_, b)| b.contains(&at))
+            .min_by(|(_, a), (_, b)| {
+                let area = |b: &Bounds<Pixels>| (b.size.width / px(1.)) * (b.size.height / px(1.));
+                area(a).total_cmp(&area(b))
+            })
             .map(|(k, _)| *k)
     }
 
@@ -806,7 +825,7 @@ impl ProjectView {
 
     /// A pane in the layout: `outer` sizes it; GPUI reuses its last frame
     /// until it is told to redraw.
-    fn pane_element(&self, kind: PaneKind, outer: gpui::Div) -> gpui::Div {
+    pub(crate) fn pane_element(&self, kind: PaneKind, outer: gpui::Div) -> gpui::Div {
         let Some(panes) = &self.panes else {
             return outer;
         };
@@ -868,6 +887,9 @@ impl ProjectView {
         // Slots of panes not drawn this frame would leave their playheads
         // and meters behind.
         let mut shown = vec![PaneKind::Main];
+        if self.page == Page::Arrange {
+            shown.push(PaneKind::ArrangeList);
+        }
         if self.page == Page::Arrange && (self.note_editor.is_some() || self.audio_editor.is_some())
         {
             shown.push(PaneKind::Bottom);
@@ -919,6 +941,7 @@ impl ProjectView {
                 panel.unwrap_or_else(|| div().into_any_element())
             }
             PaneKind::Inspector => self.inspector_panel(&theme, cx),
+            PaneKind::ArrangeList => self.render_arrange_list(&theme, cx),
         }
     }
 

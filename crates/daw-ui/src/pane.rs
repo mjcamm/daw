@@ -55,7 +55,9 @@ impl Render for Pane {
         let content = match kind {
             // The inspector sits beside the page and fills its height.
             PaneKind::Inspector => div().size_full().flex(),
-            PaneKind::Main | PaneKind::Bottom => div().size_full().flex().flex_col(),
+            PaneKind::Main | PaneKind::Bottom | PaneKind::ArrangeList => {
+                div().size_full().flex().flex_col()
+            }
         };
         content.child(element).into_any_element()
     }

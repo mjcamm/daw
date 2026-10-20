@@ -253,9 +253,12 @@ impl ProjectView {
 
     /// A parent's combined blocks, with the notes below in their nodes'
     /// colours, softer than the parent's own.
+    /// `shown` is every clip as shown this frame (`shown_clips`), made once
+    /// for all rows.
     pub(crate) fn combined_elements(
         &self,
         node: NodeId,
+        shown: &[PlacedClip],
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -265,10 +268,17 @@ impl ProjectView {
             .combined_drag
             .as_ref()
             .filter(|d| d.node == node && d.started);
-        let shown = self.shown_clips();
-        // Only blocks near the screen get elements (`paint::visible_x`).
+        // Only blocks near the screen get elements, and only notes near the
+        // screen are prepared (`paint::visible_x`).
         let near_x = crate::paint::visible_x(&self.arrange_view.x);
-        combined_blocks_of(snapshot, node, &shown)
+        let near = |start: Ticks, end: Ticks| {
+            near_x.is_none_or(|(left, right)| {
+                zoom.beat_to_x(end.as_beats()) >= left && zoom.beat_to_x(start.as_beats()) <= right
+            })
+        };
+        let by_id: std::collections::HashMap<(NodeId, ClipId), &PlacedClip> =
+            shown.iter().map(|c| ((c.0, c.1), c)).collect();
+        combined_blocks_of(snapshot, node, shown)
             .into_iter()
             .enumerate()
             .filter(|(_, block)| {
@@ -288,16 +298,31 @@ impl ProjectView {
                 let clips: Vec<&PlacedClip> = block
                     .clips
                     .iter()
-                    .filter_map(|(n, id)| shown.iter().find(|(m, c, _)| m == n && c == id))
+                    .filter_map(|key| by_id.get(key).copied())
                     .collect();
+                // The pitch span of the whole block, so rows stay put as it
+                // scrolls; notes are prepared only for clips near the screen.
+                let (low, high) = clips
+                    .iter()
+                    .flat_map(|(_, _, clip)| {
+                        // The notes the clip plays, as `heard_notes` keeps them.
+                        clip.notes
+                            .iter()
+                            .filter(|n| {
+                                n.start.max(Ticks::ZERO) < (n.start + n.length).min(clip.length)
+                            })
+                            .map(|n| n.pitch)
+                    })
+                    .fold((u8::MAX, 0u8), |(l, h), p| (l.min(p), h.max(p)));
                 let heard: Vec<(NodeId, Vec<HeardNote>)> = clips
                     .iter()
-                    .map(|(owner, _, clip)| (*owner, heard_notes(clip)))
+                    .filter(|(_, _, clip)| near(clip.start, clip.start + clip.length))
+                    .map(|(owner, _, clip)| {
+                        let mut notes = heard_notes(clip);
+                        notes.retain(|(start, end, _)| near(*start, *end));
+                        (*owner, notes)
+                    })
                     .collect();
-                let (low, high) = heard
-                    .iter()
-                    .flat_map(|(_, notes)| notes.iter().map(|n| n.2))
-                    .fold((u8::MAX, 0u8), |(l, h), p| (l.min(p), h.max(p)));
                 let span = f32::from(high.saturating_sub(low)).max(1.);
                 let area = (zoom.row_height - 2. * INSET - LABEL_HEIGHT - 6.).max(0.);
                 let notes: Vec<crate::paint::Bar> = heard

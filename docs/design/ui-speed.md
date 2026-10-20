@@ -51,6 +51,16 @@ The running app, release, frames forced on (`DAW_FRAME_LOG=always`), Arrange pla
 - **Paths beat quads** for many small bars: GPUI files every shape into an index each frame (~2 µs each, cached or not); a path is one shape however many triangles. On the Intel GPU quads were slower too (20–28 ms against 11–16).
 - **Measuring tips:** a busy second copy of the app (the old build redraws everything every frame) skews numbers; quit it first. Phase marks and the frame log both print UTC times. The speed tests print the **best** frame too: compare changes by it, since other programs only ever make frames slower.
 
+### Third pass (2026-10-20)
+
+- **Arrange's node list is its own pane** (`PaneKind::ArrangeList`, nested in the page): lane drags and hover changes redraw the lanes without it. Panes can nest; the pointer belongs to the smallest pane under it. A cached pane also redraws when it moves (GPUI keys its cache on its bounds), so scrolling never leaves it stale.
+- **Combined blocks** gather the song's clips once per redraw (not once per parent) and prepare only notes near the screen; the pitch span still covers the whole block so rows stay put while scrolling.
+- **The ruler** labels only bars near the screen; **lane rows** far off screen are empty boxes.
+- **Where the time goes now:** building the Arrange pane's elements (all our code) takes ~0.4 ms; GPUI's layout and painting of them ~5–6 ms. What is left is GPUI's per-element and per-shape cost; every glyph of every label is a shape, and Arrange shows a lot of text.
+- **Measuring:** this machine is noisy (another copy of the app was busy); running the speed tests at high priority (`Start-Process` the test binary, `PriorityClass = High`) gives repeatable numbers.
+
+Release, high priority, best frame: Arrange full 5.7–6.4 ms, Arrange pane alone 5.5–6.4, with the piano roll 7.4–8.8, mixer 6.9–8.7, Parameters 7.2–7.4, Signals 2.6–3.4. Steady (playback) frames 1.3–2.6 ms everywhere.
+
 ## How panes work (as built)
 
 - `pane.rs`: `Pane` views (Main = the page, Bottom = piano roll or audio panel, Inspector), each shown through `AnyView::cached` and rendering through `ProjectView::render_pane`. `ProjectView::render` is the shell: header, layout, input tracking, the live layer.

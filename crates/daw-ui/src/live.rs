@@ -32,6 +32,8 @@ pub enum PaneKind {
     Bottom,
     /// The inspector on the right.
     Inspector,
+    /// Arrange's node list, inside the page: lanes redraw without it.
+    ArrangeList,
 }
 
 /// What a slot shows.

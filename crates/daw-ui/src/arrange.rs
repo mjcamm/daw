@@ -89,7 +89,13 @@ impl ProjectView {
                         .relative()
                         .left(scroll_x)
                         .w(px(width))
-                        .child(self.render_ruler(theme, bars, zoom.pixels_per_beat, cx)),
+                        .child(self.render_ruler(
+                            theme,
+                            bars,
+                            zoom.pixels_per_beat,
+                            &self.arrange_view.x,
+                            cx,
+                        )),
                 ),
             )
             .child(
@@ -118,7 +124,11 @@ impl ProjectView {
                     .flex_grow()
                     .flex_shrink_0()
                     .child(self.render_map(&placed, &map_bars, map_width, theme, cx))
-                    .child(self.render_node_list(&placed, theme, cx))
+                    // Its own pane: lanes redraw without it.
+                    .child(self.pane_element(
+                        PaneKind::ArrangeList,
+                        div().w(px(NODE_LIST_WIDTH)).flex_none(),
+                    ))
                     .child(self.render_timeline(&placed, theme, bars, width, cx)),
             );
 
@@ -135,6 +145,29 @@ impl ProjectView {
                 theme,
                 cx,
             ))
+    }
+
+    /// The node list as its own pane (`PaneKind::ArrangeList`): the rows
+    /// as Arrange shows them this frame.
+    pub(crate) fn render_arrange_list(
+        &self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let snapshot = self.session.snapshot();
+        let zoom = self.arrange_view.zoom;
+        let shown = display_order(snapshot, &self.folded);
+        let layout = self
+            .row_motion
+            .layout(&shown, zoom.row_height, Instant::now());
+        if self.row_motion.animating() {
+            self.animate();
+        }
+        let placed: Vec<(&NodeSnapshot, &RowLayout)> = layout
+            .iter()
+            .filter_map(|l| Some((l.ghost.as_deref().or_else(|| snapshot.node(l.id))?, l)))
+            .collect();
+        self.render_node_list(&placed, theme, cx).into_any_element()
     }
 
     fn render_node_list(
@@ -320,7 +353,7 @@ impl ProjectView {
             .child(
                 div().flex_none().w(px(10.)).h(px(meter_size)).child(
                     self.live_slot(
-                        PaneKind::Main,
+                        PaneKind::ArrangeList,
                         Live::Meter {
                             node: id,
                             bar: 4.,
@@ -1111,6 +1144,8 @@ impl ProjectView {
                 zoom.beat_to_x(end) >= left && zoom.beat_to_x(start) <= right
             })
         };
+        // Every clip as shown this frame, for the parents' combined blocks.
+        let shown_clips = self.shown_clips();
         let mut row_top = 0.;
         let lanes: Vec<_> = rows
             .iter()
@@ -1119,6 +1154,10 @@ impl ProjectView {
                 row_top += layout.height;
                 let row_near = near_y
                     .is_none_or(|(above, below)| top + layout.height >= above && top <= below);
+                // Rows far off screen are empty boxes of the same height.
+                if !row_near {
+                    return div().h(px(layout.height)).flex_none().into_any_element();
+                }
                 let color = if node.muted {
                     theme.muted_content
                 } else {
@@ -1209,7 +1248,7 @@ impl ProjectView {
                     .children(if node.children.is_empty() || !row_near {
                         Vec::new()
                     } else {
-                        self.combined_elements(id, theme, cx)
+                        self.combined_elements(id, &shown_clips, theme, cx)
                     })
                     .child(
                         crate::clip_paint::clips_canvas(painted)
@@ -1218,7 +1257,7 @@ impl ProjectView {
                             .left_0()
                             .size_full(),
                     );
-                animated(layout, zoom.row_height, lane)
+                animated(layout, zoom.row_height, lane).into_any_element()
             })
             .collect();
 
@@ -1288,6 +1327,8 @@ impl ProjectView {
         theme: &Theme,
         bars: u32,
         pixels_per_beat: f32,
+        // The page's sideways scroll, to label only what is near the screen.
+        scroll: &gpui::ScrollHandle,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let bounds_cell = self.ruler_bounds.clone();
@@ -1308,7 +1349,14 @@ impl ProjectView {
         });
 
         let step = ruler_label_step(pixels_per_beat);
-        let labels = (0..bars).step_by(step as usize).map(|bar| {
+        // Only labels near the screen (`paint::visible_x`).
+        let near_x = crate::paint::visible_x(scroll);
+        let bar_width = BEATS_PER_BAR as f32 * pixels_per_beat;
+        let labels = (0..bars).step_by(step as usize).filter(move |bar| {
+            let x = *bar as f32 * bar_width;
+            near_x.is_none_or(|(left, right)| x + bar_width >= left && x <= right)
+        });
+        let labels = labels.map(|bar| {
             div()
                 .absolute()
                 .left(px(bar as f32 * BEATS_PER_BAR as f32 * pixels_per_beat + 4.))

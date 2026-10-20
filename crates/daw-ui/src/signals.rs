@@ -387,7 +387,13 @@ impl ProjectView {
                         .relative()
                         .left(scroll_x)
                         .w(px(width))
-                        .child(self.render_ruler(theme, bars, zoom.pixels_per_beat, cx)),
+                        .child(self.render_ruler(
+                            theme,
+                            bars,
+                            zoom.pixels_per_beat,
+                            &self.signals_view.x,
+                            cx,
+                        )),
                 ),
             )
             .child(

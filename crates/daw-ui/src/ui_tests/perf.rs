@@ -398,3 +398,21 @@ fn perf_arrange_stems() {
     let t = measure(&mut h, "arrange, stems");
     check("arrange, stems", t, 6., 30.);
 }
+
+/// A frame while the pointer drags in Arrange's lanes: only the pane the
+/// drag began in redraws (`ProjectView::render`).
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_arrange_lanes_redraw() {
+    let mut h = Harness::new("perf-lanes");
+    heavy_song(&mut h);
+    let main = h
+        .view
+        .read_with(h.cx, |view, _| view.pane(crate::live::PaneKind::Main));
+    let t = time(|| {
+        main.update(h.cx, |_, cx| cx.notify());
+        h.cx.run_until_parked();
+    });
+    eprintln!("perf {:<22} lanes pane: {t}", "arrange lanes redraw");
+    assert!(t.median <= ms(10.), "arrange lanes redraw: {t}");
+}
