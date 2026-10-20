@@ -336,7 +336,10 @@ impl ProjectView {
             .child(
                 action("node-add", Icon::Plus, "Add a node", true)
                     .when(open, |d| d.bg(theme.control))
-                    .on_click(cx.listener(|this, _, _, _| this.toggle_menu(OpenMenu::AddNode))),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| this.toggle_menu(OpenMenu::AddNode)),
+                    ),
             )
             .when(open, |d| {
                 d.child(menu::float(
@@ -957,9 +960,12 @@ impl ProjectView {
                     .child(icon(Icon::Signal, color, 13.))
                     // Hidden while the menu is open, so it never covers it.
                     .when(!open, |d| d.tooltip(tooltip::text("Publish as signal")))
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        this.toggle_menu(OpenMenu::NodeSignals(id));
-                    })),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, _| {
+                            this.toggle_menu(OpenMenu::NodeSignals(id));
+                        }),
+                    ),
             )
             .when(open, |d| d.child(self.publish_menu(node, theme, cx)))
     }

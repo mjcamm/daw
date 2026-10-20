@@ -1249,9 +1249,12 @@ impl ProjectView {
                 let open = self.open_menu == Some(OpenMenu::AddLayer(param_id));
                 let button =
                     quiet_action(cell.pl(px(32.)), ("add-layer", index), "Add Layer", theme)
-                        .on_click(cx.listener(move |this, _, _, _| {
-                            this.toggle_menu(OpenMenu::AddLayer(param_id));
-                        }));
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, _| {
+                                this.toggle_menu(OpenMenu::AddLayer(param_id));
+                            }),
+                        );
                 div()
                     .relative()
                     .flex()
@@ -1276,9 +1279,12 @@ impl ProjectView {
                     "Add Parameter",
                     theme,
                 )
-                .on_click(cx.listener(move |this, _, _, _| {
-                    this.toggle_menu(OpenMenu::AddParam(device_ref));
-                }));
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, _| {
+                        this.toggle_menu(OpenMenu::AddParam(device_ref));
+                    }),
+                );
                 div()
                     .relative()
                     .flex()
@@ -1355,9 +1361,12 @@ impl ProjectView {
                     .text_color(theme.text_secondary)
                     .child(mode_label(mode))
                     .child(icon(Icon::ChevronDown, theme.text_tertiary, 11.))
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        this.toggle_menu(OpenMenu::BlendMode(id));
-                    })),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, _| {
+                            this.toggle_menu(OpenMenu::BlendMode(id));
+                        }),
+                    ),
             )
             .when(mode_open, |d| {
                 d.child(self.blend_mode_menu(id, mode, enabled, theme, cx))

@@ -420,6 +420,7 @@ impl Render for ProjectView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Redraw every frame: the playhead and meters move continuously.
         window.request_animation_frame();
+        crate::frame_log::frame();
         self.session.tick();
         if !cx.has_active_drag() {
             self.file_hover = None;

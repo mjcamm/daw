@@ -300,10 +300,14 @@ impl AppView {
             .when(open, |d| d.bg(theme.control_selected))
             .hover(move |s| s.bg(hover))
             .child(title)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.toggle_top_menu(menu);
-                cx.notify();
-            }));
+            // Menus open on press, like native ones.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.toggle_top_menu(menu);
+                    cx.notify();
+                }),
+            );
         let dropdown = open.then(|| {
             menu::float(items(menu::panel(theme).min_w(px(220.)).on_mouse_down_out(
                 cx.listener(move |this, _, _, cx| {

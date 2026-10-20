@@ -494,14 +494,17 @@ impl ProjectView {
                 .when(sampler && !panel_open, |d| {
                     d.tooltip(tooltip::text("SingleSampler: click to choose its sample"))
                 })
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.selected_node = Some(node);
-                    this.selected_effect = Some(id);
-                    if sampler {
-                        this.toggle_menu(OpenMenu::Sampler(id));
-                    }
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.selected_node = Some(node);
+                        this.selected_effect = Some(id);
+                        if sampler {
+                            this.toggle_menu(OpenMenu::Sampler(id));
+                        }
+                    }),
+                )
                 .into_any_element(),
         )
         .map(|slot| {
@@ -710,10 +713,13 @@ impl ProjectView {
                     .child(icon(Icon::Plus, theme.text_tertiary, 11.))
                     .child(text)
                     .when(!open, |d| d.tooltip(tooltip::text(hint)))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.toggle_menu(menu);
-                    })),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_menu(menu);
+                        }),
+                    ),
             )
             .when(open, |d| d.child(menu::float(panel(cx))))
     }

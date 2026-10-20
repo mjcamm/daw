@@ -20,7 +20,10 @@ use daw_engine::{
     Command, Edit, NodeId, NodeSnapshot, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse,
     Snapshot,
 };
-use gpui::{AnyElement, ClickEvent, Context, Div, FontWeight, Window, canvas, div, prelude::*, px};
+use gpui::{
+    AnyElement, ClickEvent, Context, Div, FontWeight, MouseButton, Window, canvas, div, prelude::*,
+    px,
+};
 use std::rc::Rc;
 
 const LIST_WIDTH: f32 = 260.;
@@ -457,9 +460,12 @@ impl ProjectView {
                             .rounded(px(2.))
                             .bg(colors.detail),
                     )
-                    .on_click(cx.listener(move |this, _, _, _| {
-                        this.toggle_menu(OpenMenu::SignalColor(id));
-                    })),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, _| {
+                            this.toggle_menu(OpenMenu::SignalColor(id));
+                        }),
+                    ),
             )
             .when(color_open, |d| {
                 d.child(self.color_menu(id, signal.color, theme, cx))
@@ -519,9 +525,12 @@ impl ProjectView {
                         d.bg(theme.control)
                             .hover(move |s| s.bg(hover))
                             .text_color(theme.text_secondary)
-                            .on_click(cx.listener(move |this, _, _, _| {
-                                this.toggle_menu(OpenMenu::SignalUses(id));
-                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, _| {
+                                    this.toggle_menu(OpenMenu::SignalUses(id));
+                                }),
+                            )
                     })
                     .when(!used, |d| d.text_color(theme.text_tertiary))
                     .child(uses_label(signal.used_by.len())),

@@ -4,6 +4,8 @@
 //! `./scripts/full-test.sh`.
 
 mod arrange;
+mod menus;
+mod perf;
 
 use crate::project::ProjectView;
 use crate::session::Session;
@@ -51,6 +53,19 @@ impl Harness {
         }
     }
 
+    /// One frame as during playback: the view asked for the next frame, so
+    /// only it is notified and cached views may be reused.
+    pub fn animation_frame(&mut self) {
+        self.view.update(self.cx, |_, cx| cx.notify());
+        self.cx.run_until_parked();
+    }
+
+    /// One frame with everything rebuilt, as after an edit.
+    pub fn redraw_all(&mut self) {
+        self.cx.update(|window, _| window.refresh());
+        self.cx.run_until_parked();
+    }
+
     /// The engine's state as the view sees it.
     pub fn snapshot(&mut self) -> Snapshot {
         self.redraw();
@@ -69,6 +84,29 @@ impl Harness {
     pub fn arrange_lane(&mut self, node: NodeId) -> Bounds<Pixels> {
         let name: &'static str = Box::leak(format!("arrange-lane-{}", node.0).into_boxed_str());
         self.bounds(name)
+    }
+
+    /// A press without a release yet.
+    pub fn press(&mut self, at: Point<Pixels>) {
+        self.cx.simulate_event(MouseDownEvent {
+            position: at,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        self.redraw();
+    }
+
+    /// Releases the button.
+    pub fn release(&mut self, at: Point<Pixels>) {
+        self.cx.simulate_event(MouseUpEvent {
+            position: at,
+            modifiers: Modifiers::none(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        self.redraw();
     }
 
     /// A press and release; `clicks` 2 is a double-click.

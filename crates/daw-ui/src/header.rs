@@ -8,7 +8,9 @@ use crate::project::{Page, ProjectView, RenameTarget};
 use crate::theme::{MONO_FONT, Theme};
 use crate::tooltip;
 use daw_engine::{Command, Ticks};
-use gpui::{ClickEvent, Context, FontWeight, Hsla, SharedString, div, prelude::*, px};
+use gpui::{
+    Context, FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString, div, prelude::*, px,
+};
 
 impl ProjectView {
     pub(crate) fn render_header(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -28,17 +30,21 @@ impl ProjectView {
                 .into_any_element(),
             None => div()
                 .id("song-name")
+                .debug_selector(|| "song-name".into())
                 .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .cursor_pointer()
                 .child(snapshot.song_name.clone())
-                .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                    if event.click_count() >= 2 {
-                        this.start_rename(RenameTarget::Song, window, cx);
-                    } else {
-                        this.toggle_menu(OpenMenu::Song);
-                    }
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        if event.click_count >= 2 {
+                            this.start_rename(RenameTarget::Song, window, cx);
+                        } else {
+                            this.toggle_menu(OpenMenu::Song);
+                        }
+                    }),
+                )
                 .into_any_element(),
         };
 
@@ -255,7 +261,10 @@ impl ProjectView {
                     .child(snap.label()),
             )
             .child(icon(Icon::ChevronDown, theme.text_tertiary, 11.))
-            .on_click(cx.listener(move |this, _, _, _| this.toggle_menu(menu)));
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, _| this.toggle_menu(menu)),
+            );
         div()
             .relative()
             .flex()

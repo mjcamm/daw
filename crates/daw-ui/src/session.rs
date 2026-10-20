@@ -329,6 +329,14 @@ impl Session {
 
     /// Sends a command. Rejected commands change nothing, so the UI just
     /// reports them.
+    /// Applies a command, failing loudly: for building test songs.
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub fn apply_or_panic(&mut self, command: Command) {
+        if let Err(e) = self.engine.apply(command) {
+            panic!("command rejected: {e}");
+        }
+    }
+
     pub fn apply(&mut self, command: Command) {
         if let Err(e) = self.engine.apply(command) {
             eprintln!("command rejected: {e}");

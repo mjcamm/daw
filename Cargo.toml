@@ -43,7 +43,8 @@ unwrap_used = "warn"
 # tests (where the realtime guard runs) crawl. Optimise just those crates.
 [profile.dev.package.daw-stretch]
 opt-level = 3
-[profile.dev.package.rustfft]
-opt-level = 3
-[profile.dev.package.realfft]
+# Every library (GPUI, its layout and text code, cpal, ...) optimized in
+# debug builds: unoptimized, the UI ran at about 20 frames a second. Our own
+# crates stay in debug, so the realtime guard and debug checks still run.
+[profile.dev.package."*"]
 opt-level = 3

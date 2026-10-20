@@ -9,6 +9,7 @@ mod clip_drag;
 mod clip_edit;
 mod combined;
 mod frame;
+mod frame_log;
 mod header;
 mod icons;
 mod inspector;

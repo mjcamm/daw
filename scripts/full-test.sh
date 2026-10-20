@@ -12,5 +12,7 @@ cd "$(dirname "$0")/.."
 export RUSTFLAGS="-D warnings"
 cargo clippy -p daw-ui --all-targets --features ui-tests -- -D warnings
 cargo test -p daw-ui --features ui-tests ui_tests
+# Frame-time budgets on a full-size song: release, one test at a time.
+cargo test --release -p daw-ui --features ui-tests perf_ -- --test-threads=1 --nocapture
 
 echo "Full test run passed."
