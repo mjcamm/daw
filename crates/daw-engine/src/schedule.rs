@@ -121,17 +121,16 @@ pub fn schedule_notes(node: &Node) -> Vec<ScheduledNote> {
         .clips
         .values()
         .flat_map(|clip| {
-            clip.notes.iter().filter_map(move |note| {
-                // Only the part of a note inside the clip plays.
-                let start = note.start.max(daw_protocol::Ticks::ZERO);
-                let end = (note.start + note.length).min(clip.length);
-                (start < end).then(|| ScheduledNote {
-                    start_beats: (clip.start + start).as_beats(),
-                    end_beats: (clip.start + end).as_beats(),
+            // Only the parts of notes inside the clip play; a looped clip
+            // plays its cycle at every repeat.
+            clip.played_notes()
+                .into_iter()
+                .map(move |note| ScheduledNote {
+                    start_beats: (clip.start + note.start).as_beats(),
+                    end_beats: (clip.start + note.start + note.length).as_beats(),
                     pitch: note.pitch,
                     velocity: note.velocity,
                 })
-            })
         })
         .collect();
     // Stable sort keeps clip order for simultaneous notes: deterministic.
@@ -171,10 +170,16 @@ struct Context<'a> {
 fn compile_clips(node: &Node, cx: &Context<'_>) -> Vec<ClipRender> {
     let song_bpm = cx.project.tempo_bpm;
     let rate = f64::from(cx.sample_rate);
+    // A looped clip plays as its plain windows back to back.
     let mut clips: Vec<ClipRender> = node
         .audio_clips
         .iter()
-        .filter_map(|(&id, clip)| {
+        .flat_map(|(&id, clip)| {
+            clip.pieces(song_bpm)
+                .into_iter()
+                .map(move |piece| (id, piece))
+        })
+        .filter_map(|(id, clip)| {
             let file = &cx.project.samples.get(&clip.sample)?.file;
             let audio = cx.samples.at_rate(clip.sample, file, cx.sample_rate)?;
             Some(ClipRender {
@@ -326,6 +331,7 @@ mod tests {
             start: Ticks::from_beats(4),
             length: Ticks::from_beats(4),
             notes: vec![note(480, 960, 60)],
+            looping: None,
         }]);
         let state = RenderState::compile(&project);
         assert_eq!(
@@ -346,11 +352,13 @@ mod tests {
                 start: Ticks::from_beats(2),
                 length: Ticks::from_beats(2),
                 notes: vec![note(0, 10, 62), note(960, 10, 64)],
+                looping: None,
             },
             MidiClip {
                 start: Ticks::ZERO,
                 length: Ticks::from_beats(4),
                 notes: vec![note(2880, 10, 65), note(0, 10, 60)],
+                looping: None,
             },
         ]);
         let state = RenderState::compile(&project);
@@ -367,6 +375,7 @@ mod tests {
                 note(960, 100, 62),  // starts at the end: dropped
                 note(-480, 960, 64), // starts before the clip: trimmed
             ],
+            looping: None,
         }]);
         let state = RenderState::compile(&project);
         let spans: Vec<_> = notes(&state)

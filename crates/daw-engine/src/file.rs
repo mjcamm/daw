@@ -26,7 +26,8 @@ pub const FORMAT: &str = "daw-project";
 /// clips (since removed: their "groups" are ignored) and trigger notes;
 /// version 11 made every branch one kind; version 12 added audio clips;
 /// version 13 merged MIDI clips stacked on a node (they never overlap now).
-pub const VERSION: u32 = 13;
+/// Version 14 added looping clips (`looping`, absent in older files).
+pub const VERSION: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -601,6 +602,7 @@ mod tests {
                         pitch: 64,
                         velocity: 90,
                     }],
+                    looping: None,
                 },
             },
         ];

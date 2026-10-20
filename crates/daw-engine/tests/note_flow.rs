@@ -36,6 +36,7 @@ fn clip(engine: &mut Engine, node: NodeId, id: u64, pitches: &[u8]) {
                 start: Ticks::ZERO,
                 length: Ticks::from_beats(4),
                 notes,
+                looping: None,
             },
         },
     );

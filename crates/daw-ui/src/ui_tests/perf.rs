@@ -111,6 +111,7 @@ fn heavy_song(h: &mut Harness) -> NodeId {
                             start: Ticks::from_bars(bar),
                             length: Ticks::from_bars(4),
                             notes,
+                            looping: None,
                         },
                     }));
                 }

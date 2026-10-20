@@ -35,6 +35,8 @@ use gpui::{
 use std::time::Instant;
 
 const RULER_HEIGHT: f32 = 28.;
+/// Size of the drawn loop cursor over a clip's loop zone.
+const LOOP_CURSOR: f32 = 16.;
 const NODE_LIST_WIDTH: f32 = 260.;
 const METER_HEIGHT: f32 = 32.;
 /// Width of one column of the nesting map, and its padding.
@@ -1191,10 +1193,33 @@ impl ProjectView {
                 // Where each clip is, for presses and the cursor.
                 let spans: Vec<(daw_engine::ClipId, f32, f32)> =
                     painted.iter().map(|c| (c.id, c.left, c.width)).collect();
-                // Over a clip's end, the pointer shows it resizes.
-                let over_edge = self.arrange_tool == ArrangeTool::Pointer
-                    && self.clip_drag.is_none()
-                    && self.arrange_edge.is_some_and(|(n, _, _)| n == id);
+                // What a press here would do, or what the drag is doing: the
+                // ends resize, the loop zone drags out repeats.
+                let clip_height = zoom.row_height - 2. * crate::clip_paint::CLIP_INSET;
+                let lanes = self.arrange_lanes_bounds.get();
+                let dragging = self.clip_drag.as_ref().filter(|d| d.started());
+                let part = match dragging {
+                    Some(drag) => drag
+                        .held()
+                        .iter()
+                        .any(|h| h.node == id)
+                        .then_some((drag.grab(), drag.pointer())),
+                    None => self
+                        .arrange_hover
+                        .filter(|(n, _, _)| *n == id && self.arrange_tool == ArrangeTool::Pointer)
+                        .map(|(_, _, grab)| (grab, self.arrange_pointer.unwrap_or_default())),
+                };
+                let resize_cursor = matches!(part, Some((Grab::Start | Grab::End, _)));
+                // GPUI has no loop cursor: hide it and draw the icon there.
+                let loop_cursor = part.filter(|(grab, _)| *grab == Grab::Loop).map(|(_, at)| {
+                    let x = (at.x - lanes.left()) / px(1.);
+                    let y = (at.y - lanes.top()) / px(1.) - top;
+                    div()
+                        .absolute()
+                        .left(px(x - LOOP_CURSOR / 2.))
+                        .top(px(y - LOOP_CURSOR / 2.))
+                        .child(icon(Icon::Loop, theme.accent, LOOP_CURSOR))
+                });
                 let press_spans = spans.clone();
                 let lane = div()
                     .debug_selector(|| format!("arrange-lane-{}", id.0))
@@ -1208,18 +1233,27 @@ impl ProjectView {
                     // the clip selection; a double-click on a MIDI node's
                     // lane adds a one-bar clip there and opens the editor
                     // on it.
-                    .when(over_edge, |d| d.cursor_ew_resize())
-                    // Which clip end the pointer is on: redraw only when
-                    // that changes.
+                    .when(resize_cursor, |d| d.cursor_ew_resize())
+                    .when_some(loop_cursor, |d, cursor| {
+                        d.cursor_none(gpui::CursorStyle::Arrow).child(cursor)
+                    })
+                    // Which clip and part the pointer is on: redraw when that
+                    // changes, and with every move over a loop zone (its
+                    // drawn cursor follows the pointer).
                     .on_mouse_move(
                         cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
-                            let x = (event.position.x - this.arrange_lanes_bounds.get().left())
-                                / px(1.);
-                            let edge = crate::clip_paint::clip_at(&spans, x)
-                                .filter(|(_, grab)| matches!(grab, Grab::Start | Grab::End))
+                            let lanes = this.arrange_lanes_bounds.get();
+                            let x = (event.position.x - lanes.left()) / px(1.);
+                            let y = (event.position.y - lanes.top()) / px(1.)
+                                - top
+                                - crate::clip_paint::CLIP_INSET;
+                            let hover = crate::clip_paint::clip_at(&spans, x, y, clip_height)
                                 .map(|(clip, grab)| (id, clip, grab));
-                            if edge != this.arrange_edge {
-                                this.arrange_edge = edge;
+                            let on_loop = matches!(hover, Some((_, _, Grab::Loop)));
+                            let was_on_loop = this.arrange_pointer.is_some();
+                            this.arrange_pointer = on_loop.then_some(event.position);
+                            if hover != this.arrange_hover || on_loop || was_on_loop {
+                                this.arrange_hover = hover;
                                 this.hover_changed(cx);
                             }
                         }),
@@ -1227,9 +1261,13 @@ impl ProjectView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                            let x = (event.position.x - this.arrange_lanes_bounds.get().left())
-                                / px(1.);
-                            if let Some((clip, grab)) = crate::clip_paint::clip_at(&press_spans, x)
+                            let lanes = this.arrange_lanes_bounds.get();
+                            let x = (event.position.x - lanes.left()) / px(1.);
+                            let y = (event.position.y - lanes.top()) / px(1.)
+                                - top
+                                - crate::clip_paint::CLIP_INSET;
+                            if let Some((clip, grab)) =
+                                crate::clip_paint::clip_at(&press_spans, x, y, clip_height)
                             {
                                 this.press_painted_clip(clip, grab, audio, event);
                                 return;
@@ -1298,9 +1336,10 @@ impl ProjectView {
                             .absolute()
                             .size_full()
                     })
-                    // Leaving the lanes leaves any clip end.
+                    // Leaving the lanes leaves any clip.
                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                        if !hovered && this.arrange_edge.take().is_some() {
+                        if !hovered && this.arrange_hover.take().is_some() {
+                            this.arrange_pointer = None;
                             this.hover_changed(cx);
                         }
                     }))

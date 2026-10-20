@@ -452,6 +452,7 @@ mod tests {
                         start: daw_engine::Ticks::from_beats(4),
                         length: daw_engine::Ticks::from_beats(4),
                         notes: vec![note(pitch)],
+                        looping: None,
                     },
                 },
             );

@@ -125,6 +125,10 @@ fn format_bpm(bpm: f64) -> String {
 }
 
 #[derive(Debug, Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one drag at a time; boxing would buy nothing"
+)]
 enum PanelDrag {
     /// The panel's top edge.
     Height {
@@ -469,7 +473,16 @@ impl ProjectView {
                 };
                 let sample = snapshot.samples.iter().find(|s| s.id == shown.sample);
                 let name = sample.map_or("", |s| s.name.as_str());
-                let reading = waveform::Reading::of(&shown, bpm, ppb);
+                // One run of the file per repeat of a loop.
+                let runs: Vec<(waveform::Reading, f32, f32)> = shown
+                    .pieces(bpm)
+                    .iter()
+                    .map(|piece| {
+                        let from = (piece.start - shown.start).as_beats() as f32 * ppb;
+                        let width = piece.length.as_beats() as f32 * ppb;
+                        (waveform::Reading::of(piece, bpm, ppb), from, width)
+                    })
+                    .collect();
                 let halves = sample.and_then(|s| s.peaks.clone()).map(|peaks| {
                     let sides = if peaks.channels() > 1 { 2 } else { 1 };
                     (0..sides)
@@ -478,12 +491,20 @@ impl ProjectView {
                                 .relative()
                                 .flex_1()
                                 .when(side == 1, |d| d.border_t_1().border_color(colors.outline))
-                                .child(waveform::channel(
-                                    peaks.clone(),
-                                    reading,
-                                    Some(side),
-                                    colors.detail,
-                                ))
+                                .children(runs.iter().map(|(reading, from, width)| {
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left(px(*from))
+                                        .w(px(*width))
+                                        .child(waveform::channel(
+                                            peaks.clone(),
+                                            *reading,
+                                            Some(side),
+                                            colors.detail,
+                                        ))
+                                }))
                         })
                         .collect::<Vec<_>>()
                 });

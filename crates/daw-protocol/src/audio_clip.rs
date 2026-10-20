@@ -20,6 +20,10 @@ pub struct AudioClip {
     pub gain_db: f64,
     pub fade_in: Ticks,
     pub fade_out: Ticks,
+    /// Repeats the window across the clip (`clip_loop.rs`); then `offset` is
+    /// where the cycle's start plays. `None` plays the window once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub looping: Option<crate::ClipLoop>,
 }
 
 /// Clip gain limits, in dB.
@@ -43,6 +47,7 @@ impl AudioClip {
             gain_db: 0.0,
             fade_in: Ticks::ZERO,
             fade_out: Ticks::ZERO,
+            looping: None,
         }
     }
 
@@ -84,9 +89,20 @@ impl AudioClip {
     /// The same audio in place, seen through the window `start..end`:
     /// moving the start moves the offset with it. Fades are kept, shortened
     /// to fit. The caller keeps the window inside the file and the song.
+    /// A looped clip keeps its cycle in place instead: its phase moves.
     pub fn windowed(&self, start: Ticks, end: Ticks, song_bpm: f64) -> Self {
         let length = end - start;
         let fade_in = self.fade_in.min(length);
+        if let Some(looping) = self.looping {
+            return Self {
+                start,
+                length,
+                looping: Some(looping.shifted(start - self.start)),
+                fade_in,
+                fade_out: self.fade_out.min(length - fade_in),
+                ..self.clone()
+            };
+        }
         Self {
             start,
             length,
@@ -113,14 +129,23 @@ impl AudioClip {
     }
 
     /// A new own tempo, keeping the stretch of audio the clip shows: its
-    /// length (and fades) scale by the tempo change.
+    /// length (and fades, and a loop's cycle and phase) scale by the tempo
+    /// change.
     pub fn with_bpm(&self, bpm: f64) -> Self {
         let scale = |t: Ticks| Ticks((t.0 as f64 * bpm / self.bpm).round() as i64);
+        let looping = self.looping.map(|l| {
+            let cycle = scale(l.cycle).max(Ticks(1));
+            crate::ClipLoop {
+                cycle,
+                phase: scale(l.phase).min(cycle - Ticks(1)),
+            }
+        });
         Self {
             bpm,
             length: scale(self.length).max(Ticks(1)),
             fade_in: scale(self.fade_in),
             fade_out: scale(self.fade_out),
+            looping,
             ..self.clone()
         }
     }
@@ -142,6 +167,7 @@ mod tests {
             gain_db: 0.0,
             fade_in: Ticks::from_beats(1),
             fade_out: Ticks::from_beats(1),
+            looping: None,
         }
     }
 

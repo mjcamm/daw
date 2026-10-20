@@ -83,6 +83,7 @@ fn render_song(threads: usize, blocks: &[usize]) -> Rendered {
                         start: Ticks::ZERO,
                         length: Ticks::from_beats(4),
                         notes,
+                        looping: None,
                     },
                 },
             );
@@ -143,6 +144,7 @@ fn reconnecting_keeps_the_song_playing_from_where_it_was() {
                     pitch: 60,
                     velocity: 100,
                 }],
+                looping: None,
             },
         },
     );

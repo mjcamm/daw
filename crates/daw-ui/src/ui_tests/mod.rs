@@ -126,6 +126,22 @@ impl Harness {
         self.redraw();
     }
 
+    /// A drag with the left button from `from` to `to`, in `steps` moves.
+    pub fn drag(&mut self, from: Point<Pixels>, to: Point<Pixels>, steps: usize) {
+        self.press(from);
+        for i in 1..=steps {
+            let t = i as f32 / steps as f32;
+            let at = gpui::point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+            self.cx.simulate_event(gpui::MouseMoveEvent {
+                position: at,
+                modifiers: Modifiers::none(),
+                pressed_button: Some(MouseButton::Left),
+            });
+            self.redraw();
+        }
+        self.release(to);
+    }
+
     /// A press and release; `clicks` 2 is a double-click.
     pub fn click(&mut self, at: Point<Pixels>, clicks: usize) {
         for count in 1..=clicks {

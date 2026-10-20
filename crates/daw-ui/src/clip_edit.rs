@@ -10,7 +10,9 @@
 //!   it covers are cut away, trimming, splitting or removing them.
 //! - Everything one gesture does is one [`Edit::Batch`], so one undo.
 
-use daw_engine::{AudioClip, ClipId, Edit, MidiClip, MidiNote, NodeId, NodeKind, Snapshot, Ticks};
+use daw_engine::{
+    AudioClip, ClipId, ClipLoop, Edit, MidiClip, MidiNote, NodeId, NodeKind, Snapshot, Ticks,
+};
 
 /// A clip of either kind.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +45,46 @@ impl AnyClip {
         match self {
             Self::Midi(_) => NodeKind::Midi,
             Self::Audio(_) => NodeKind::Audio,
+        }
+    }
+
+    /// How it repeats, if it loops.
+    pub fn looping(&self) -> Option<ClipLoop> {
+        match self {
+            Self::Midi(c) => c.looping,
+            Self::Audio(c) => c.looping,
+        }
+    }
+
+    /// Its repeats dragged out (or in) to the cycle end nearest `end`
+    /// (`docs/design/clip-loops.md`). A plain clip loops its whole self. It
+    /// never ends before the first cycle end after its start; back to one
+    /// cycle that starts at its beginning, it is a plain clip again.
+    pub fn looped_to(&self, end: Ticks) -> Self {
+        let looping = self
+            .looping()
+            .unwrap_or_else(|| ClipLoop::new(self.length()));
+        let cycle = looping.cycle.0;
+        // Where the loop's cycles begin, in song time.
+        let anchor = self.start() - looping.phase;
+        let repeats = ((end - anchor).0 as f64 / cycle as f64).round().max(1.0) as i64;
+        let stop = anchor + Ticks(cycle * repeats);
+        let length = stop - self.start();
+        let plain = looping.phase == Ticks::ZERO && length == looping.cycle;
+        let looping = (!plain).then_some(looping);
+        match self {
+            Self::Midi(c) => Self::Midi(MidiClip {
+                length,
+                looping,
+                ..c.clone()
+            }),
+            Self::Audio(c) => Self::Audio(AudioClip {
+                length,
+                looping,
+                fade_out: c.fade_out.min(length - c.fade_in.min(length)),
+                fade_in: c.fade_in.min(length),
+                ..c.clone()
+            }),
         }
     }
 
@@ -144,6 +186,10 @@ pub fn reach(snapshot: &Snapshot, clip: &AnyClip) -> (Ticks, Option<Ticks>) {
     let AnyClip::Audio(c) = clip else {
         return (Ticks::ZERO, None);
     };
+    // A loop repeats its window: the edges go as far as the song does.
+    if c.looping.is_some() {
+        return (Ticks::ZERO, None);
+    }
     let seconds = snapshot
         .samples
         .iter()
@@ -188,6 +234,15 @@ pub fn trimmed(clip: &MidiClip, from: Ticks, to: Ticks) -> Option<MidiClip> {
         return None;
     }
     let shift = start - clip.start;
+    // A looped clip keeps its cycle; its phase moves (`clip_loop.rs`).
+    if let Some(looping) = clip.looping {
+        return Some(MidiClip {
+            start,
+            length: stop - start,
+            looping: Some(looping.shifted(shift)),
+            ..clip.clone()
+        });
+    }
     let length = stop - start;
     let notes: Vec<MidiNote> = clip
         .notes
@@ -202,6 +257,7 @@ pub fn trimmed(clip: &MidiClip, from: Ticks, to: Ticks) -> Option<MidiClip> {
         start,
         length,
         notes,
+        looping: None,
     })
 }
 
@@ -209,6 +265,14 @@ pub fn trimmed(clip: &MidiClip, from: Ticks, to: Ticks) -> Option<MidiClip> {
 /// note's song position.
 pub fn with_start(clip: &MidiClip, start: Ticks) -> MidiClip {
     let shift = start - clip.start;
+    if let Some(looping) = clip.looping {
+        return MidiClip {
+            start,
+            length: clip.length - shift,
+            looping: Some(looping.shifted(shift)),
+            ..clip.clone()
+        };
+    }
     MidiClip {
         start,
         length: clip.length - shift,
@@ -220,6 +284,7 @@ pub fn with_start(clip: &MidiClip, start: Ticks) -> MidiClip {
                 ..*n
             })
             .collect(),
+        looping: None,
     }
 }
 
@@ -358,6 +423,8 @@ pub enum Grab {
     Start,
     /// The end edge: resizes.
     End,
+    /// The top of the end edge (or the loop icon): drags out repeats.
+    Loop,
 }
 
 /// A selected clip as a drag found it: where it was and on which row.
@@ -452,6 +519,21 @@ pub fn plan(
                 rows: target_rows,
             }
         }
+        Grab::Loop => {
+            let mut rows_hit: Vec<usize> = held.iter().map(|h| h.row).collect();
+            rows_hit.sort_unstable();
+            rows_hit.dedup();
+            // Every held clip's repeats follow the pointer, in whole cycles.
+            let places = held
+                .iter()
+                .map(|h| (Some(h.node), h.clip.looped_to(h.clip.end() + delta)))
+                .collect();
+            Plan {
+                places,
+                allowed: true,
+                rows: rows_hit,
+            }
+        }
         Grab::Start | Grab::End => {
             let edge = if grab == Grab::Start {
                 anchor.start()
@@ -533,6 +615,7 @@ mod tests {
                 note(4, 1, 64),
                 note(6, 1, 65),
             ],
+            looping: None,
         }
     }
 
@@ -630,6 +713,7 @@ mod tests {
             start: beats(0),
             length: beats(4),
             notes: vec![note(0, 1, 50)],
+            looping: None,
         };
         let mut engine = engine_with(&[(1, clip()), (2, other)]);
         // Clip 2 moves into the middle of clip 1, splitting it.
@@ -958,6 +1042,7 @@ mod tests {
             start: beats(12),
             length: beats(4),
             notes: vec![note(0, 1, 50)],
+            looping: None,
         };
         let mut engine = engine_with(&[(1, clip()), (2, other)]);
         let snapshot = engine.snapshot();
@@ -987,11 +1072,13 @@ mod tests {
                 start: beats(4),
                 length: beats(4),
                 notes: vec![],
+                looping: None,
             },
             MidiClip {
                 start: beats(10),
                 length: beats(2),
                 notes: vec![],
+                looping: None,
             },
         ];
         assert_eq!(room_for_clip(&lane, beats(0), beats(4)), Some(beats(4)));
@@ -1009,6 +1096,115 @@ mod tests {
             room_for_clip(&lane, beats(12), beats(4)),
             Some(beats(4)),
             "after the last"
+        );
+    }
+
+    /// The song positions and pitches a MIDI clip plays.
+    fn heard(clip: &AnyClip) -> Vec<(Ticks, u8)> {
+        let AnyClip::Midi(c) = clip else {
+            return Vec::new();
+        };
+        c.played_notes()
+            .iter()
+            .map(|n| (c.start + n.start, n.pitch))
+            .collect()
+    }
+
+    /// A two-beat loop from beat 4, three times.
+    fn looped() -> MidiClip {
+        MidiClip {
+            start: beats(4),
+            length: beats(6),
+            notes: vec![note(0, 1, 60), note(1, 1, 62)],
+            looping: Some(ClipLoop::new(beats(2))),
+        }
+    }
+
+    #[test]
+    fn dragging_the_loop_out_adds_whole_repeats() {
+        let plain = AnyClip::Midi(MidiClip {
+            start: beats(4),
+            length: beats(2),
+            notes: vec![note(0, 1, 60)],
+            looping: None,
+        });
+        // Dragged 3.4 beats on: the nearest whole repeat, two more.
+        let out = plain.looped_to(beats(6) + Ticks::from_beats_f64(3.4));
+        let AnyClip::Midi(c) = &out else {
+            unreachable!()
+        };
+        assert_eq!(c.length, beats(6));
+        assert_eq!(c.looping, Some(ClipLoop::new(beats(2))));
+        assert_eq!(
+            heard(&out),
+            vec![(beats(4), 60), (beats(6), 60), (beats(8), 60)]
+        );
+        // Dragged back past the clip itself: it stops there, plain again.
+        let back = out.looped_to(beats(1));
+        assert_eq!(back, plain);
+    }
+
+    #[test]
+    fn a_looped_clip_trimmed_from_the_left_keeps_its_notes_in_song_time() {
+        let whole = AnyClip::Midi(looped());
+        let trimmed = whole.with_start(beats(5), 120.0);
+        let later: Vec<_> = heard(&whole)
+            .into_iter()
+            .filter(|(t, _)| *t >= beats(5))
+            .collect();
+        assert_eq!(heard(&trimmed), later);
+        // Its loop now ends a whole cycle from where the loop runs, so
+        // dragging the loop out still lands on cycle ends.
+        let longer = trimmed.looped_to(beats(12));
+        assert_eq!(longer.end(), beats(12));
+        assert_eq!(heard(&longer)[..later.len()], later[..]);
+    }
+
+    #[test]
+    fn cutting_a_looped_clip_leaves_two_looped_clips_that_sound_the_same() {
+        let whole = AnyClip::Midi(looped());
+        let (left, right) = whole.split(beats(7), 120.0).unwrap();
+        let mut both = heard(&left);
+        both.extend(heard(&right));
+        assert_eq!(both, heard(&whole));
+        for half in [&left, &right] {
+            let AnyClip::Midi(c) = half else {
+                unreachable!()
+            };
+            assert!(c.looping.is_some(), "still looped");
+            assert_eq!(c.notes, looped().notes, "the same cycle");
+        }
+    }
+
+    #[test]
+    fn a_looped_audio_clip_reaches_as_far_as_the_song_allows() {
+        let (mut engine, _audio) = Engine::new(EngineConfig::default());
+        let snapshot = engine.snapshot();
+        let _ = &mut engine;
+        let clip = AnyClip::Audio(AudioClip {
+            looping: Some(ClipLoop::new(beats(2))),
+            ..AudioClip::whole_file(daw_engine::SampleId(1), beats(4), 1.0, 120.0)
+        });
+        assert_eq!(reach(&snapshot, &clip), (Ticks::ZERO, None));
+    }
+
+    #[test]
+    fn a_loop_drag_plans_whole_repeats_for_every_held_clip() {
+        let held = [Held {
+            id: ClipId(1),
+            node: FIRST_NODE,
+            row: 0,
+            clip: AnyClip::Midi(looped()),
+            reach: (Ticks::ZERO, None),
+        }];
+        let rows = [(FIRST_NODE, Some(NodeKind::Midi))];
+        // 2.4 beats on from beat 10: the nearest cycle end is beat 12.
+        let delta = Ticks::from_beats_f64(2.4);
+        let out = plan(&held, 0, Grab::Loop, delta, 0, &rows, |t| t, 120.0);
+        assert_eq!(
+            out.places[0].1.end(),
+            beats(12),
+            "one more repeat (nearest)"
         );
     }
 }

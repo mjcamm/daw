@@ -10,7 +10,6 @@
 //! `clip_edit.rs`; this file is the hand on the mouse.
 
 use crate::clip_edit::{self, AnyClip, Grab, Held, Landing, Plan};
-use crate::layout::note_rows;
 use crate::project::ProjectView;
 use crate::scroll::{self, Extent};
 use crate::slider::Axis;
@@ -47,6 +46,16 @@ pub struct ClipDrag {
 }
 
 impl ClipDrag {
+    /// Which part of the clips the drag holds.
+    pub fn grab(&self) -> Grab {
+        self.grab
+    }
+
+    /// Where the pointer is.
+    pub fn pointer(&self) -> Point<Pixels> {
+        self.pointer
+    }
+
     /// Whether the drag has moved far enough to count.
     pub fn started(&self) -> bool {
         self.started
@@ -288,6 +297,7 @@ impl ProjectView {
             start,
             length,
             notes: Vec::new(),
+            looping: None,
         };
         self.session
             .apply(Command::Edit(Edit::AddClip { node, id, clip }));
@@ -417,6 +427,14 @@ impl ProjectView {
                 let (at, text) = match drag.grab {
                     Grab::Body | Grab::Start => (clip.start(), clip_edit::bar_beat(clip.start())),
                     Grab::End => (clip.end(), clip_edit::bar_beat(clip.end())),
+                    // How many times it plays, and where it ends.
+                    Grab::Loop => {
+                        let times = clip.looping().map_or(1, |l| l.pieces(clip.length()).len());
+                        (
+                            clip.end(),
+                            format!("×{times} · {}", clip_edit::bar_beat(clip.end())),
+                        )
+                    }
                 };
                 let new_node = node.is_none();
                 let text = if !plan.allowed {
@@ -474,19 +492,28 @@ impl ProjectView {
                 } else {
                     format!("{name} · {} BPM", format_bpm(c.bpm))
                 };
-                let wave = sample.and_then(|s| s.peaks.clone()).map(|peaks| {
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(CLIP_LABEL_HEIGHT))
-                        .bottom(px(2.))
-                        .child(waveform::waveform(
-                            peaks,
-                            waveform::Reading::of(c, bpm, zoom.pixels_per_beat),
-                            color.detail,
-                        ))
-                });
+                // One run of the file per repeat of a loop.
+                let wave: Vec<gpui::Div> = sample
+                    .and_then(|s| s.peaks.clone())
+                    .map(|peaks| {
+                        c.pieces(bpm)
+                            .into_iter()
+                            .map(|piece| {
+                                div()
+                                    .absolute()
+                                    .left(px(zoom.beat_to_x((piece.start - c.start).as_beats())))
+                                    .w(px(zoom.beat_to_x(piece.length.as_beats())))
+                                    .top(px(CLIP_LABEL_HEIGHT))
+                                    .bottom(px(2.))
+                                    .child(waveform::waveform(
+                                        peaks.clone(),
+                                        waveform::Reading::of(&piece, bpm, zoom.pixels_per_beat),
+                                        color.detail,
+                                    ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 frame_body(
                     c.start.as_beats(),
                     c.length.as_beats(),
@@ -515,21 +542,20 @@ pub(crate) fn format_bpm(bpm: f64) -> String {
 /// in the clip's span of pitches, under the label.
 pub(crate) fn note_bars(clip: &MidiClip, color: gpui::Hsla, zoom: Zoom) -> Vec<crate::paint::Bar> {
     let note_area = (zoom.row_height - 2. * CLIP_INSET - CLIP_LABEL_HEIGHT - 6.).max(0.);
-    clip.notes
+    // The notes that play: the parts inside the clip, a loop's repeats too.
+    let played = clip.played_notes();
+    let lowest = played.iter().map(|n| n.pitch).min().unwrap_or(60);
+    let highest = played.iter().map(|n| n.pitch).max().unwrap_or(60);
+    let span = f32::from(highest - lowest).max(1.0);
+    played
         .iter()
-        .zip(note_rows(clip))
-        .filter(|(note, _)| note.start < clip.length && note.start + note.length > Ticks::ZERO)
-        .map(move |(note, row)| {
-            let start = note.start.max(Ticks::ZERO);
-            let end = (note.start + note.length).min(clip.length);
-            crate::paint::Bar {
-                x: zoom.beat_to_x(start.as_beats()),
-                y: CLIP_LABEL_HEIGHT + row * note_area,
-                w: (zoom.beat_to_x((end - start).as_beats()) - 1.).max(2.),
-                h: 3.,
-                color,
-                radius: 1.,
-            }
+        .map(|note| crate::paint::Bar {
+            x: zoom.beat_to_x(note.start.as_beats()),
+            y: CLIP_LABEL_HEIGHT + (1.0 - f32::from(note.pitch - lowest) / span) * note_area,
+            w: (zoom.beat_to_x(note.length.as_beats()) - 1.).max(2.),
+            h: 3.,
+            color,
+            radius: 1.,
         })
         .collect()
 }
@@ -597,4 +623,53 @@ fn frame_body(
                 .text_color(color.detail)
                 .child(label.to_owned()),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use daw_engine::{ClipLoop, MidiNote};
+
+    fn clip(pitches: &[u8], looping: Option<ClipLoop>, length: i64) -> MidiClip {
+        MidiClip {
+            start: Ticks::ZERO,
+            length: Ticks::from_beats(length),
+            notes: pitches
+                .iter()
+                .map(|&pitch| MidiNote {
+                    start: Ticks::ZERO,
+                    length: Ticks::from_beats(1),
+                    pitch,
+                    velocity: 100,
+                })
+                .collect(),
+            looping,
+        }
+    }
+
+    const ZOOM: Zoom = Zoom::new(24., 56.);
+
+    #[test]
+    fn notes_spread_over_the_pitch_range_highest_at_the_top() {
+        let bars = note_bars(&clip(&[60, 72, 66], None, 4), gpui::Hsla::default(), ZOOM);
+        let ys: Vec<f32> = bars.iter().map(|b| b.y).collect();
+        let area = 56. - 2. * CLIP_INSET - CLIP_LABEL_HEIGHT - 6.;
+        let (top, bottom) = (CLIP_LABEL_HEIGHT, CLIP_LABEL_HEIGHT + area);
+        assert_eq!(ys.len(), 3);
+        assert!(ys.contains(&top) && ys.contains(&bottom), "{ys:?}");
+    }
+
+    #[test]
+    fn a_single_pitch_does_not_divide_by_zero() {
+        let bars = note_bars(&clip(&[60, 60], None, 4), gpui::Hsla::default(), ZOOM);
+        assert!(bars.iter().all(|b| b.y.is_finite()));
+    }
+
+    #[test]
+    fn a_looped_clip_shows_its_notes_at_every_repeat() {
+        let looping = Some(ClipLoop::new(Ticks::from_beats(2)));
+        let bars = note_bars(&clip(&[60], looping, 6), gpui::Hsla::default(), ZOOM);
+        let xs: Vec<f32> = bars.iter().map(|b| b.x).collect();
+        assert_eq!(xs, vec![0., 48., 96.]);
+    }
 }

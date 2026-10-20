@@ -95,6 +95,7 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
                 start: Ticks::ZERO,
                 length: beats(8.0),
                 notes,
+                looping: None,
             },
         },
     );

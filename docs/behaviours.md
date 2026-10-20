@@ -33,6 +33,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Click a clip selects it; Shift+click adds or removes; a press on empty lane clears | – |
 | Drag clips to move (snapped, between rows); Ctrl copies; Alt flips snap; Escape cancels | – |
 | Drag a clip's edge to resize (trim and reveal for audio) | – |
+| Drag the top of a clip's right end (or its loop icon, shown on hover or selection) to loop it: whole repeats, linked; repeats softer with a line at each cycle end (`clip-loops.md`) | `arrange::dragging_the_top_of_a_clips_end_loops_it` |
 | Dropping clips below the last row makes a new node of their kind | – |
 | A dropped or resized clip cuts what it lands on (clips never overlap on a node) | – |
 | Rows that can't take the clip refuse: red ghost, "Can't go here" | – |
@@ -57,6 +58,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Pen tool (2): click to add and drag its length; click a note to delete | – |
 | Scissors tool (3): click a note to split it | – |
 | Drawing where the node has no clip makes a one-bar clip | – |
+| A looped clip's notes show once (editable); its repeats show faded; a note placed in a loop goes into the cycle | – |
 | Pressing a softer (inherited) note switches the edited node and carries on into the move | – |
 | Keys: Delete, up/down (Shift: octave), left/right a grid step, Ctrl+A, Ctrl+C, Ctrl+V at the playhead | – |
 | Quantize (button or Q) | – |

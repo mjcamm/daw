@@ -1426,7 +1426,15 @@ fn validate_audio_clip(clip: &AudioClip) -> Result<(), InvalidClip> {
     if clip.fade_in.0 < 0 || clip.fade_out.0 < 0 || clip.fade_in + clip.fade_out > clip.length {
         return Err(InvalidClip::Fades);
     }
-    Ok(())
+    validate_loop(clip.looping)
+}
+
+/// A loop needs a cycle, and a phase inside it.
+fn validate_loop(looping: Option<daw_protocol::ClipLoop>) -> Result<(), InvalidClip> {
+    match looping {
+        Some(l) if l.cycle.0 <= 0 || l.phase.0 < 0 || l.phase >= l.cycle => Err(InvalidClip::Loop),
+        _ => Ok(()),
+    }
 }
 
 /// Whether `edit` can put clips somewhere (so overlaps need checking).
@@ -1490,7 +1498,7 @@ fn validate_clip(clip: &MidiClip) -> Result<(), InvalidClip> {
             return Err(InvalidClip::NoteLength { index });
         }
     }
-    Ok(())
+    validate_loop(clip.looping)
 }
 
 #[cfg(test)]
@@ -1522,6 +1530,7 @@ mod tests {
             start: Ticks::ZERO,
             length: Ticks::from_bars(1),
             notes,
+            looping: None,
         }
     }
 
@@ -2629,6 +2638,7 @@ mod node_tests {
             start: Ticks::ZERO,
             length: Ticks::from_beats(1),
             notes: Vec::new(),
+            looping: None,
         };
         project
             .apply(Edit::AddClip {
@@ -2714,6 +2724,7 @@ mod node_tests {
             start: Ticks::ZERO,
             length: Ticks::from_beats(1),
             notes: Vec::new(),
+            looping: None,
         }
     }
 

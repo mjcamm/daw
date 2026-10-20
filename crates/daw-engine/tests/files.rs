@@ -39,6 +39,7 @@ fn busy_engine() -> (Engine, AudioProcessor) {
                         velocity: 100,
                     })
                     .collect(),
+                looping: None,
             },
         },
     );

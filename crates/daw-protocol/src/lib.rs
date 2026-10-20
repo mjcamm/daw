@@ -6,6 +6,7 @@
 
 mod audio_clip;
 mod automation;
+mod clip_loop;
 mod peaks;
 mod time;
 
@@ -15,6 +16,7 @@ pub use automation::{
     Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId, ParamState,
     SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSource,
 };
+pub use clip_loop::{ClipLoop, Piece, SEAM_FADE};
 pub use peaks::{FINEST_SPAN, MinMax, PeakLevel, Peaks};
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -377,9 +379,14 @@ pub struct MidiClip {
     /// Song position of the clip start.
     pub start: Ticks,
     pub length: Ticks,
-    /// Notes positioned relative to the clip start. Only the parts of notes
-    /// inside `0..length` play.
+    /// Notes positioned relative to the clip start, or in a looped clip to
+    /// the cycle's start. Only the parts of notes inside `0..length` (in a
+    /// looped clip, inside the cycle) play: see [`MidiClip::played_notes`].
     pub notes: Vec<MidiNote>,
+    /// Repeats the content across the clip (`clip_loop.rs`); `None` plays
+    /// it once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub looping: Option<ClipLoop>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -724,6 +731,8 @@ pub enum InvalidClip {
     Gain,
     /// An audio clip's fades are negative or longer than the clip.
     Fades,
+    /// A loop's cycle is not longer than zero, or its phase is outside it.
+    Loop,
 }
 
 /// Why a block was rejected.
@@ -879,6 +888,7 @@ impl fmt::Display for InvalidClip {
                 "gain is outside {MIN_CLIP_GAIN_DB}..={MAX_CLIP_GAIN_DB} dB"
             ),
             Self::Fades => f.write_str("fades are negative or longer than the clip"),
+            Self::Loop => f.write_str("loops with no cycle, or from outside its cycle"),
         }
     }
 }

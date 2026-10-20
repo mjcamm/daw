@@ -90,12 +90,15 @@ pub type HeardNote = (Ticks, Ticks, u8);
 /// trimmed from either side keeps its outside notes to reveal again; they
 /// do not sound, so blocks do not show them.
 pub fn heard_notes(clip: &MidiClip) -> Vec<HeardNote> {
-    clip.notes
+    // The notes that play, a loop's repeats included, in song time.
+    clip.played_notes()
         .iter()
-        .filter_map(|n| {
-            let start = n.start.max(Ticks::ZERO);
-            let end = (n.start + n.length).min(clip.length);
-            (start < end).then(|| (clip.start + start, clip.start + end, n.pitch))
+        .map(|n| {
+            (
+                clip.start + n.start,
+                clip.start + n.start + n.length,
+                n.pitch,
+            )
         })
         .collect()
 }
@@ -305,11 +308,13 @@ impl ProjectView {
                 let (low, high) = clips
                     .iter()
                     .flat_map(|(_, _, clip)| {
-                        // The notes the clip plays, as `heard_notes` keeps them.
+                        // The notes the clip plays, as `heard_notes` keeps them
+                        // (a loop plays the notes inside its cycle).
+                        let end = clip.looping.map_or(clip.length, |l| l.cycle);
                         clip.notes
                             .iter()
-                            .filter(|n| {
-                                n.start.max(Ticks::ZERO) < (n.start + n.length).min(clip.length)
+                            .filter(move |n| {
+                                n.start.max(Ticks::ZERO) < (n.start + n.length).min(end)
                             })
                             .map(|n| n.pitch)
                     })
@@ -419,6 +424,7 @@ mod tests {
             start: Ticks::from_beats(start),
             length: Ticks::from_beats(length),
             notes: Vec::new(),
+            looping: None,
         }
     }
 
@@ -441,6 +447,7 @@ mod tests {
                 note(2, 4, 62),
                 note(5, 1, 63),
             ],
+            looping: None,
         };
         let beats = Ticks::from_beats;
         assert_eq!(

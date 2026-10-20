@@ -62,6 +62,7 @@ fn add(engine: &mut Engine, id: u64, notes: Vec<MidiNote>) -> Result<(), Command
             start: Ticks::ZERO,
             length: Ticks::from_bars(BARS),
             notes,
+            looping: None,
         },
     }))
 }

@@ -121,9 +121,12 @@ pub struct ProjectView {
     pub(crate) file_hover: Option<(gpui::Point<Pixels>, usize)>,
     /// Arrange's tool: the pointer, or the scissors.
     pub(crate) arrange_tool: crate::arrange::ArrangeTool,
-    /// The clip end under the pointer on Arrange (node, clip, which end),
-    /// for the resize cursor.
-    pub(crate) arrange_edge: Option<(NodeId, daw_engine::ClipId, crate::clip_edit::Grab)>,
+    /// The clip and part of it under the pointer on Arrange (node, clip,
+    /// part): the loop icon shows, and the cursor says what a press does.
+    pub(crate) arrange_hover: Option<(NodeId, daw_engine::ClipId, crate::clip_edit::Grab)>,
+    /// The pointer while it is over a clip's loop zone, for the drawn loop
+    /// cursor (GPUI has none).
+    pub(crate) arrange_pointer: Option<gpui::Point<Pixels>>,
     /// A hover effect changed (a cursor, a preview): the pane under the
     /// pointer redraws. Plain moves redraw nothing otherwise.
     pub(crate) hover_changed: bool,
@@ -312,7 +315,8 @@ impl ProjectView {
             file_hover: None,
             arrange_tool: crate::arrange::ArrangeTool::Pointer,
             scissors_at: None,
-            arrange_edge: None,
+            arrange_hover: None,
+            arrange_pointer: None,
             hover_changed: false,
             lane_hover: None,
             roll_hovered: false,

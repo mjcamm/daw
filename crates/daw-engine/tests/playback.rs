@@ -35,6 +35,7 @@ fn add_clip(engine: &mut Engine, id: u64, start: f64, length: f64, notes: &[(f64
         start: beats(start),
         length: beats(length),
         notes: notes.iter().copied().map(note).collect(),
+        looping: None,
     };
     engine
         .apply(Command::Edit(Edit::AddClip {

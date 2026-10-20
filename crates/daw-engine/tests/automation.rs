@@ -55,6 +55,7 @@ fn held_note() -> (Engine, AudioProcessor) {
                     pitch: 60,
                     velocity: 100,
                 }],
+                looping: None,
             },
         },
     );
@@ -391,6 +392,7 @@ fn render_automated_pattern(blocks: &[usize], frames: usize) -> Rendered {
                 start: Ticks::ZERO,
                 length: beats(8.0),
                 notes,
+                looping: None,
             },
         },
     );

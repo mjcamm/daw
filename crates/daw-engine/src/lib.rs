@@ -25,13 +25,14 @@ mod upgrade;
 
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
-    AudioClip, BlendMode, Block, BlockId, ClipId, Command, CommandError, DEFAULT_TRIGGER_NOTE,
-    DeviceId, DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind, Instrument, InstrumentKind,
-    InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, MAX_CLIP_BPM,
-    MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip, MidiNote, MinMax, Node,
-    NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot, ParamState,
-    Peaks, SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint,
-    Signal, SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    AudioClip, BlendMode, Block, BlockId, ClipId, ClipLoop, Command, CommandError,
+    DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind,
+    Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId,
+    LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip,
+    MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId,
+    ParamSnapshot, ParamState, Peaks, Piece, SEAM_FADE, SampleId, SampleRef, SampleSnapshot,
+    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
+    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{

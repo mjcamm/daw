@@ -559,6 +559,7 @@ mod tests {
             start: Ticks::ZERO,
             length: Ticks::from_beats(4),
             notes: Vec::new(),
+            looping: None,
         };
         let mut layer = Layer::named("Wobble", BlendMode::Add);
         layer.blocks.push((

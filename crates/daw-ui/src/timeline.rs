@@ -7,19 +7,59 @@
 use daw_engine::{ClipId, Edit, MidiClip, MidiNote, NodeId, Ticks};
 
 /// A node's notes in song time, clip by clip in time order, keeping only
-/// the parts of clips that play (a note must start inside its clip).
+/// the parts of clips that play (a note must start inside its clip). A
+/// looped clip's notes show once each, at their first place in the clip
+/// (`docs/design/clip-loops.md`); its repeats are [`repeats_of`].
 pub fn notes_of(clips: &[(ClipId, MidiClip)]) -> Vec<MidiNote> {
     let mut sorted: Vec<&(ClipId, MidiClip)> = clips.iter().collect();
     sorted.sort_by_key(|(id, c)| (c.start, *id));
     sorted
         .into_iter()
         .flat_map(|(_, clip)| {
-            clip.notes
+            let mut notes: Vec<MidiNote> = clip
+                .notes
                 .iter()
-                .filter(|n| n.start >= Ticks::ZERO && n.start < clip.length)
-                .map(|n| MidiNote {
+                .filter_map(|n| {
+                    first_place(clip, n).map(|at| MidiNote {
+                        start: clip.start + at,
+                        ..*n
+                    })
+                })
+                .collect();
+            notes.sort_by_key(|n| n.start);
+            notes
+        })
+        .collect()
+}
+
+/// Where in `clip` (clip time) a note of it first plays, if it does: its
+/// own start, or in a looped clip the first time its cycle time comes round.
+fn first_place(clip: &MidiClip, note: &MidiNote) -> Option<Ticks> {
+    let at = match clip.looping {
+        None => note.start,
+        Some(looping) => {
+            if note.start < Ticks::ZERO || note.start >= looping.cycle {
+                return None;
+            }
+            Ticks((note.start - looping.phase).0.rem_euclid(looping.cycle.0))
+        }
+    };
+    (at >= Ticks::ZERO && at < clip.length).then_some(at)
+}
+
+/// The notes a node's looped clips play after their first cycle, in song
+/// time: what the editor shows faded behind the notes it edits.
+pub fn repeats_of(clips: &[(ClipId, MidiClip)]) -> Vec<MidiNote> {
+    clips
+        .iter()
+        .filter_map(|(_, clip)| clip.looping.map(|l| (clip, l)))
+        .flat_map(|(clip, looping)| {
+            clip.played_notes()
+                .into_iter()
+                .filter(move |n| n.start >= looping.cycle)
+                .map(move |n| MidiNote {
                     start: clip.start + n.start,
-                    ..*n
+                    ..n
                 })
         })
         .collect()
@@ -44,24 +84,35 @@ pub fn place_notes(
     let mut loose: Vec<MidiNote> = Vec::new();
     for note in notes {
         match holder(note.start) {
-            Some(index) => held[index].push(MidiNote {
-                start: note.start - clips[index].1.start,
-                ..*note
-            }),
+            Some(index) => {
+                let clip = &clips[index].1;
+                // In a looped clip a note goes into the cycle where it lands.
+                let start = match clip.looping {
+                    Some(looping) => looping.cycle_time(note.start - clip.start),
+                    None => note.start - clip.start,
+                };
+                held[index].push(MidiNote { start, ..*note });
+            }
             None => loose.push(*note),
         }
     }
     let mut edits = Vec::new();
     for ((id, clip), notes) in clips.iter().zip(held) {
-        // Notes past the clip's end were never shown; keep them.
+        // Notes that were never shown (past the clip's end, outside a
+        // loop's cycle) are kept.
         let mut kept: Vec<MidiNote> = clip
             .notes
             .iter()
-            .filter(|n| n.start < Ticks::ZERO || n.start >= clip.length)
+            .filter(|n| first_place(clip, n).is_none())
             .copied()
             .collect();
         kept.extend(notes);
-        if kept != clip.notes {
+        // Order does not matter: the same notes are no change.
+        let key = |n: &MidiNote| (n.start, n.pitch, n.length, n.velocity);
+        let (mut a, mut b) = (kept.clone(), clip.notes.clone());
+        a.sort_by_key(key);
+        b.sort_by_key(key);
+        if a != b {
             edits.push(Edit::SetClip {
                 id: *id,
                 node,
@@ -105,6 +156,7 @@ pub fn place_notes(
                 start: note.start - start,
                 ..note
             }],
+            looping: None,
         });
     }
     for (offset, clip) in new_clips.into_iter().enumerate() {
@@ -120,6 +172,7 @@ pub fn place_notes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use daw_engine::FIRST_NODE;
 
     fn beats(n: i64) -> Ticks {
         Ticks::from_beats(n)
@@ -139,6 +192,7 @@ mod tests {
             start: beats(start),
             length: beats(length),
             notes,
+            looping: None,
         }
     }
 
@@ -212,5 +266,57 @@ mod tests {
     fn unchanged_clips_get_no_edit() {
         let clips = [(ClipId(1), clip(0, 4, vec![note(0, 60)]))];
         assert!(place_notes(NodeId(5), &clips, &[note(0, 60)], beats(4), ClipId(10)).is_empty());
+    }
+
+    /// A two-beat loop from beat 4, starting a beat into its cycle (as the
+    /// right half of a cut), six beats long.
+    fn looped() -> MidiClip {
+        MidiClip {
+            start: beats(4),
+            length: beats(6),
+            notes: vec![note(0, 60), note(1, 64)],
+            looping: Some(daw_engine::ClipLoop::new(beats(2)).shifted(beats(1))),
+        }
+    }
+
+    #[test]
+    fn each_note_of_a_loop_shows_once_at_its_first_place() {
+        // Cycle time 1 plays first (clip time 0), cycle time 0 a beat later.
+        let notes = notes_of(&[(ClipId(1), looped())]);
+        assert_eq!(notes, [note(4, 64), note(5, 60)]);
+    }
+
+    #[test]
+    fn a_note_placed_in_a_loop_goes_into_the_cycle() {
+        let clips = [(ClipId(1), looped())];
+        // Its notes as shown, plus one dropped on a repeat at beat 8.5.
+        let mut notes = notes_of(&clips);
+        notes.push(MidiNote {
+            start: Ticks::from_beats_f64(8.5),
+            ..note(0, 67)
+        });
+        let edits = place_notes(FIRST_NODE, &clips, &notes, beats(4), ClipId(9));
+        let [Edit::SetClip { clip, .. }] = edits.as_slice() else {
+            panic!("one edit to the looped clip: {edits:?}")
+        };
+        assert!(clip.looping.is_some(), "still looped");
+        // Beat 8.5 is cycle time 1.5 (clip time 4.5, a beat into the cycle).
+        let mut cycle: Vec<(Ticks, u8)> = clip.notes.iter().map(|n| (n.start, n.pitch)).collect();
+        cycle.sort();
+        assert_eq!(
+            cycle,
+            vec![
+                (beats(0), 60),
+                (beats(1), 64),
+                (Ticks::from_beats_f64(1.5), 67)
+            ]
+        );
+    }
+
+    #[test]
+    fn shown_notes_put_back_unchanged_change_nothing() {
+        let clips = [(ClipId(1), looped())];
+        let notes = notes_of(&clips);
+        assert!(place_notes(FIRST_NODE, &clips, &notes, beats(4), ClipId(9)).is_empty());
     }
 }

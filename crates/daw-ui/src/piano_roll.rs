@@ -276,6 +276,7 @@ impl ProjectView {
                 start: Ticks::ZERO,
                 length: song_length(snapshot),
                 notes: crate::timeline::notes_of(&node.clips),
+                looping: None,
             },
         ))
     }
@@ -1293,6 +1294,29 @@ impl ProjectView {
         selected_fill.a = 0.85;
         let edges = editor.tool == Tool::Select;
         // The notes, in one drawing; only those on screen are painted.
+        // A looped clip's repeats, faded behind the notes edited
+        // (`docs/design/clip-loops.md`), in one drawing.
+        let mut repeat_color = colors.detail;
+        repeat_color.a *= 0.22;
+        let repeat_bars: Vec<crate::paint::Bar> = crate::timeline::repeats_of(&node.clips)
+            .iter()
+            .filter_map(|n| {
+                let row = rows.row_of(n.pitch)?;
+                Some(crate::paint::Bar {
+                    x: (n.start - clip.start).as_beats() as f32 * ppb,
+                    y: row as f32 * key + 1.,
+                    w: (n.length.as_beats() as f32 * ppb - 1.).max(3.),
+                    h: key - 2.,
+                    color: repeat_color,
+                    radius: 2.,
+                })
+            })
+            .collect();
+        let repeats = crate::paint::bars(repeat_bars)
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
         let note_quads: Vec<(Bounds<Pixels>, gpui::Hsla, gpui::Hsla)> = shown_notes
             .iter()
             .enumerate()
@@ -1434,6 +1458,7 @@ impl ProjectView {
                     }))
                     .when(resizing || over_edge, |d| d.cursor_ew_resize())
                     .child(paint)
+                    .child(repeats)
                     .children(ghosts)
                     .child(notes)
                     .children(pen_preview)

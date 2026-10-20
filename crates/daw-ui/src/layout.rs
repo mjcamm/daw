@@ -80,17 +80,6 @@ pub fn meter_height(peak: f32) -> f32 {
 /// roughly 20 dB per second.
 pub const METER_FALL_PER_FRAME: f32 = 0.9624;
 
-/// Vertical position (0 at the top, 1 at the bottom) of each note in a clip,
-/// spreading the clip's pitch range over the height.
-pub fn note_rows(clip: &MidiClip) -> impl Iterator<Item = f32> + '_ {
-    let lowest = clip.notes.iter().map(|n| n.pitch).min().unwrap_or(60);
-    let highest = clip.notes.iter().map(|n| n.pitch).max().unwrap_or(60);
-    let span = f32::from(highest - lowest).max(1.0);
-    clip.notes
-        .iter()
-        .map(move |n| 1.0 - f32::from(n.pitch - lowest) / span)
-}
-
 /// How long ago a time was, in words, for lists like recent projects. Times
 /// are seconds since 1970.
 pub fn format_age(now: u64, then: u64) -> String {
@@ -129,6 +118,7 @@ mod tests {
                     velocity: 100,
                 })
                 .collect(),
+            looping: None,
         }
     }
 
@@ -184,19 +174,6 @@ mod tests {
         assert_eq!(meter_height(2.0), 1.0);
         assert!((meter_height(0.001) - 0.0).abs() < 1e-6);
         assert!((meter_height(0.031_622_8) - 0.5).abs() < 1e-3);
-    }
-
-    #[test]
-    fn notes_spread_over_the_pitch_range() {
-        let c = clip(0, 4, &[60, 72, 66]);
-        let rows: Vec<f32> = note_rows(&c).collect();
-        assert_eq!(rows, [1.0, 0.0, 0.5]);
-    }
-
-    #[test]
-    fn a_single_pitch_does_not_divide_by_zero() {
-        let c = clip(0, 4, &[60, 60]);
-        assert!(note_rows(&c).all(|y| y == 1.0));
     }
 }
 

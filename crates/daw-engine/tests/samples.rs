@@ -70,6 +70,7 @@ fn add_hits(engine: &mut Engine, beats: &[f64]) {
                 velocity: 127,
             })
             .collect(),
+        looping: None,
     };
     engine
         .apply(Command::Edit(Edit::AddClip {

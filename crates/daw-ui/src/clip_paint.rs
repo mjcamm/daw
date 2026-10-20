@@ -6,8 +6,14 @@
 //! clips had (`ProjectView::press_clip`). The look matches what the clip
 //! elements drew: soft fill, outline (accent and thicker when selected),
 //! the label in the detail colour, faint while the clip is being moved.
+//!
+//! A looped clip (`docs/design/clip-loops.md`) draws its repeats softer with
+//! a line where each cycle ends, and shows its loop icon in the top-right
+//! corner while hovered or selected, as blocks do.
 
+use crate::block_edit::{LOOP_HANDLE, has_loop_handle, loop_band};
 use crate::clip_edit::{AnyClip, Grab};
+use crate::icons::Icon;
 use crate::paint::Bar;
 use crate::project::ProjectView;
 use crate::theme::{ContentColor, Theme};
@@ -31,8 +37,10 @@ pub const EDGE: f32 = 6.;
 pub enum Content {
     /// Notes, placed from the clip's top-left.
     Notes(Vec<Bar>),
-    /// A waveform under the label.
-    Wave(Arc<Peaks>, Reading, Hsla),
+    /// A waveform under the label: one run per stretch of the file that
+    /// plays (one, or one per repeat of a loop), as pixels from the clip's
+    /// left.
+    Wave(Vec<(Arc<Peaks>, Reading, f32, f32)>, Hsla),
 }
 
 /// One clip as painted, placed from the lane's top-left.
@@ -48,21 +56,44 @@ pub struct Painted {
     pub label: SharedString,
     pub label_color: Hsla,
     pub content: Content,
+    /// Where each cycle of a loop ends (pixels from the clip's left).
+    pub seams: Vec<f32>,
+    /// The softening over repeats, and the line at each cycle's end.
+    pub repeat_wash: Hsla,
+    pub seam_color: Hsla,
+    /// Show the loop icon (hovered or selected).
+    pub loop_icon: bool,
 }
 
-/// The clip and the part of it at `x` pixels from the lane's left (later
-/// clips win, as they were drawn on top). The ends resize when the clip is
-/// wide enough for both zones and its middle.
-pub fn clip_at(clips: &[(ClipId, f32, f32)], x: f32) -> Option<(ClipId, Grab)> {
+/// The clip and the part of it at `x` pixels from the lane's left and `y`
+/// from the clips' top (`height` tall). Later clips win, as they were drawn
+/// on top. The ends resize when the clip is wide enough for both zones and
+/// its middle; the top quarter of the right end, and the loop icon beside
+/// it, drag out repeats (as on blocks).
+pub fn clip_at(
+    clips: &[(ClipId, f32, f32)],
+    x: f32,
+    y: f32,
+    height: f32,
+) -> Option<(ClipId, Grab)> {
     clips
         .iter()
         .rev()
         .find(|(_, left, width)| x >= *left && x < left + width)
         .map(|&(id, left, width)| {
             let edges = width >= 3. * EDGE;
-            let grab = if edges && x < left + EDGE {
+            let right = left + width;
+            let in_band = (0.0..loop_band(height)).contains(&y);
+            let loop_from = if has_loop_handle(width) {
+                right - EDGE - LOOP_HANDLE
+            } else {
+                right - EDGE
+            };
+            let grab = if edges && in_band && x >= loop_from {
+                Grab::Loop
+            } else if edges && x < left + EDGE {
                 Grab::Start
-            } else if edges && x >= left + width - EDGE {
+            } else if edges && x >= right - EDGE {
                 Grab::End
             } else {
                 Grab::Body
@@ -80,7 +111,7 @@ fn faint(mut color: Hsla, moving: bool) -> Hsla {
 }
 
 impl ProjectView {
-    /// How a clip on Arrange paints: its frame, label and contents.
+    /// How a clip on Arrange paints: its frame, label, contents and loop.
     pub(crate) fn painted_clip(
         &self,
         id: ClipId,
@@ -91,6 +122,7 @@ impl ProjectView {
     ) -> Painted {
         let zoom = self.arrange_view.zoom;
         let selected = self.selected_clips.contains(&id);
+        let hovered = self.arrange_hover.is_some_and(|(_, c, _)| c == id);
         let moving = self
             .clip_drag
             .as_ref()
@@ -123,20 +155,42 @@ impl ProjectView {
                 let wave = sample.and_then(|s| s.peaks.clone()).map_or(
                     Content::Notes(Vec::new()),
                     |peaks| {
-                        Content::Wave(
-                            peaks,
-                            Reading::of(c, bpm, zoom.pixels_per_beat),
-                            faint(color.detail, moving),
-                        )
+                        // One run per stretch of the file: a loop's repeats.
+                        let runs = c
+                            .pieces(bpm)
+                            .iter()
+                            .map(|piece| {
+                                let from = zoom.beat_to_x((piece.start - c.start).as_beats());
+                                let to = from + zoom.beat_to_x(piece.length.as_beats());
+                                (
+                                    peaks.clone(),
+                                    Reading::of(piece, bpm, zoom.pixels_per_beat),
+                                    from,
+                                    to,
+                                )
+                            })
+                            .collect();
+                        Content::Wave(runs, faint(color.detail, moving))
                     },
                 );
                 (tag, wave)
             }
         };
+        let width = zoom.beat_to_x(clip.length().as_beats());
+        let seams = clip.looping().map_or_else(Vec::new, |l| {
+            l.seams(clip.length())
+                .into_iter()
+                .map(|t| zoom.beat_to_x(t.as_beats()))
+                .collect()
+        });
+        let mut repeat_wash = theme.window;
+        repeat_wash.a = 0.45;
+        let mut seam_color = color.detail;
+        seam_color.a *= 0.7;
         Painted {
             id,
             left: zoom.beat_to_x(clip.start().as_beats()),
-            width: zoom.beat_to_x(clip.length().as_beats()),
+            width,
             height,
             fill: faint(color.fill, moving),
             outline: faint(
@@ -151,6 +205,10 @@ impl ProjectView {
             label: label.into(),
             label_color: faint(color.detail, moving),
             content,
+            seams,
+            repeat_wash: faint(repeat_wash, moving),
+            seam_color: faint(seam_color, moving),
+            loop_icon: (selected || hovered) && width >= 3. * EDGE,
         }
     }
 }
@@ -201,16 +259,52 @@ fn paint_clip(clip: &Painted, rect: Bounds<Pixels>, window: &mut Window, cx: &mu
         let _ = line.paint(origin, line_height, window, cx);
         match &clip.content {
             Content::Notes(bars) => crate::paint::paint_bars(bars, rect, window),
-            Content::Wave(peaks, reading, color) => {
-                let area = Bounds::new(
-                    point(rect.left(), rect.top() + px(CLIP_LABEL_HEIGHT)),
-                    size(
-                        rect.size.width,
-                        (rect.size.height - px(CLIP_LABEL_HEIGHT + 2.)).max(px(0.)),
-                    ),
-                );
-                waveform::paint(window, area, peaks, *reading, None, *color);
+            Content::Wave(runs, color) => {
+                let top = rect.top() + px(CLIP_LABEL_HEIGHT);
+                let height = (rect.size.height - px(CLIP_LABEL_HEIGHT + 2.)).max(px(0.));
+                for (peaks, reading, from, to) in runs {
+                    let area = Bounds::new(
+                        point(rect.left() + px(*from), top),
+                        size(px(to - from), height),
+                    );
+                    waveform::paint(window, area, peaks, *reading, None, *color);
+                }
             }
+        }
+        // Repeats are softer, and every cycle shows its end: clip, clip, clip.
+        if let Some(first) = clip.seams.first() {
+            let soft = Bounds::new(
+                point(rect.left() + px(*first), rect.top()),
+                size(rect.size.width - px(*first), rect.size.height),
+            );
+            window.paint_quad(fill(soft, clip.repeat_wash));
+        }
+        for x in &clip.seams {
+            let line = Bounds::new(
+                point(rect.left() + px(*x - 0.75), rect.top()),
+                size(px(1.5), rect.size.height),
+            );
+            window.paint_quad(fill(line, clip.seam_color));
+        }
+        // The loop icon in the top-right corner, beside the end's zone.
+        if clip.loop_icon {
+            let band = loop_band(clip.height);
+            let glyph = band.min(10.);
+            let handle_left = rect.right() - px(EDGE + LOOP_HANDLE);
+            let at = Bounds::new(
+                point(
+                    handle_left + px((LOOP_HANDLE - glyph) / 2.),
+                    rect.top() + px((band - glyph) / 2. + 1.),
+                ),
+                size(px(glyph), px(glyph)),
+            );
+            let _ = window.paint_svg(
+                at,
+                Icon::Loop.path().into(),
+                gpui::TransformationMatrix::unit(),
+                clip.label_color,
+                cx,
+            );
         }
     });
 }
@@ -219,31 +313,56 @@ fn paint_clip(clip: &Painted, rect: Bounds<Pixels>, window: &mut Window, cx: &mu
 mod tests {
     use super::*;
 
+    /// Clips 48 px tall; a point in the middle of their height.
+    const HEIGHT: f32 = 48.;
+    const MIDDLE: f32 = 24.;
+
     #[test]
     fn a_press_finds_the_clip_and_its_part() {
         let clips = [(ClipId(1), 0., 100.), (ClipId(2), 100., 10.)];
-        assert_eq!(clip_at(&clips, 50.), Some((ClipId(1), Grab::Body)));
+        let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
+        assert_eq!(at(50.), Some((ClipId(1), Grab::Body)));
+        assert_eq!(at(2.), Some((ClipId(1), Grab::Start)), "left edge");
+        assert_eq!(at(97.), Some((ClipId(1), Grab::End)), "right edge");
         assert_eq!(
-            clip_at(&clips, 2.),
-            Some((ClipId(1), Grab::Start)),
-            "left edge"
-        );
-        assert_eq!(
-            clip_at(&clips, 97.),
-            Some((ClipId(1), Grab::End)),
-            "right edge"
-        );
-        assert_eq!(
-            clip_at(&clips, 104.),
+            at(104.),
             Some((ClipId(2), Grab::Body)),
             "too narrow for edges: the body"
         );
-        assert_eq!(clip_at(&clips, 120.), None, "empty lane");
+        assert_eq!(at(120.), None, "empty lane");
+    }
+
+    #[test]
+    fn the_top_of_the_right_end_and_the_loop_icon_drag_out_repeats() {
+        let clips = [(ClipId(1), 0., 100.)];
+        assert_eq!(
+            clip_at(&clips, 97., 2., HEIGHT),
+            Some((ClipId(1), Grab::Loop)),
+            "top of the right edge"
+        );
+        assert_eq!(
+            clip_at(&clips, 100. - EDGE - LOOP_HANDLE / 2., 2., HEIGHT),
+            Some((ClipId(1), Grab::Loop)),
+            "the loop icon"
+        );
+        assert_eq!(
+            clip_at(&clips, 97., HEIGHT - 2., HEIGHT),
+            Some((ClipId(1), Grab::End)),
+            "lower on the edge resizes"
+        );
+        assert_eq!(
+            clip_at(&clips, 2., 2., HEIGHT),
+            Some((ClipId(1), Grab::Start)),
+            "the left edge never loops"
+        );
     }
 
     #[test]
     fn a_later_clip_wins_where_they_meet() {
         let clips = [(ClipId(1), 0., 100.), (ClipId(2), 90., 50.)];
-        assert_eq!(clip_at(&clips, 95.).map(|(id, _)| id), Some(ClipId(2)));
+        assert_eq!(
+            clip_at(&clips, 95., MIDDLE, HEIGHT).map(|(id, _)| id),
+            Some(ClipId(2))
+        );
     }
 }

@@ -32,6 +32,7 @@ fn hold(engine: &mut Engine, node: NodeId, id: u64, pitch: u8) {
             pitch,
             velocity: 100,
         }],
+        looping: None,
     };
     apply(
         engine,
