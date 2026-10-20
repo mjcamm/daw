@@ -22,6 +22,9 @@ struct Log {
     started: Option<Instant>,
     gaps: Vec<f32>,
     work: Vec<f32>,
+    /// The last period's median work (ms) and frames per second, for the
+    /// header's readout.
+    latest: Option<(f32, f32)>,
 }
 
 thread_local! {
@@ -56,8 +59,14 @@ pub fn frame() {
         let since = *log.since.get_or_insert(now);
         if now - since >= EVERY && !log.gaps.is_empty() {
             let count = log.gaps.len();
+            let seconds = (now - since).as_secs_f32();
+            let mut works = std::mem::take(&mut log.work);
+            if !works.is_empty() {
+                works.sort_by(f32::total_cmp);
+                log.latest = Some((works[works.len() / 2], count as f32 / seconds));
+            }
             let gaps = summary(&mut std::mem::take(&mut log.gaps));
-            let work = summary(&mut std::mem::take(&mut log.work));
+            let work = summary(&mut works);
             eprintln!(
                 "frames: {count} in {:.1} s; gap {gaps}; work {work} (at {})",
                 (now - since).as_secs_f32(),
@@ -66,6 +75,17 @@ pub fn frame() {
             log.since = Some(now);
         }
     });
+}
+
+/// Whether frame times are being measured (`DAW_FRAME_LOG` set): the
+/// header then shows them.
+pub fn measuring() -> bool {
+    setting().is_some()
+}
+
+/// The last 2 s: median CPU work per frame (ms) and frames per second.
+pub fn latest() -> Option<(f32, f32)> {
+    LOG.with(|log| log.borrow().latest)
 }
 
 /// Called when the frame's painting is done.

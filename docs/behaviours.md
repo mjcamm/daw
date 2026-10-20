@@ -127,3 +127,4 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | File → Preferences (Ctrl+,): Appearance; Audio settings applied live; test tone | – |
 | Launch page: new project, Open…, recent projects | – |
 | Ctrl+Q saves and quits; autosave every 30 s | – |
+| With `DAW_FRAME_LOG` set: "UI n ms" beside the CPU meter (median work per frame over 2 s; frames a second in its tooltip) | – |

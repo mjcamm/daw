@@ -82,6 +82,7 @@ impl ProjectView {
             })
             .child(self.render_snap(false, theme, cx))
             .child(self.render_transport(theme, cx))
+            .children(crate::frame_log::measuring().then(|| render_frame_time(theme)))
             .child(self.render_load(theme))
     }
 
@@ -400,4 +401,35 @@ impl ProjectView {
                 ),
         )
     }
+}
+
+/// While measuring (`DAW_FRAME_LOG`), the UI's CPU work per frame beside
+/// the audio load: the median over the last 2 s.
+fn render_frame_time(theme: &Theme) -> impl IntoElement {
+    let latest = crate::frame_log::latest();
+    let text = latest.map_or_else(|| "–".to_owned(), |(work, _)| format!("{work:.1} ms"));
+    let hint = latest.map_or_else(
+        || "UI frame time: measuring…".to_owned(),
+        |(work, fps)| {
+            format!(
+                "UI frame time: {work:.1} ms of work per frame, {fps:.0} frames a second (median over 2 s). Shown while DAW_FRAME_LOG is set."
+            )
+        },
+    );
+    div()
+        .id("frame-time")
+        .w(px(58.))
+        .flex()
+        .flex_col()
+        .items_end()
+        .text_size(px(10.))
+        .child(div().text_color(theme.text_tertiary).child("UI"))
+        .child(
+            div()
+                .font_family(MONO_FONT)
+                .text_size(px(12.))
+                .text_color(theme.text_secondary)
+                .child(text),
+        )
+        .tooltip(tooltip::text(hint))
 }
