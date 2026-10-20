@@ -1127,9 +1127,9 @@ impl ProjectView {
     }
 
     /// The nesting map along the bottom: a row per level, the innermost
-    /// nearest the strips, the Song at the bottom. Each folder's bar runs
-    /// under its children with an arrow up into its own strip; the chevron
-    /// folds it (shared with Arrange).
+    /// nearest the strips (the Song has none). Each folder's bar starts at
+    /// its own strip and runs under its children; the chevron folds it
+    /// (shared with Arrange).
     #[allow(clippy::too_many_arguments, reason = "layout figures, passed through")]
     fn mixer_map(
         &self,

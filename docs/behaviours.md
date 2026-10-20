@@ -114,6 +114,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Fader and pan (double-click resets); mute and solo | – |
 | + Instrument opens the browser; effect slots add, switch, remove | – |
 | SingleSampler chip: Choose sample… | – |
+| SingleSampler panel: Plays note (its trigger note, auto-assigned from C1 among siblings) | – |
 | Map chevrons fold; strip-width slider | – |
 
 ## App (`STATUS.md`, `audio-settings.md`)

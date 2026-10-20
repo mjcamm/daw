@@ -40,7 +40,7 @@ Each note matching the pitch filter is a **hit** from 0 to +1, shaped by an enve
 - **Between hits** the signal rests at 0 (the centre line: no effect). It is always present.
 - **A new note restarts from wherever the line is**, so it never jumps.
 - **Pitch range** (optional, a switch, off by default): only notes in Lowest..Highest hit, so one drum note (the kick) can drive the signal. Off, every note hits.
-- **Source node:** the node that published it. Until the node tree (Phase 5) this is the project's only node.
+- **Source node:** the node that published it (`NotesSource.node`). Removing that node leaves the signal silent; undo restores both.
 
 The line is computed and drawn, not edited by hand; settings live in the signal's bottom bar. Known in advance from the notes, so identical live and offline.
 

@@ -112,8 +112,8 @@ Every phase follows the foundation principles: test-driven, engine-owned state, 
 
 **Goal:** enough everyday features to finish a real track.
 
-- Audio clip import and editing, and audio/MIDI recording.
-- A MIDI editor.
+- Audio clip import and editing (built early, 2026-10-19), and audio/MIDI recording.
+- A MIDI editor (the piano roll, built early, 2026-10-16).
 - Mixdown/stem export.
 - Any other gaps found by producing real tracks.
 

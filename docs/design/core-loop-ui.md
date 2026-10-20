@@ -44,7 +44,7 @@ One design everywhere (`slider.rs`): hairline track, fill, round thumb, relative
 - **Layer mix** (layer row, with %): how much of the layer reaches the result. Double-click for 100 %.
 - **Zoom** (frame, below).
 
-## Timeline frame (Arrange, Parameters, later Signals)
+## Timeline frame (Arrange, Parameters, Signals, and the bottom panel)
 
 ```text
 [ body                                  ][v-scroll]

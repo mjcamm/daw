@@ -3,8 +3,8 @@
 //!
 //! Each frame the page passes the rows it should show; [`RowMotion`]
 //! compares them with the last ones. New rows grow open; rows that are gone
-//! stay as ghosts while they close up (anchored at their bottom edge, so
-//! folded children slide down into their folder); rows whose order changed
+//! stay as ghosts while they close up (Arrange anchors their content at the
+//! top, so folded children slide back up under their folder); rows whose order changed
 //! glide from where they were. Pure, so it is tested with made-up times.
 
 use daw_engine::{NodeId, NodeSnapshot};

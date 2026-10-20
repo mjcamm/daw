@@ -16,7 +16,7 @@ A calm, native-feeling "pro app" in the Apple tradition: quiet grey chrome, one 
 The mockups set the vibe, not the layout. Each page's layout is decided with the user before it is built.
 
 - **Header bar** (about 52 px), left to right: song name and details, page tabs (Arrange · Parameters · Signals · Mixer), then the transport.
-- **Arrange page:** node list on the left, one row per node in the style of traditional tracks (colour, name, meter, mute, solo), with the timeline beside it. No sidebar or inspector for now.
+- **Arrange page:** node list on the left, one row per node in the style of traditional tracks (colour, name, meter, mute, solo), with the timeline beside it. The inspector (`inspector.md`) folds into a tray at the right of every page.
 
 ## Tokens
 

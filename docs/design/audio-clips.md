@@ -1,6 +1,6 @@
 # Audio Clips
 
-*Status: agreed with the user 2026-10-19. **Engine built** (2026-10-19): the clip model and edits, file version 12, rate conversion, waveform overviews in the snapshot, playback through the stretcher (`daw-engine/src/clips.rs`, tests in `daw-engine/tests/audio_clips.rs`). **UI built** (2026-10-19): Track → Import Audio…, dropping files on Arrange with a live preview, audio clips drawn with waveforms, and moving, copying, trimming and revealing them with the MIDI clip gestures (`clip_edit::AnyClip`); tried by Claude in the app, dropping from Explorer not yet tried. **Scissors and the audio panel built** (2026-10-19, tried by Claude in the app; not yet by the user). Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
+*Status: agreed with the user 2026-10-19. **Engine built** (2026-10-19): the clip model and edits, file version 12 (now 14 with looping), rate conversion, waveform overviews in the snapshot, playback through the stretcher (`daw-engine/src/clips.rs`, tests in `daw-engine/tests/audio_clips.rs`). **UI built** (2026-10-19): Track → Import Audio…, dropping files on Arrange with a live preview, audio clips drawn with waveforms, and moving, copying, trimming and revealing them with the MIDI clip gestures (`clip_edit::AnyClip`); tried by Claude in the app, dropping from Explorer not yet tried. **Scissors and the audio panel built** (2026-10-19, tried by Claude in the app; not yet by the user). Builds on `samples.md` (the sample table, the `audio/` folder, the pool), `node-tree.md` (clip gestures on Arrange) and `piano-roll.md` (the bottom panel). The stretcher came from the user's own `audioperformerv2` project and now lives here as `crates/daw-stretch` (docs in its crate root).*
 
 ## Stretching happens live, at playback
 
@@ -67,4 +67,4 @@ Built in `crates/daw-ui/src/audio_panel.rs`; it takes the piano roll's place in 
 
 - More file types; reading files in the background with progress.
 - Tempo detection; warp markers; transient-aware editing.
-- Reverse, pitch, loop a clip.
+- Reverse, pitch. (Looping is built: `clip-loops.md`.)

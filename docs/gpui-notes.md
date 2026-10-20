@@ -33,7 +33,7 @@ Application::new()
 - A view implements `Render::render(&mut self, window, cx: &mut Context<Self>) -> impl IntoElement`.
 - Event handlers that change the view: `cx.listener(|this, event, window, cx| ...)`. Building them only needs `cx`, so render helpers take `&self` and `&mut Context<Self>`.
 - Globals: `impl Global for T {}`, then `cx.set_global(t)` / `cx.global::<T>()`. `Context<V>` derefs to `App`.
-- Continuous redraw (playhead, meters): call `window.request_animation_frame()` inside `render`.
+- Continuous redraw: `window.request_animation_frame()` inside `render` asks for another frame. In this app never call it unconditionally: playheads and meters go through the live layer, and animations through `ProjectView::animate()` (`docs/design/ui-speed.md`).
 - Window-level drag listeners registered during paint (our `drag_tracker`) only exist from the frame after the press: a fast click can release before them, and the drag stays live until the next press. End any drag on a `MouseMoveEvent` whose `pressed_button` is `None`.
 - Different branches returning different element types: `.into_any_element()`.
 
@@ -134,8 +134,8 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 
 ## Animating rows
 
-- GPUI's layout is recomputed every frame, so a row animates by setting its height (and `top` offset, `opacity`) from a progress value each frame; nothing else is needed while the view redraws every frame.
-- To make a row slide into or out of the edge below it, give the outer element the animated height with `.overflow_hidden()`, and put the content in an absolutely positioned full-height child anchored with `.bottom_0()`.
+- A row animates by setting its height (and `top` offset, `opacity`) from a progress value each frame; the pane must keep redrawing while it runs (`ProjectView::animate()`).
+- To make a row slide into or out of the edge below it, give the outer element the animated height with `.overflow_hidden()`, and put the content in an absolutely positioned full-height child anchored to one edge (Arrange anchors at `.top_0()`, so rows slide out from under their parent above).
 
 ## Gotchas
 
@@ -143,7 +143,7 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 
 ## Scrolling and hover reveal
 
-- Keeping two areas in step horizontally (e.g. a ruler above scrolling lanes): give the scrolling element `.track_scroll(&handle)` with a `ScrollHandle` kept in the view, and draw the other inside an `.overflow_hidden()` box shifted by `.relative().left(handle.offset().x)` (the offset is negative when scrolled). The view redraws every frame, so they stay together.
+- Keeping two areas in step horizontally (e.g. a ruler above scrolling lanes): give the scrolling element `.track_scroll(&handle)` with a `ScrollHandle` kept in the view, and draw the other inside an `.overflow_hidden()` box shifted by `.relative().left(handle.offset().x)` (the offset is negative when scrolled). Scrolling redraws the pane the same frame, so they stay together.
 - Vertical page scroll around a horizontally scrolling area: an outer `.overflow_y_scroll().flex().flex_col()` holding a row of [fixed left column][`.overflow_x_scroll()` lanes].
 - **Filling the height inside a vertical scroll:** percentage heights (`min_h_full`, `h_full`) do not resolve inside `overflow_y_scroll`. Make the scroll element `.flex().flex_col()` and give its child `.flex_grow().flex_shrink_0()`: it fills the page when short and grows past it when long. Inside a horizontal scroll, make the scroll element `.flex()` so its child stretches to full height, with `.flex_shrink_0()` on a fixed-width child.
 - **Wheel as sideways scroll** in one spot (Arrange's nesting map): `on_scroll_wheel` on the area, turn `event.delta.pixel_delta(px(20.))`'s y into x, `scroll::scroll_to` the handle, then `cx.stop_propagation()` so the vertical area around it stays put. Return early without stopping when there is nothing to scroll, so the wheel still reaches the outer area.
@@ -165,7 +165,7 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 
 - **Nested handlers both fire:** a press on a child (a clip's resize edge) also reaches its parents' `on_mouse_down` (the clip body, the lane). Call `cx.stop_propagation()` in the child's handler to keep it to the child.
 - **Overlapping elements both get the press.** Mouse handlers fire on every hovered hitbox under the pointer, not just the top one, unless an element `.occlude()`s what is behind it. A resize edge hanging 2 px over a scrollbar started a scrollbar drag too, which won. Keep handles inside their own element and `.occlude()` them.
-- `.on_mouse_move` only fires while the element is hovered, so it loses a drag once the pointer leaves. To follow the mouse anywhere, register window-level listeners while dragging, from a `canvas` paint closure: `window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| ...)` (and `MouseUpEvent` to finish). They last one frame, so register them on every frame while the drag is active (fine here: the view redraws every frame). They see both phases; act on one (`DispatchPhase::Capture`). Reach the view with a `cx.entity().downgrade()` captured from `render`, then `weak.update(cx, |this, cx| ...)`.
+- `.on_mouse_move` only fires while the element is hovered, so it loses a drag once the pointer leaves. To follow the mouse anywhere, register window-level listeners while dragging, from a `canvas` paint closure: `window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| ...)` (and `MouseUpEvent` to finish). They last one frame, so register them on every frame while the drag is active (the pane a drag began in redraws every frame while it lasts). They see both phases; act on one (`DispatchPhase::Capture`). Reach the view with a `cx.entity().downgrade()` captured from `render`, then `weak.update(cx, |this, cx| ...)`.
 - `MouseDownEvent` has `click_count` (double-click without `on_click`) and `modifiers` (`.alt`, `.shift`, `.platform`).
 - Cursors: `.cursor_ew_resize()`, `.cursor_grab()`, `.cursor_crosshair()` and so on, from `gpui-macros` `styles.rs`. An invisible absolutely-positioned child with a cursor style gives a zone its own cursor without blocking the parent's mouse handlers.
 - Render helpers that take `cx: &mut Context<Self>` and return `impl IntoElement` capture `cx`'s lifetime (Rust 2024), so two calls in one expression fail to borrow. Return a concrete type (`Stateful<Div>`) instead.

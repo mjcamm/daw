@@ -1,11 +1,11 @@
 # Piano Roll
 
-*Status: built 2026-10-16 (`crates/daw-ui/src/piano_roll.rs` panel, `note_edit.rs` rules), agreed with the user as standard DAW behaviour. The bottom panel is meant to host an audio editor later.*
+*Status: built 2026-10-16 (`crates/daw-ui/src/piano_roll.rs` panel, `note_edit.rs` rules), agreed with the user as standard DAW behaviour. The bottom panel now follows the selected node (`note-flow.md`) and hosts the audio panel for audio nodes (`audio-clips.md`).*
 
 ## Panel
 
 - **New clips:** double-click an empty spot on a MIDI node's lane on Arrange: an empty clip a bar long starts at the grid line at or before the pointer (Arrange's grid; shorter if the next clip comes sooner), is selected and opens here (user, 2026-10-18). Rule: `clip_edit::room_for_clip`.
-- **Opening:** double-click a clip on Arrange. The panel slides up from the bottom (about 0.2 s), resizes from its top edge (at least 160 px), and closes with × in its header. It belongs to Arrange. Double-clicking the clip already open does nothing; another clip swaps in without sliding again (user, 2026-10-16).
+- **Opening:** double-click a clip (or an empty MIDI lane) on Arrange. The panel slides up from the bottom (about 0.2 s), resizes from its top edge (at least 160 px), and closes with × in its header. It belongs to Arrange. It shows the selected node, not one clip (`note-flow.md`): selecting another node swaps it in without sliding again.
 - **Header:** colour dot and "<node> · notes", the tools (select, pen, scissors), Quantize, the grid picker, ×.
 - **Scroll and zoom:** the same frame as Arrange (`frame.rs`, `Timeline::Notes`): a vertical scrollbar with the key-height zoom at its foot, and a horizontal scrollbar with the time zoom at its end (user: "the same zoom tools as the arranger"). Keys range 6 to 40 px (12 to start) and zoom about the middle of the view; time zoom holds the playhead still when it is in view. One scroll area serves both axes (`TimelineView::shared`).
 - **Grid:** the editor has its own snap or slide and grid (1 Bar to 1/64, starting at 1/16), set with the same chip and panel as Arrange's (user, 2026-10-16: "a grid 1 bar, 1/4, 1/8, 1/16 etc and slide mode same as arranger has"). The grid draws a line at every step while they are at least 6 px apart, beats stronger, bars strongest. New notes are one grid step long; left and right nudge by a step.

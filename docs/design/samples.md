@@ -4,7 +4,7 @@
 
 ## What it is
 
-**SingleSampler** is a built-in instrument that plays one audio sample. Each note starts the sample from the top and it plays to its end (one-shot), whatever the note's length; velocity sets its level. Several hits overlap. It is the first piece of a drum machine built from nodes (a Drums parent of SingleSampler nodes); the trigger note per drum and auto-assigning the next free note come later.
+**SingleSampler** is a built-in instrument that plays one audio sample. Each note starts the sample from the top and it plays to its end (one-shot), whatever the note's length; velocity sets its level. Several hits overlap. It is the first piece of a drum machine built from nodes (a Drums parent of SingleSampler nodes); each plays only its **trigger note**, auto-assigned from C1 among siblings (`note-flow.md`).
 
 ## Where samples live
 
@@ -28,12 +28,11 @@
 
 - The instrument browser lists SingleSampler under BUILT-IN.
 - A MIDI node's subtitle on Arrange names its first instrument and how many more are layered ("MIDI · SingleSampler", "MIDI · Synth +1").
-- On a strip, a SingleSampler's chip shows its sample's name. Clicking the chip's name opens a small panel: the sample's name (or "No sample"), and **Choose sample…**, which opens a file picker for WAV files, copies the file into the project and sets it as the sample (one undo step).
+- On a strip, a SingleSampler's chip shows its sample's name. Clicking the chip's name opens a small panel: the sample's name (or "No sample"), and **Choose sample…**, which opens a file picker for WAV files, copies the file into the project and sets it as the sample (one undo step). The panel also shows **Plays note**, the trigger note, changed by dragging sideways.
 
 - Reading a file happens on the control thread when it is chosen or the project opens, so a very long file pauses the UI briefly. Reading in the background comes with longer audio (audio clips).
 
 ## Later
 
-- Trigger note per drum, notes flowing from a parent's clip to its children, auto-assigning the next free note.
 - Sample start and end, pitch, reverse, envelopes, choke groups.
-- Other file types; audio clips on Audio nodes (the same pool and `audio/` folder).
+- Other file types (audio clips, built since, share the same pool and `audio/` folder: `audio-clips.md`).

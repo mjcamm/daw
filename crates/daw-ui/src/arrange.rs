@@ -463,10 +463,10 @@ impl ProjectView {
             .child(delete)
     }
 
-    /// The nesting map: a column per level, the Song at the far left. Each
-    /// folder's bar runs beside what is under it, and an arrow points into
-    /// the folder's own row. The chevron folds a folder; dropping a node on
-    /// a bar puts it last in that folder.
+    /// The nesting map: a column per level (the Song has none). Each
+    /// folder's bar starts at its own row and runs beside what is under it.
+    /// The chevron folds a folder; dropping a node on a bar puts it last in
+    /// that folder.
     fn render_map(
         &self,
         rows: &[(&NodeSnapshot, &RowLayout)],

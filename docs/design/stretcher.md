@@ -77,7 +77,8 @@ let cue = s.cue(&clip, hot_cue_pos);  // off the audio thread / ahead of time (a
 s.launch(&cue);                       // instant, allocation-free: copies the primed state
 s.is_bypassed();                      // ratio exactly 1 and hand-over done
 
-// Many stems across cores; the audio thread works too.
+// Many stems across cores (StemPool stayed in audioperformerv2; here the
+// engine's own worker pool runs the streams).
 let pool = StemPool::new(streams, channels, max_block, workers);
 pool.process(&clips, block_len);      // then read pool.slot(i).out, mix
 pool.slot(i).stream.set_ratio(r);     // control between blocks
@@ -126,6 +127,8 @@ output samples, and four frames when a stream starts. With 16 streams:
   beat (quantised launches are known ahead), so the launch block costs nothing extra.
 
 ### Real-time benchmark vs Signalsmith
+
+*Measured in `audioperformerv2`; the benchmark tools, `StemPool` and the gym's `-s` options below are not in this repo.*
 
 `cargo run --release -p stretch --example realtime` against `tools/bench-signalsmith-rt.exe`
 (`scripts/bench-signalsmith-rt.cpp`, built by `scripts/setup-references.sh`). Same 20 s mix,

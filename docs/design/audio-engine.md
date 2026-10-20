@@ -31,6 +31,7 @@ They meet only through two lock-free `rtrb` queues (`AudioMsg` in, retired state
 | Path | What |
 |---|---|
 | `daw-protocol/src/lib.rs`, `automation.rs` | Commands, edits, snapshots, ids, instrument and effect kinds |
+| `daw-protocol/src/audio_clip.rs`, `clip_loop.rs`, `peaks.rs`, `time.rs` | Audio clips, clip loops (expanded into plain pieces at compile time), waveform overviews, ticks |
 | `daw-engine/src/lib.rs` | `Engine`: commands, snapshots, `reconnect`, the sample folder |
 | `daw-engine/src/project.rs` | The project model; `Project::apply` validates every edit and returns its inverse |
 | `daw-engine/src/schedule.rs` | Compiling the project into a `RenderState` |
@@ -40,11 +41,12 @@ They meet only through two lock-free `rtrb` queues (`AudioMsg` in, retired state
 | `daw-engine/src/samples.rs` | WAV decoding, the sample pool, rate conversion for clips, waveform overviews |
 | `daw-engine/src/clips.rs` | Audio clips on the audio thread: `ClipPlayer` (one stretcher per audio node) |
 | `daw-stretch/src/` | The time-stretcher, `StemStream` (`stretcher.md`) |
-| `daw-engine/src/file.rs`, `upgrade.rs` | The project file (version 12) and converting older versions |
+| `daw-engine/src/file.rs`, `upgrade.rs` | The project file (version 14, `file::VERSION`) and converting older versions |
 | `daw-dsp/src/` | Standalone DSP: synth, sampler, filter, envelopes, pan, smoothing |
 | `daw-rt/src/` | The allocation guard and `without_denormals` |
 | `daw-host/src/lib.rs` | Devices through `cpal`: drivers, device choices, opening a stream, `CallbackStats` load |
 | `daw-host/src/preferences.rs` | App preferences, including `AudioSettings` |
+| `daw-host/src/projects.rs`, `demo.rs` | Project folders, sample import, recent projects; the demo and starter song |
 | `daw-host/examples/devices.rs` | Prints what each audio device reports |
 | `daw-testkit/src/` | Offline `render`, `VARIED_BLOCKS`, `assert_reference!` |
 
