@@ -266,9 +266,17 @@ impl ProjectView {
             .as_ref()
             .filter(|d| d.node == node && d.started);
         let shown = self.shown_clips();
+        // Only blocks near the screen get elements (`paint::visible_x`).
+        let near_x = crate::paint::visible_x(&self.arrange_view.x);
         combined_blocks_of(snapshot, node, &shown)
             .into_iter()
             .enumerate()
+            .filter(|(_, block)| {
+                near_x.is_none_or(|(left, right)| {
+                    zoom.beat_to_x(block.end.as_beats()) >= left
+                        && zoom.beat_to_x(block.start.as_beats()) <= right
+                })
+            })
             .map(|(index, block)| {
                 // The block being dragged stays marked as it moves.
                 let dragged =
@@ -292,7 +300,7 @@ impl ProjectView {
                     .fold((u8::MAX, 0u8), |(l, h), p| (l.min(p), h.max(p)));
                 let span = f32::from(high.saturating_sub(low)).max(1.);
                 let area = (zoom.row_height - 2. * INSET - LABEL_HEIGHT - 6.).max(0.);
-                let notes: Vec<AnyElement> = heard
+                let notes: Vec<crate::paint::Bar> = heard
                     .iter()
                     .flat_map(|(owner, notes)| {
                         let mut color = snapshot
@@ -305,15 +313,14 @@ impl ProjectView {
                             .map(|&(start, end, pitch)| {
                                 let at = start - block.start;
                                 let row = 1. - f32::from(pitch.saturating_sub(low)) / span;
-                                div()
-                                    .absolute()
-                                    .left(px(zoom.beat_to_x(at.as_beats())))
-                                    .top(px(LABEL_HEIGHT + row * area))
-                                    .w(px((zoom.beat_to_x((end - start).as_beats()) - 1.).max(2.)))
-                                    .h(px(3.))
-                                    .rounded(px(1.))
-                                    .bg(color)
-                                    .into_any_element()
+                                crate::paint::Bar {
+                                    x: zoom.beat_to_x(at.as_beats()),
+                                    y: LABEL_HEIGHT + row * area,
+                                    w: (zoom.beat_to_x((end - start).as_beats()) - 1.).max(2.),
+                                    h: 3.,
+                                    color,
+                                    radius: 1.,
+                                }
                             })
                             .collect::<Vec<_>>()
                     })
@@ -354,7 +361,7 @@ impl ProjectView {
                             .text_ellipsis()
                             .child(names.join(" · ")),
                     )
-                    .children(notes)
+                    .child(crate::paint::bars(notes).absolute().top_0().left_0().size_full())
                     .tooltip(tooltip::text(
                         "The clips below this node, combined: drag to move them all, double-click to edit",
                     ))

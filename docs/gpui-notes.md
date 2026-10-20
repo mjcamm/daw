@@ -121,6 +121,17 @@ scripts/ui-drive.ps1 key 46              # a virtual-key code (46 is Delete)
 - Windows only draw when refreshed: `cx.update(|window, _| window.refresh())` then `cx.run_until_parked()`. Twice when a frame's render takes in new state the next frame shows.
 - Our harness is `crates/daw-ui/src/ui_tests/mod.rs` (`Harness`).
 
+## Caching views (speed)
+
+- `AnyView::from(entity).cached(StyleRefinement::default().size_full())` reuses the view's last layout and paint until the view is notified or `window.refresh()` runs. The style sizes the view's box; its content is laid out as a root inside it, so give the content `size_full`.
+- `window.request_animation_frame()` notifies the view being rendered (inside a cached child view: that view), so a view can redraw itself while it animates.
+- Notifying a view dirties its ancestors, never its siblings or children: anything moving every frame must sit outside cached views. See `docs/design/ui-speed.md` for how this app's panes and live layer use it.
+- Window-level listeners (`window.on_mouse_event`, `window.on_key_event`, registered in a canvas paint) see every input event before elements do; the app uses them to tell panes to redraw.
+- `Bounds` has `intersect`; check emptiness with `size.width <= px(0.)`.
+- **Shapes cost every frame:** each painted quad or path is filed into the scene's index each frame, even when a cached view is reused (~2 µs each). Many bars of one colour: one `Path` with `push_triangle` (st `(0,1)` on every vertex means filled) is one shape. Reusing a cached view also costs ~1.3–2.5 µs per element per frame.
+- **GPU choice on Windows:** GPUI uses the first adapter (`EnumAdapters(0)`), the built-in GPU on most laptops. The `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance` exports (`gpu.rs`) move it to the separate GPU.
+- Text in a canvas: `window.text_system().shape_line(text, size, &[TextRun { len, font: font(name), color, .. }], None)`, then `line.paint(origin, window.line_height(), window, cx)`; `line.width` for right-aligning.
+
 ## Animating rows
 
 - GPUI's layout is recomputed every frame, so a row animates by setting its height (and `top` offset, `opacity`) from a progress value each frame; nothing else is needed while the view redraws every frame.

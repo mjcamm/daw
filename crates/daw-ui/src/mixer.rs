@@ -8,7 +8,7 @@
 //! map takes rows for deeper nesting (up to three, then it scrolls).
 
 use crate::icons::{Icon, icon};
-use crate::layout::meter_height;
+use crate::live::{Live, PaneKind};
 use crate::menu::{self, OpenMenu};
 use crate::motion::RowLayout;
 use crate::parameters::{BaseDrag, small_button};
@@ -50,8 +50,6 @@ const MAP_VISIBLE_ROWS: usize = 3;
 /// A pan within this of the centre snaps to it.
 const PAN_DETENT: f64 = 0.02;
 const METER_WIDTH: f32 = 4.;
-/// How long a peak line holds before it falls.
-const PEAK_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
 
 /// The mixer's view state: strip width, scrolling, and where the faders
 /// were last drawn.
@@ -67,8 +65,6 @@ pub struct MixerView {
     track: Rc<Cell<Bounds<Pixels>>>,
     /// The map's height, easing as levels come and go.
     map_height: crate::motion::Eased,
-    /// Each node's held peak and when it was reached.
-    peaks: std::cell::RefCell<std::collections::HashMap<NodeId, (f32, Instant)>>,
 }
 
 impl Default for MixerView {
@@ -81,7 +77,6 @@ impl Default for MixerView {
             panel_fader_bounds: Rc::default(),
             track: Rc::default(),
             map_height: crate::motion::Eased::default(),
-            peaks: std::cell::RefCell::default(),
         }
     }
 }
@@ -92,6 +87,16 @@ impl Default for MixerView {
 pub enum StripPlace {
     Mixer { first: bool },
     Panel,
+}
+
+impl StripPlace {
+    /// The pane a strip in this place is drawn in.
+    fn pane(self) -> PaneKind {
+        match self {
+            Self::Mixer { .. } => PaneKind::Main,
+            Self::Panel => PaneKind::Inspector,
+        }
+    }
 }
 
 /// A drag on the mixer other than a fader (faders use the resting-value
@@ -171,6 +176,9 @@ impl ProjectView {
         let layout = self
             .strip_motion
             .layout(&shown, self.mixer_view.strip_width, Instant::now());
+        if self.strip_motion.animating() {
+            self.animate();
+        }
         let placed: Vec<(&NodeSnapshot, &RowLayout)> = layout
             .iter()
             .filter_map(|l| Some((l.ghost.as_deref().or_else(|| snapshot.node(l.id))?, l)))
@@ -295,7 +303,7 @@ impl ProjectView {
             })
             .relative()
             .child(self.fader(node, place, theme, cx))
-            .child(self.meters(id, place, theme));
+            .child(self.meters(id, place));
 
         let volume = channel_param(node, channel::VOLUME);
         let base = volume.map_or(0., |p| self.fader_value(id, p.base));
@@ -1032,25 +1040,27 @@ impl ProjectView {
         let length = self.fader_length(place);
         let active = self.base_preview(param).is_some();
         let unity = CHANNEL_PARAMS[channel::VOLUME as usize].default_normalized();
-        // Where the layers have it now, if they move it.
-        let live = (!volume.layers.is_empty()).then(|| {
-            daw_automation::Automation::compile_layers_with(
+        // Where the layers have it now, if they move it: drawn by the live
+        // layer at the song position.
+        let marker = (!volume.layers.is_empty()).then(|| {
+            let automation = Rc::new(daw_automation::Automation::compile_layers_with(
                 shown,
                 &volume.layers,
                 &self.compiled_signals(),
+            ));
+            self.live_slot(
+                place.pane(),
+                Live::FaderMarker {
+                    automation,
+                    travel: length - 9.,
+                    inset: 4.5,
+                },
             )
-            .value_at(self.session.position_beats())
-        });
-        let marker = live.map(|value| {
-            let travel = length - 9.;
-            div()
-                .absolute()
-                .left(px(-3.))
-                .w(px(slider::THICKNESS + 6.))
-                .h(px(2.))
-                .rounded(px(1.))
-                .bottom(px(4.5 + value.clamp(0., 1.) as f32 * travel - 1.))
-                .bg(theme.warning)
+            .absolute()
+            .left(px(-3.))
+            .w(px(slider::THICKNESS + 6.))
+            .top_0()
+            .bottom_0()
         });
         div()
             .relative()
@@ -1083,60 +1093,25 @@ impl ProjectView {
             .into_any_element()
     }
 
-    /// Stereo meters with a peak line that holds, then falls.
-    fn meters(&self, node: NodeId, place: StripPlace, theme: &Theme) -> gpui::Div {
-        let meter = self.session.meter(node);
+    /// Stereo meters with a peak line that holds, then falls: drawn by
+    /// the live layer.
+    fn meters(&self, node: NodeId, place: StripPlace) -> gpui::Div {
         let length = self.fader_length(place);
-        let level = meter.left.max(meter.right);
-        let held = {
-            let mut peaks = self.mixer_view.peaks.borrow_mut();
-            let entry = peaks.entry(node).or_insert((0., Instant::now()));
-            if level >= entry.0 || entry.1.elapsed() > PEAK_HOLD {
-                *entry = (level, Instant::now());
-            }
-            entry.0
-        };
-        let bar =
-            |peak: f32| {
-                let height = meter_height(peak);
-                div()
-                    .w(px(METER_WIDTH))
-                    .h(px(length))
-                    .rounded(px(1.))
-                    .bg(theme.control)
-                    .flex()
-                    .flex_col()
-                    .justify_end()
-                    .child(div().w_full().h(px(length * height)).rounded(px(1.)).bg(
-                        if height > 0.98 {
-                            theme.meter_high
-                        } else {
-                            theme.meter_low
-                        },
-                    ))
-            };
-        let hold_height = meter_height(held);
         div()
-            .relative()
-            .flex()
-            .gap(px(2.))
-            .child(bar(meter.left))
-            .child(bar(meter.right))
-            .when(hold_height > 0., |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .h(px(1.))
-                        .bottom(px(length * hold_height))
-                        .bg(if hold_height > 0.98 {
-                            theme.meter_high
-                        } else {
-                            theme.text_secondary
-                        }),
+            .flex_none()
+            .w(px(METER_WIDTH * 2. + 2.))
+            .h(px(length))
+            .child(
+                self.live_slot(
+                    place.pane(),
+                    Live::StripMeter {
+                        node,
+                        bar: METER_WIDTH,
+                        gap: 2.,
+                    },
                 )
-            })
+                .size_full(),
+            )
     }
 
     /// The nesting map along the bottom: a row per level, the innermost
@@ -1220,7 +1195,14 @@ impl ProjectView {
         scroll::axis_locked(div())
             .id("mixer-map")
             .w(px(content_width))
-            .h(px(self.mixer_view.map_height.toward(map_height(levels))))
+            .h(px({
+                let target = map_height(levels);
+                let height = self.mixer_view.map_height.toward(target);
+                if height != target {
+                    self.animate();
+                }
+                height
+            }))
             .flex_none()
             .overflow_y_scroll()
             .track_scroll(&self.mixer_view.map_y)

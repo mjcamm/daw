@@ -161,10 +161,9 @@ fn ms(n: f64) -> Duration {
     Duration::from_secs_f64(n / 1000.)
 }
 
-/// Budgets, release build, median ms. They start just above what the app
-/// measured before the speed work (2026-10-20) and tighten as each step
-/// lands, towards the targets in `docs/design/ui-speed.md`: a steady
-/// (playback) frame under 1 ms, a full frame under 5 ms.
+/// Budgets, release build, median ms, set just above what the app measures
+/// (2026-10-20, after steps 3 and 4 of `docs/design/ui-speed.md`). Tighten
+/// them as the speed work goes on; never loosen one without the user.
 fn check(scene: &str, (steady, full): (Timing, Timing), steady_ms: f64, full_ms: f64) {
     assert!(
         steady.median <= ms(steady_ms),
@@ -182,7 +181,7 @@ fn perf_arrange() {
     let mut h = Harness::new("perf-arrange");
     heavy_song(&mut h);
     let t = measure(&mut h, "arrange");
-    check("arrange", t, 330., 350.);
+    check("arrange", t, 6., 20.);
 }
 
 #[test]
@@ -194,7 +193,7 @@ fn perf_arrange_with_piano_roll() {
         .update(h.cx, |view, _| view.open_node_editor(synth, 0.));
     h.redraw();
     let t = measure(&mut h, "arrange + piano roll");
-    check("arrange + piano roll", t, 360., 350.);
+    check("arrange + piano roll", t, 6., 30.);
 }
 
 #[test]
@@ -205,7 +204,7 @@ fn perf_mixer() {
     h.view.update(h.cx, |view, _| view.page = Page::Mixer);
     h.redraw();
     let t = measure(&mut h, "mixer");
-    check("mixer", t, 20., 20.);
+    check("mixer", t, 6., 20.);
 }
 
 #[test]
@@ -219,5 +218,22 @@ fn perf_parameters() {
     });
     h.redraw();
     let t = measure(&mut h, "parameters");
-    check("parameters", t, 95., 85.);
+    check("parameters", t, 6., 25.);
+}
+
+/// Saves the full-size song as a project, to try speed by hand in the app:
+/// `DAW_HEAVY_SONG=<folder> cargo test -p daw-ui --features ui-tests
+/// save_heavy_song -- --ignored`.
+#[test]
+#[ignore = "writes a project; run by hand"]
+fn save_heavy_song() {
+    let folder = std::env::var_os("DAW_HEAVY_SONG").expect("DAW_HEAVY_SONG: where to save it");
+    let mut h = Harness::in_folder(folder.into(), true);
+    heavy_song(&mut h);
+    h.view.update(h.cx, |view, _| {
+        view.session.apply_or_panic(Command::Edit(Edit::RenameSong {
+            name: "Heavy Song".into(),
+        }));
+        view.session.save().expect("saved");
+    });
 }

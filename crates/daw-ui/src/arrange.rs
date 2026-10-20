@@ -14,9 +14,8 @@ pub enum ArrangeTool {
 use crate::clip_edit;
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
-use crate::layout::{
-    BEATS_PER_BAR, meter_height, ruler_label_step, timeline_bars, x_to_snapped_position,
-};
+use crate::layout::{BEATS_PER_BAR, ruler_label_step, timeline_bars, x_to_snapped_position};
+use crate::live::{Live, PaneKind};
 use crate::menu::{self, OpenMenu};
 use crate::motion::RowLayout;
 use crate::parameters::small_button;
@@ -65,11 +64,15 @@ impl ProjectView {
         // the drop slots, so every slot can be reached without scrolling.
         let dragging = cx.has_active_drag();
         let columns = tree::columns(&map_bars) + usize::from(dragging);
-        let map_width = self.map_width.toward(if dragging {
+        let map_target = if dragging {
             full_map_width(columns)
         } else {
             map_width(columns)
-        });
+        };
+        let map_width = self.map_width.toward(map_target);
+        if map_width != map_target || self.row_motion.animating() {
+            self.animate();
+        }
         let left_width = map_width + NODE_LIST_WIDTH;
 
         // The ruler stays at the top and follows the lanes' sideways scroll.
@@ -148,13 +151,26 @@ impl ProjectView {
             .bg(theme.sidebar)
             .border_r_1()
             .border_color(theme.edge)
-            .children(
+            .children({
+                // Rows far off screen are empty boxes of the same height.
+                let near_y = crate::paint::visible_y(&self.arrange_view.y);
+                let mut top = 0.;
                 rows.iter()
                     .map(|(node, layout)| {
-                        animated(layout, row_height, self.node_row(node, theme, cx))
+                        let row_top = top;
+                        top += layout.height;
+                        let near = near_y.is_none_or(|(above, below)| {
+                            row_top + layout.height >= above && row_top <= below
+                        });
+                        if near {
+                            animated(layout, row_height, self.node_row(node, theme, cx))
+                                .into_any_element()
+                        } else {
+                            div().h(px(layout.height)).flex_none().into_any_element()
+                        }
                     })
-                    .collect::<Vec<_>>(),
-            )
+                    .collect::<Vec<_>>()
+            })
             .child(
                 // Clicking the empty space below the nodes clears the selection.
                 div()
@@ -172,7 +188,6 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let id = node.id;
-        let meter = self.session.meter(id);
         let color = theme.content(node.color);
         let row_height = self.arrange_view.zoom.row_height;
         let meter_size = (row_height - 16.).clamp(10., METER_HEIGHT);
@@ -300,12 +315,19 @@ impl ProjectView {
                         .child(kind),
                 ),
             )
+            // The stereo meter, drawn by the live layer.
             .child(
-                div()
-                    .flex()
-                    .gap(px(2.))
-                    .child(meter_bar(meter.left, meter_size, theme))
-                    .child(meter_bar(meter.right, meter_size, theme)),
+                div().flex_none().w(px(10.)).h(px(meter_size)).child(
+                    self.live_slot(
+                        PaneKind::Main,
+                        Live::Meter {
+                            node: id,
+                            bar: 4.,
+                            gap: 2.,
+                        },
+                    )
+                    .size_full(),
+                ),
             )
             .children(publish)
             .child(mute)
@@ -1077,9 +1099,22 @@ impl ProjectView {
             .collect();
         overlay.extend(self.file_drop_overlay(&drop_rows, theme));
         let scissor_rows = drop_rows.clone();
+        // Only what is near the screen gets elements (`paint::visible_x`).
+        let near_x = crate::paint::visible_x(&self.arrange_view.x);
+        let near_y = crate::paint::visible_y(&self.arrange_view.y);
+        let near = move |start: f64, end: f64| {
+            near_x.is_none_or(|(left, right)| {
+                zoom.beat_to_x(end) >= left && zoom.beat_to_x(start) <= right
+            })
+        };
+        let mut row_top = 0.;
         let lanes: Vec<_> = rows
             .iter()
             .map(|(node, layout)| {
+                let top = row_top;
+                row_top += layout.height;
+                let row_near = near_y
+                    .is_none_or(|(above, below)| top + layout.height >= above && top <= below);
                 let color = if node.muted {
                     theme.muted_content
                 } else {
@@ -1112,13 +1147,20 @@ impl ProjectView {
                     )
                     // A parent shows the clips below it combined, under its
                     // own clips.
-                    .children(if node.children.is_empty() {
+                    .children(if node.children.is_empty() || !row_near {
                         Vec::new()
                     } else {
                         self.combined_elements(id, theme, cx)
                     })
                     .children(
                         crate::clip_edit::node_clips(node)
+                            .filter(|_| row_near)
+                            .filter(|(_, clip)| {
+                                near(
+                                    clip.start().as_beats(),
+                                    (clip.start() + clip.length()).as_beats(),
+                                )
+                            })
                             .map(|(cid, clip)| {
                                 // A clip moves with its block while dragged.
                                 let shown = match &clip {
@@ -1137,13 +1179,20 @@ impl ProjectView {
             })
             .collect();
 
-        let playhead = div()
+        // Drawn by the live layer, from beat 0 across the lanes.
+        let playhead = self
+            .live_slot(
+                PaneKind::Main,
+                Live::Playhead {
+                    start: 0.,
+                    ppb: zoom.pixels_per_beat,
+                },
+            )
             .absolute()
             .top_0()
             .bottom_0()
-            .left(px(zoom.beat_to_x(self.session.position_beats())))
-            .w(px(1.))
-            .bg(theme.accent);
+            .left_0()
+            .right_0();
 
         scroll::axis_locked(div())
             .id("timeline")
@@ -1317,29 +1366,6 @@ impl Render for DraggedNode {
             .text_color(theme.text)
             .child(self.name.clone())
     }
-}
-
-fn meter_bar(peak: f32, size: f32, theme: &Theme) -> impl IntoElement {
-    let height = meter_height(peak);
-    div()
-        .w(px(4.))
-        .h(px(size))
-        .rounded(px(1.))
-        .bg(theme.control)
-        .flex()
-        .flex_col()
-        .justify_end()
-        .child(
-            div()
-                .w_full()
-                .h(px(size * height))
-                .rounded(px(1.))
-                .bg(if height > 0.98 {
-                    theme.meter_high
-                } else {
-                    theme.meter_low
-                }),
-        )
 }
 
 #[cfg(test)]

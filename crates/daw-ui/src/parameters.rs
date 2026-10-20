@@ -22,6 +22,7 @@ use crate::block_edit::{
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
+use crate::live::{Live, PaneKind};
 use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget, song_clips};
 use crate::scroll;
@@ -419,7 +420,6 @@ impl ProjectView {
         let bars = timeline_bars(song_clips(snapshot), snapshot.loop_range);
         let zoom = self.parameters_view.zoom;
         let width = zoom.beat_to_x(f64::from(bars) * BEATS_PER_BAR);
-        let position = self.session.position_beats();
         let rows = rows(node);
 
         let left = div()
@@ -433,16 +433,23 @@ impl ProjectView {
             .children(
                 rows.iter()
                     .enumerate()
-                    .map(|(i, row)| self.left_cell(i, row, position, theme, cx)),
+                    .map(|(i, row)| self.left_cell(i, row, theme, cx)),
             );
 
-        let playhead = div()
+        // Drawn by the live layer, from beat 0 across the lanes.
+        let playhead = self
+            .live_slot(
+                PaneKind::Main,
+                Live::Playhead {
+                    start: 0.,
+                    ppb: zoom.pixels_per_beat,
+                },
+            )
             .absolute()
             .top_0()
             .bottom_0()
-            .left(px(zoom.beat_to_x(position)))
-            .w(px(1.))
-            .bg(theme.accent);
+            .left_0()
+            .right_0();
         let mut top = 0.;
         let right_cells: Vec<AnyElement> = rows
             .iter()
@@ -618,8 +625,14 @@ impl ProjectView {
 
     /// Whether `layer` was just jumped to.
     fn highlighted(&self, layer: LayerId) -> bool {
-        self.highlight
-            .is_some_and(|(id, at)| id == layer && at.elapsed() < HIGHLIGHT_TIME)
+        let on = self
+            .highlight
+            .is_some_and(|(id, at)| id == layer && at.elapsed() < HIGHLIGHT_TIME);
+        if on {
+            // Redraw until the highlight has faded.
+            self.animate();
+        }
+        on
     }
 
     /// The zoom of the page whose lanes are being edited.
@@ -1169,7 +1182,6 @@ impl ProjectView {
         &self,
         index: usize,
         row: &Row<'_>,
-        position: f64,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1211,9 +1223,20 @@ impl ProjectView {
                 let base = self.base_of(param);
                 let layers =
                     previewed_mix(self.mix_drag.as_ref(), Cow::Borrowed(&param.layers[..]));
-                let value =
-                    Automation::compile_layers_with(base, &layers, &self.compiled_signals())
-                        .value_at(position);
+                // The value at the song position, drawn by the live layer.
+                let automation = Rc::new(Automation::compile_layers_with(
+                    base,
+                    &layers,
+                    &self.compiled_signals(),
+                ));
+                let shown_param = (*param).clone();
+                let value = self.live_slot(
+                    PaneKind::Main,
+                    Live::Value {
+                        automation,
+                        format: Rc::new(move |v| shown_param.format_normalized(v)),
+                    },
+                );
                 cell.pl(px(16.))
                     .pr(px(12.))
                     .gap(px(8.))
@@ -1228,10 +1251,10 @@ impl ProjectView {
                     .child(div().flex_1())
                     .child(
                         div()
-                            .font_family(MONO_FONT)
-                            .text_size(px(11.))
-                            .text_color(theme.text_secondary)
-                            .child(param.format_normalized(value)),
+                            .flex_none()
+                            .w(px(56.))
+                            .h(px(16.))
+                            .child(value.size_full()),
                     )
                     .into_any_element()
             }
@@ -1900,6 +1923,17 @@ impl ProjectView {
         let height = zoom.row_height;
         let blocks = previewed_blocks(self.block_drag.as_ref(), blocks);
         let cursor = self.lane_cursor(&blocks, signal.is_some(), top, height, pointer);
+        // Only blocks near the screen get elements (`paint::visible_x`).
+        let near_x = crate::paint::visible_x(match self.page {
+            Page::Signals => &self.signals_view.x,
+            _ => &self.parameters_view.x,
+        });
+        let near = |block: &Block| {
+            near_x.is_none_or(|(left, right)| {
+                zoom.beat_to_x(block.end().as_beats()) >= left
+                    && zoom.beat_to_x(block.start.as_beats()) <= right
+            })
+        };
         let window = signal.map(|id| (self.compiled_signals(), id));
         // The centre line: no effect.
         let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
@@ -1914,20 +1948,25 @@ impl ProjectView {
                     .h(px(1.))
                     .bg(theme.grid),
             )
-            .children(blocks.iter().map(|(id, block)| {
-                block_view(
-                    *id,
-                    block,
-                    colors,
-                    self.selected_block == Some(*id),
-                    mix,
-                    zoom,
-                    cursor.is_some_and(|c| c.block == *id),
-                    height - 2. * BLOCK_INSET,
-                    window.clone(),
-                    theme,
-                )
-            }))
+            .children(
+                blocks
+                    .iter()
+                    .filter(|(_, block)| near(block))
+                    .map(|(id, block)| {
+                        block_view(
+                            *id,
+                            block,
+                            colors,
+                            self.selected_block == Some(*id),
+                            mix,
+                            zoom,
+                            cursor.is_some_and(|c| c.block == *id),
+                            height - 2. * BLOCK_INSET,
+                            window.clone(),
+                            theme,
+                        )
+                    }),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, _| {
@@ -2169,9 +2208,15 @@ pub(crate) fn paint_curve(
         )
     };
     let step = 2.;
-    let points: Vec<Point<Pixels>> = (0..=((width / step) as usize))
+    // Only the part on screen (and a step either side).
+    let visible = window.content_mask().bounds;
+    let from = ((visible.left() - bounds.left()) / px(1.) / step)
+        .floor()
+        .max(0.) as usize;
+    let to = (((visible.right() - bounds.left()) / px(1.)).min(width) / step).ceil() as usize + 1;
+    let points: Vec<Point<Pixels>> = (from..=to.max(from))
         .filter_map(|i| {
-            let x = i as f32 * step;
+            let x = (i as f32 * step).min(width);
             let v = value(f64::from(x / pixels_per_beat));
             (!v.is_nan()).then(|| to_point(x, v.clamp(0., 1.)))
         })

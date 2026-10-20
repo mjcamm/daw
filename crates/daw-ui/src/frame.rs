@@ -29,11 +29,11 @@ use std::rc::Rc;
 /// The timeline's vertical grid across `bars` bars: bar lines stronger than
 /// the beat lines between them, beat lines only when there is room, bar
 /// lines thinned out when zoomed far out.
-pub fn grid_lines(zoom: Zoom, bars: u32, theme: &Theme) -> impl Iterator<Item = Div> {
+pub fn grid_lines(zoom: Zoom, bars: u32, theme: &Theme) -> std::iter::Once<gpui::AnyElement> {
     let bar_step = grid_bar_step(zoom.pixels_per_beat);
     let show_beats = zoom.pixels_per_beat >= MIN_GRID_SPACING;
     let (bar_line, beat_line) = (theme.hairline, theme.grid);
-    (0..bars * 4)
+    let lines = (0..bars * 4)
         .filter(move |beat| {
             if beat % 4 == 0 {
                 (beat / 4) % bar_step == 0
@@ -41,15 +41,26 @@ pub fn grid_lines(zoom: Zoom, bars: u32, theme: &Theme) -> impl Iterator<Item = 
                 show_beats
             }
         })
-        .map(move |beat| {
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(px(zoom.beat_to_x(f64::from(beat))))
-                .w(px(1.))
-                .bg(if beat % 4 == 0 { bar_line } else { beat_line })
+        .map(move |beat| crate::paint::Bar {
+            x: zoom.beat_to_x(f64::from(beat)),
+            y: 0.,
+            w: 1.,
+            // As tall as any lane area; the canvas clips it.
+            h: 100_000.,
+            color: if beat % 4 == 0 { bar_line } else { beat_line },
+            radius: 0.,
         })
+        .collect();
+    // One drawing for every line; only those on screen are painted.
+    std::iter::once(
+        crate::paint::bars(lines)
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .into_any_element(),
+    )
 }
 
 /// A page with a timeline.

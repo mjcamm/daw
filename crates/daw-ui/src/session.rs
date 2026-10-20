@@ -322,13 +322,11 @@ impl Session {
         self.engine.position_beats()
     }
 
-    /// A node's meter as displayed.
-    pub fn meter(&self, node: NodeId) -> Meter {
-        self.meters.get(&node).copied().unwrap_or_default()
+    /// Every node's meter as displayed.
+    pub fn meters(&self) -> &BTreeMap<NodeId, Meter> {
+        &self.meters
     }
 
-    /// Sends a command. Rejected commands change nothing, so the UI just
-    /// reports them.
     /// Applies a command, failing loudly: for building test songs.
     #[cfg(all(test, feature = "ui-tests"))]
     pub fn apply_or_panic(&mut self, command: Command) {
@@ -337,6 +335,8 @@ impl Session {
         }
     }
 
+    /// Sends a command. Rejected commands change nothing, so the UI just
+    /// reports them.
     pub fn apply(&mut self, command: Command) {
         if let Err(e) = self.engine.apply(command) {
             eprintln!("command rejected: {e}");

@@ -3,7 +3,9 @@
 use crate::block_edit::Snap;
 use crate::frame::{FrameDrag, TimelineView};
 use crate::layout::PIXELS_PER_BEAT;
+use crate::live::{LiveLayer, PaneKind};
 use crate::menu::OpenMenu;
+use crate::pane::Pane;
 use crate::parameters::{BaseDrag, BlockDrag, DEFAULT_ZOOM, MixDrag};
 use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
@@ -13,8 +15,10 @@ use daw_engine::{
     BlockId, Command, Edit, LayerId, LoopRange, MidiClip, NodeId, NodeSnapshot, SignalId, Snapshot,
 };
 use gpui::{
-    Bounds, Context, DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, MouseMoveEvent,
-    MouseUpEvent, Pixels, Subscription, Window, actions, canvas, div, prelude::*, px,
+    AnyElement, AnyView, Bounds, Context, DispatchPhase, Entity, EventEmitter, FocusHandle,
+    Focusable, KeyDownEvent, ModifiersChangedEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, ScrollWheelEvent, StyleRefinement, Subscription, Window, actions, canvas, div,
+    prelude::*, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -204,7 +208,45 @@ pub struct ProjectView {
     pub(crate) save_error: Option<String>,
     window_title: String,
     pub(crate) focus: FocusHandle,
+    /// What moves every frame, drawn above the panes.
+    pub(crate) live: Rc<crate::live::LiveLayer>,
+    /// Set while a pane renders something mid-animation, so it redraws
+    /// next frame.
+    pub(crate) animating: Cell<bool>,
+    /// The cached parts of the window; made on the first render.
+    panes: Option<Panes>,
+    /// The song revision the panes last drew.
+    drawn_revision: u64,
+    /// Where each pane is on screen, for sending input to the right one.
+    pane_bounds: PaneBounds,
+    /// The pane the pointer was last over.
+    hovered_pane: Option<PaneKind>,
+    /// When the last frame was drawn; the engine is serviced on a timer
+    /// while no frames run.
+    last_frame: std::time::Instant,
 }
+
+/// Where each pane was laid out, written as the shell is drawn.
+type PaneBounds = Rc<std::cell::RefCell<Vec<(PaneKind, Bounds<Pixels>)>>>;
+
+/// The cached parts of the window (`pane.rs`).
+struct Panes {
+    main: Entity<Pane>,
+    bottom: Entity<Pane>,
+    inspector: Entity<Pane>,
+}
+
+impl Panes {
+    fn get(&self, kind: PaneKind) -> &Entity<Pane> {
+        match kind {
+            PaneKind::Main => &self.main,
+            PaneKind::Bottom => &self.bottom,
+            PaneKind::Inspector => &self.inspector,
+        }
+    }
+}
+
+const PANES: [PaneKind; 3] = [PaneKind::Main, PaneKind::Bottom, PaneKind::Inspector];
 
 impl EventEmitter<ProjectEvent> for ProjectView {}
 
@@ -288,6 +330,13 @@ impl ProjectView {
             save_error: None,
             window_title: String::new(),
             focus,
+            live: Rc::default(),
+            animating: Cell::new(false),
+            panes: None,
+            drawn_revision: u64::MAX,
+            pane_bounds: Rc::default(),
+            hovered_pane: None,
+            last_frame: std::time::Instant::now(),
         }
     }
 
@@ -418,10 +467,16 @@ impl ProjectView {
 
 impl Render for ProjectView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Redraw every frame: the playhead and meters move continuously.
-        window.request_animation_frame();
         crate::frame_log::frame();
+        self.last_frame = std::time::Instant::now();
         self.session.tick();
+        self.ensure_panes(cx);
+        // The song changed (an edit, undo, load): every pane redraws.
+        let revision = self.session.snapshot().revision;
+        if revision != self.drawn_revision {
+            self.drawn_revision = revision;
+            self.invalidate_all(cx);
+        }
         if !cx.has_active_drag() {
             self.file_hover = None;
         }
@@ -450,48 +505,28 @@ impl Render for ProjectView {
             self.autoscroll_clip_drag();
             self.autoscroll_note_drag();
         }
-
         self.end_note_preview();
-        // The piano roll slides up under Arrange.
-        let editor = if self.page == Page::Arrange {
-            // An audio node shows in the audio panel, a MIDI node in the
-            // piano roll; the open one follows the selection.
-            self.switch_bottom_panel();
-            if self.audio_editor.is_some() {
-                self.render_audio_editor(&theme, cx)
-            } else {
-                self.render_note_editor(&theme, cx)
-            }
-        } else {
-            None
+
+        // While something follows the pointer, every pane redraws each frame.
+        let busy = self.dragging() || cx.has_active_drag();
+        if busy {
+            self.invalidate_all(cx);
+        }
+        let now = crate::live::Now {
+            beat: self.session.position_beats(),
+            meters: self.session.meters().clone(),
         };
-        let page = match self.page {
-            Page::Arrange => div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .child(self.render_arrange(&theme, cx))
-                .children(editor.map(|panel| {
-                    // Tool keys go to the panel while the pointer is on it.
-                    div()
-                        .id("note-panel")
-                        .flex_none()
-                        .flex()
-                        .flex_col()
-                        .on_hover(cx.listener(|this, hovered: &bool, _, _| {
-                            this.roll_hovered = *hovered;
-                        }))
-                        .child(panel)
-                }))
-                .into_any_element(),
-            Page::Parameters if self.shown_node().is_some() => self
-                .render_parameters(&theme, window, cx)
-                .into_any_element(),
-            Page::Signals => self.render_signals(&theme, window, cx).into_any_element(),
-            Page::Mixer => self.render_mixer(&theme, cx),
-            other => placeholder(&theme, other).into_any_element(),
-        };
+        // Frames run only while something moves; otherwise the engine is
+        // serviced on a timer (`ensure_panes`).
+        if busy
+            || self.session.snapshot().playing
+            || self.live.meters_moving(&now)
+            || crate::frame_log::always()
+        {
+            window.request_animation_frame();
+        }
+
+        let page = self.page_area(window, cx);
         let banner = |text: String| {
             div()
                 .px(px(18.))
@@ -500,13 +535,26 @@ impl Render for ProjectView {
                 .text_color(theme.on_warning)
                 .child(text)
         };
+        let live = self.live.clone();
+        let live_theme = theme;
+        let live_layer = canvas(
+            |_, _, _| {},
+            move |_, (), window, cx| {
+                live.paint(&now, &live_theme, window, cx);
+                crate::frame_log::painted();
+            },
+        )
+        .absolute()
+        .size_full();
 
+        let header = self.render_header(&theme, cx).into_any_element();
         div()
             .size_full()
             .relative()
             .flex()
             .flex_col()
             .child(self.drag_tracker(cx))
+            .child(self.input_tracker(cx))
             // Runs before any menu's press-outside handler.
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.dismissed_menu = None))
             .key_context(KEY_CONTEXT)
@@ -544,7 +592,7 @@ impl Render for ProjectView {
             .on_action(cx.listener(|this, _: &CopyNotes, _, _| this.copy_notes()))
             .on_action(cx.listener(|this, _: &PasteNotes, _, _| this.paste_notes()))
             .on_action(cx.listener(|this, _: &Quantize, _, _| this.quantize_notes()))
-            .child(self.render_header(&theme, cx))
+            .child(header)
             .children(
                 self.session
                     .audio_error
@@ -553,7 +601,270 @@ impl Render for ProjectView {
             )
             .children(self.save_error.clone().map(banner))
             .children(self.import_error.clone().map(banner))
-            .child(self.with_inspector(page, &theme, cx))
+            .child(page)
+            .child(live_layer)
+    }
+}
+
+impl ProjectView {
+    /// Makes the panes on the first render, and starts servicing the engine
+    /// while no frames run.
+    fn ensure_panes(&mut self, cx: &mut Context<Self>) {
+        if self.panes.is_some() {
+            return;
+        }
+        let project = cx.weak_entity();
+        let mut pane = |kind| {
+            let project = project.clone();
+            cx.new(|_| Pane::new(project, kind))
+        };
+        self.panes = Some(Panes {
+            main: pane(PaneKind::Main),
+            bottom: pane(PaneKind::Bottom),
+            inspector: pane(PaneKind::Inspector),
+        });
+        // Idle: no frames, but the engine still needs servicing (garbage,
+        // meters, autosave) and a new state must show.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(50))
+                    .await;
+                let alive = this.update(cx, |view, cx| {
+                    if view.last_frame.elapsed() < std::time::Duration::from_millis(40) {
+                        return;
+                    }
+                    let revision = view.session.snapshot().revision;
+                    view.session.tick();
+                    let snapshot = view.session.snapshot();
+                    // Quieter than a meter shows (-60 dB) is silence.
+                    let sounding = view
+                        .session
+                        .meters()
+                        .values()
+                        .any(|m| crate::layout::meter_height(m.left.max(m.right)) > 0.);
+                    if sounding || snapshot.playing || snapshot.revision != revision {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Redraws every pane next frame.
+    pub(crate) fn invalidate_all(&self, cx: &mut Context<Self>) {
+        for kind in PANES {
+            self.invalidate(kind, cx);
+        }
+    }
+
+    fn invalidate(&self, kind: PaneKind, cx: &mut Context<Self>) {
+        if let Some(panes) = &self.panes {
+            panes.get(kind).update(cx, |_, cx| cx.notify());
+        }
+    }
+
+    /// Input happened: a plain move or a wheel redraws the pane under the
+    /// pointer (and the one it left); presses, releases, keys and drags
+    /// redraw every pane.
+    fn input(&mut self, at: Option<gpui::Point<Pixels>>, cx: &mut Context<Self>) {
+        cx.notify();
+        let Some(at) = at else {
+            self.invalidate_all(cx);
+            return;
+        };
+        let under = self
+            .pane_bounds
+            .borrow()
+            .iter()
+            .find(|(_, b)| b.contains(&at))
+            .map(|(k, _)| *k);
+        if let Some(kind) = under {
+            self.invalidate(kind, cx);
+        }
+        if let Some(left) = self.hovered_pane.filter(|k| Some(*k) != under) {
+            self.invalidate(left, cx);
+        }
+        self.hovered_pane = under;
+    }
+
+    /// Window-level listeners that send input to `input`. They run before
+    /// the elements' own handlers; the panes redraw after.
+    fn input_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        canvas(
+            |_, _, _| {},
+            move |_, (), window, _| {
+                let v = view.clone();
+                window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let at = e.pressed_button.is_none().then_some(e.position);
+                        let _ = v.update(cx, |this, cx| this.input(at, cx));
+                    }
+                });
+                let v = view.clone();
+                window.on_mouse_event(move |e: &ScrollWheelEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = v.update(cx, |this, cx| this.input(Some(e.position), cx));
+                    }
+                });
+                let v = view.clone();
+                window.on_mouse_event(move |_: &MouseDownEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = v.update(cx, |this, cx| this.input(None, cx));
+                    }
+                });
+                let v = view.clone();
+                window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = v.update(cx, |this, cx| this.input(None, cx));
+                    }
+                });
+                let v = view.clone();
+                window.on_key_event(move |_: &KeyDownEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = v.update(cx, |this, cx| this.input(None, cx));
+                    }
+                });
+                let v = view.clone();
+                window.on_key_event(move |_: &ModifiersChangedEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = v.update(cx, |this, cx| this.input(None, cx));
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// A pane in the layout: `outer` sizes it; GPUI reuses its last frame
+    /// until it is told to redraw.
+    fn pane_element(&self, kind: PaneKind, outer: gpui::Div) -> gpui::Div {
+        let Some(panes) = &self.panes else {
+            return outer;
+        };
+        let view =
+            AnyView::from(panes.get(kind).clone()).cached(StyleRefinement::default().size_full());
+        let bounds = self.pane_bounds.clone();
+        outer
+            .relative()
+            .child(
+                canvas(
+                    move |b, _, _| {
+                        let mut all = bounds.borrow_mut();
+                        all.retain(|(k, _)| *k != kind);
+                        all.push((kind, b));
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(view)
+    }
+
+    /// The page with the bottom panel under Arrange and the inspector at
+    /// the right.
+    fn page_area(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let main = self.pane_element(
+            PaneKind::Main,
+            div().flex_1().min_h_0().min_w_0().flex().flex_col(),
+        );
+        let column = if self.page == Page::Arrange {
+            let bottom = self.prepare_bottom_panel().map(|(height, sliding)| {
+                if sliding {
+                    window.request_animation_frame();
+                }
+                // Tool keys go to the panel while the pointer is on it.
+                div()
+                    .id("note-panel")
+                    .flex_none()
+                    .h(px(height))
+                    .flex()
+                    .flex_col()
+                    .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                        this.roll_hovered = *hovered;
+                    }))
+                    .child(self.pane_element(PaneKind::Bottom, div().size_full()))
+            });
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(main)
+                .children(bottom)
+                .into_any_element()
+        } else {
+            main.into_any_element()
+        };
+        // Slots of panes not drawn this frame would leave their playheads
+        // and meters behind.
+        let mut shown = vec![PaneKind::Main];
+        if self.page == Page::Arrange && (self.note_editor.is_some() || self.audio_editor.is_some())
+        {
+            shown.push(PaneKind::Bottom);
+        }
+        if self.inspector_open {
+            shown.push(PaneKind::Inspector);
+        }
+        self.live.keep_only(&shown);
+        let inspector = self.inspector_open.then(|| {
+            self.pane_element(
+                PaneKind::Inspector,
+                div().flex_none().w(px(self.inspector_width)).h_full(),
+            )
+            .into_any_element()
+        });
+        let theme = Theme::get(cx);
+        self.with_inspector(column, inspector, &theme, cx)
+            .into_any_element()
+    }
+
+    /// What a pane shows (`pane.rs`).
+    pub(crate) fn render_pane(
+        &mut self,
+        kind: PaneKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::get(cx);
+        match kind {
+            PaneKind::Main => match self.page {
+                Page::Arrange => self.render_arrange(&theme, cx).into_any_element(),
+                Page::Parameters if self.shown_node().is_some() => self
+                    .render_parameters(&theme, window, cx)
+                    .into_any_element(),
+                Page::Signals => self.render_signals(&theme, window, cx).into_any_element(),
+                Page::Mixer => self.render_mixer(&theme, cx),
+                other => placeholder(&theme, other).into_any_element(),
+            },
+            PaneKind::Bottom => {
+                let panel = if self.audio_editor.is_some() {
+                    self.render_audio_editor(&theme, cx)
+                } else {
+                    self.render_note_editor(&theme, cx)
+                };
+                panel.unwrap_or_else(|| div().into_any_element())
+            }
+            PaneKind::Inspector => self.inspector_panel(&theme, cx),
+        }
+    }
+
+    /// Marks that something on screen is mid-animation, so its pane redraws
+    /// next frame.
+    pub(crate) fn animate(&self) {
+        self.animating.set(true);
+    }
+
+    /// A marker for the live layer (`live.rs`) in the pane rendering now.
+    pub(crate) fn live_slot(&self, pane: PaneKind, live: crate::live::Live) -> gpui::Canvas<()> {
+        LiveLayer::slot(&self.live, pane, live)
     }
 }
 

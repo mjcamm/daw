@@ -581,15 +581,22 @@ fn clip_body(
         .map(move |(note, row)| {
             let start = note.start.max(Ticks::ZERO);
             let end = (note.start + note.length).min(clip.length);
-            div()
-                .absolute()
-                .left(px(zoom.beat_to_x(start.as_beats())))
-                .top(px(CLIP_LABEL_HEIGHT + row * note_area))
-                .w(px((zoom.beat_to_x((end - start).as_beats()) - 1.).max(2.)))
-                .h(px(3.))
-                .rounded(px(1.))
-                .bg(color.detail)
-        });
+            crate::paint::Bar {
+                x: zoom.beat_to_x(start.as_beats()),
+                y: CLIP_LABEL_HEIGHT + row * note_area,
+                w: (zoom.beat_to_x((end - start).as_beats()) - 1.).max(2.),
+                h: 3.,
+                color: color.detail,
+                radius: 1.,
+            }
+        })
+        .collect();
+    // Every note in one drawing.
+    let notes = crate::paint::bars(notes)
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
     frame_body(
         clip.start.as_beats(),
         clip.length.as_beats(),
@@ -599,7 +606,7 @@ fn clip_body(
         selected,
         theme,
     )
-    .children(notes)
+    .child(notes)
 }
 
 /// Any clip's frame: placed in song time, soft fill, outline (accent when

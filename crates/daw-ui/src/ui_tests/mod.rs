@@ -24,12 +24,19 @@ pub struct Harness {
     pub view: Entity<ProjectView>,
     pub cx: &'static mut VisualTestContext,
     folder: PathBuf,
+    /// Leave the folder in place afterwards (a song made to keep).
+    keep: bool,
 }
 
 impl Harness {
     pub fn new(name: &str) -> Self {
         let folder =
             std::env::temp_dir().join(format!("daw-ui-test-{name}-{}", std::process::id()));
+        Self::in_folder(folder, false)
+    }
+
+    /// A project in `folder`, emptied first; kept afterwards if `keep`.
+    pub fn in_folder(folder: PathBuf, keep: bool) -> Self {
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).expect("test folder");
         let session = Session::headless(folder.clone()).expect("headless session");
@@ -38,7 +45,12 @@ impl Harness {
         app.update(|cx| cx.set_global(Theme::for_appearance(WindowAppearance::Dark)));
         let (view, cx) = app.add_window_view(|window, cx| ProjectView::new(session, window, cx));
         cx.simulate_resize(size(gpui::px(1280.), gpui::px(800.)));
-        let mut harness = Self { view, cx, folder };
+        let mut harness = Self {
+            view,
+            cx,
+            folder,
+            keep,
+        };
         harness.redraw();
         harness
     }
@@ -132,6 +144,9 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.folder);
     }
 }

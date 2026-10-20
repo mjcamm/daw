@@ -8,6 +8,7 @@ use crate::clip_edit::bar_beat;
 use crate::frame::Timeline;
 use crate::icons::{Icon, icon};
 use crate::inspector::{format_beats, group, section_label};
+use crate::live::{Live, PaneKind};
 use crate::parameters::small_button;
 use crate::project::ProjectView;
 use crate::slider::{self, Axis};
@@ -146,7 +147,7 @@ enum PanelDrag {
 pub struct AudioEditor {
     pub node: NodeId,
     pub height: f32,
-    opened: Instant,
+    pub(crate) opened: Instant,
     /// Where to scroll to on the next draw, in beats.
     scroll_to: Option<f64>,
     drag: Option<PanelDrag>,
@@ -422,9 +423,7 @@ impl ProjectView {
             .fold(0., f32::max);
         let width = (song_beats.max(audio_end) + 4.) * ppb;
         let lane_height = (zoom.row_height * LANE_PER_ROW).max(80.);
-        let opened = editor.opened.elapsed().as_secs_f32() / 0.18;
-        let slide = 1. - (1. - opened.clamp(0., 1.)).powi(3);
-        let panel_height = editor.height * slide;
+        let panel_height = editor.height * crate::piano_roll::slide(editor.opened);
         let offset = self.notes_view.x.offset();
         let selected = self.panel_clip().map(|(id, _)| id);
 
@@ -543,14 +542,14 @@ impl ProjectView {
                     .into_any_element()
             })
             .collect();
-        let position = self.session.position_beats() as f32;
-        let playhead = div()
+        // Drawn by the live layer, from beat 0 across the lane.
+        let playhead = self
+            .live_slot(PaneKind::Bottom, Live::Playhead { start: 0., ppb })
             .absolute()
             .top_0()
             .bottom_0()
-            .left(px(position * ppb))
-            .w(px(1.))
-            .bg(theme.accent);
+            .left_0()
+            .right_0();
         let lane = div()
             .id("audio-lane-scroll")
             .flex_1()

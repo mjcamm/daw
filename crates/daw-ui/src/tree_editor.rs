@@ -130,6 +130,14 @@ impl ProjectView {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        // Only notes near the screen get elements (`paint::visible_x`).
+        let near_x = crate::paint::visible_x(&self.notes_view.x);
+        let near = move |n: &daw_engine::MidiNote| {
+            near_x.is_none_or(|(left, right)| {
+                ((n.start + n.length).as_beats() as f32) * ppb >= left
+                    && (n.start.as_beats() as f32) * ppb <= right
+            })
+        };
         self.inherited(editor)
             .into_iter()
             .flat_map(|(node, notes)| {
@@ -140,6 +148,7 @@ impl ProjectView {
                 notes
                     .into_iter()
                     .enumerate()
+                    .filter(|(_, n)| near(n))
                     .filter_map(|(index, n)| {
                         let row = editor.rows.row_of(n.pitch)?;
                         let mut body = colors.detail;
@@ -199,6 +208,9 @@ impl ProjectView {
         let fresh = editor
             .flash()
             .is_some_and(|(n, at)| n == editor.target && at.elapsed() < BING);
+        if fresh {
+            self.animate();
+        }
         let name = if fresh {
             name.with_animation(
                 ("drawing-to", editor.flashes()),
@@ -251,6 +263,9 @@ impl ProjectView {
             let colors = theme.content(node.color);
             let count = notes_of(&node.clips).len();
             let flashing = flash.is_some_and(|(n, at)| n == id && at.elapsed() < FLASH);
+            if flashing {
+                self.animate();
+            }
             let pen = (!own_notes(node).is_empty()).then(|| {
                 let lit = pen_on == id;
                 div()

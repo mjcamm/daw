@@ -169,7 +169,6 @@ impl RowMotion {
     }
 
     /// Whether anything is moving.
-    #[cfg(test)]
     pub fn animating(&self) -> bool {
         !self.anims.is_empty()
     }

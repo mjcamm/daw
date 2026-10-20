@@ -13,6 +13,7 @@
 use crate::frame::Timeline;
 use crate::icons::{Icon, icon};
 use crate::inspector::note_name;
+use crate::live::{Live, PaneKind};
 use crate::note_edit::{self, Part, Selection};
 use crate::parameters::small_button;
 use crate::project::ProjectView;
@@ -277,6 +278,32 @@ impl ProjectView {
     /// Where the editor's time starts, in beats: the song's start.
     pub(crate) fn note_editor_start(&self) -> Option<f32> {
         self.note_editor.as_ref().map(|_| 0.)
+    }
+
+    /// Readies the bottom panel under Arrange for this frame: the panel
+    /// follows the selection and closes when its node is gone. Returns its
+    /// height as it slides up, and whether it is still sliding.
+    pub(crate) fn prepare_bottom_panel(&mut self) -> Option<(f32, bool)> {
+        self.switch_bottom_panel();
+        if let Some(editor) = &self.audio_editor {
+            let alive = self
+                .session
+                .snapshot()
+                .node(editor.node)
+                .is_some_and(|n| n.kind == daw_engine::NodeKind::Audio);
+            if alive {
+                let slide = slide(editor.opened);
+                return Some((editor.height * slide, slide < 1.));
+            }
+            self.close_audio_editor();
+        }
+        if self.note_editor.is_some() && self.editor_clip().is_none() {
+            self.note_editor = None;
+        }
+        self.follow_selection();
+        let editor = self.note_editor.as_ref()?;
+        let slide = slide(editor.opened);
+        Some((editor.height * slide, slide < 1.))
     }
 
     /// Opens the editor on a node at `beat` (song time), or points the
@@ -1068,12 +1095,9 @@ impl ProjectView {
         let height = rows.len() as f32 * key;
         let folded = rows.len() < 128;
         let offset = self.notes_view.x.offset();
-        let position = self.session.position_beats() - clip.start.as_beats();
+        let clip_start = clip.start.as_beats();
 
-        // Slides up when opened.
-        let opened = editor.opened.elapsed().as_secs_f32() / 0.18;
-        let slide = 1. - (1. - opened.clamp(0., 1.)).powi(3);
-        let panel_height = editor.height * slide;
+        let panel_height = editor.height * slide(editor.opened);
 
         let hover = theme.hover;
         let tool_button = |id: &'static str, kind: Icon, tool: Tool, hint: &'static str| {
@@ -1171,21 +1195,34 @@ impl ProjectView {
             move |bounds, _, _| grid_cell.set(bounds),
             move |bounds, (), window, _| {
                 let origin = bounds.origin;
+                // Only what is on screen is painted.
+                let visible = window.content_mask().bounds.intersect(&bounds);
+                let (left, right) = (
+                    (visible.left() - origin.x) / px(1.),
+                    (visible.right() - origin.x) / px(1.),
+                );
+                let (top, bottom) = (
+                    (visible.top() - origin.y) / px(1.),
+                    (visible.bottom() - origin.y) / px(1.),
+                );
+                let across = |y: f32, h: f32| {
+                    Bounds::new(
+                        origin + point(px(left), px(y)),
+                        size(px((right - left).max(0.)), px(h)),
+                    )
+                };
                 for (row, pitch) in paint_rows.iter() {
                     let y = row as f32 * key;
+                    if y + key < top || y > bottom {
+                        continue;
+                    }
                     if is_black(pitch) {
-                        window.paint_quad(fill(
-                            Bounds::new(origin + point(px(0.), px(y)), size(px(width), px(key))),
-                            black,
-                        ));
+                        window.paint_quad(fill(across(y, key), black));
                     }
                     // Octave lines; folded, a line under every row.
                     if folded || pitch % 12 == 0 {
                         window.paint_quad(fill(
-                            Bounds::new(
-                                origin + point(px(0.), px(y + key - 1.)),
-                                size(px(width), px(1.)),
-                            ),
+                            across(y + key - 1., 1.),
                             if folded { line } else { bar_line },
                         ));
                     }
@@ -1198,7 +1235,9 @@ impl ProjectView {
                     1.
                 };
                 let steps = (width / ppb / step).ceil() as i32;
-                for k in 0..=steps {
+                let first = ((left / ppb / step).floor() as i32).max(0);
+                let last = ((right / ppb / step).ceil() as i32).min(steps);
+                for k in first..=last {
                     let beat = k as f32 * step;
                     let x = beat * ppb;
                     let color = if beat % 4. == 0. {
@@ -1235,60 +1274,80 @@ impl ProjectView {
         let mut selected_fill = theme.accent;
         selected_fill.a = 0.85;
         let edges = editor.tool == Tool::Select;
-        let notes = shown_notes.iter().enumerate().map(|(i, n)| {
-            let selected = selection.contains(&i);
-            let full = n.length.as_beats() as f32 * ppb;
-            let w = (full - 1.).max(3.);
-            // The resize zones, as `note_edit::hit` finds them: inside each
-            // end, hanging out into free space.
-            let (inside, before, after) = note_edit::edge_zones(&shown_notes, i, f64::from(ppb));
-            let (inside, before, after) = (inside as f32, before as f32, after as f32);
-            let zone = |left: f32, width: f32| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(left))
-                    .w(px(width))
-                    .cursor_ew_resize()
-            };
-            let shade = 0.45 + 0.55 * f32::from(n.velocity) / 127.;
-            let mut body = if selected {
-                selected_fill
-            } else {
-                colors.detail
-            };
-            body.a *= shade;
-            div()
-                .absolute()
-                .left(px(n.start.as_beats() as f32 * ppb))
-                .top(px(rows.row_of(n.pitch).unwrap_or(0) as f32 * key + 1.))
-                .w(px(w))
-                .h(px(key - 2.))
-                .rounded(px(2.))
-                .bg(body)
-                .when(edges, |d| {
-                    d.child(zone(-before, before + inside))
-                        .child(zone(full - inside, inside + after))
-                })
-                .border_1()
-                .border_color(if selected {
+        // The notes, in one drawing; only those on screen are painted.
+        let note_quads: Vec<(Bounds<Pixels>, gpui::Hsla, gpui::Hsla)> = shown_notes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let selected = selection.contains(&i);
+                let full = n.length.as_beats() as f32 * ppb;
+                let w = (full - 1.).max(3.);
+                let shade = 0.45 + 0.55 * f32::from(n.velocity) / 127.;
+                let mut body = if selected {
+                    selected_fill
+                } else {
+                    colors.detail
+                };
+                body.a *= shade;
+                let border = if selected {
                     theme.accent
                 } else {
                     colors.outline
-                })
-        });
-        let playhead = (0. ..=f64::from(clip_beats + 4.))
-            .contains(&position)
-            .then(|| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left(px(position as f32 * ppb))
-                    .w(px(1.))
-                    .bg(theme.accent)
+                };
+                let rect = Bounds::new(
+                    point(
+                        px(n.start.as_beats() as f32 * ppb),
+                        px(rows.row_of(n.pitch).unwrap_or(0) as f32 * key + 1.),
+                    ),
+                    size(px(w), px(key - 2.)),
+                );
+                (rect, body, border)
+            })
+            .collect();
+        let notes = canvas(
+            |_, _, _| {},
+            move |bounds, (), window, _| {
+                let visible = window.content_mask().bounds;
+                for (rect, body, border) in &note_quads {
+                    let rect = Bounds::new(bounds.origin + rect.origin, rect.size);
+                    if rect.intersects(&visible) {
+                        window.paint_quad(
+                            fill(rect, *body)
+                                .corner_radii(px(2.))
+                                .border_widths(px(1.))
+                                .border_color(*border),
+                        );
+                    }
+                }
+            },
+        )
+        .absolute()
+        .size_full();
+        // Over a note's end (as `note_edit::hit` finds it, the same rule
+        // presses use) the pointer shows it resizes.
+        let over_edge = edges
+            && editor.drag.is_none()
+            && editor.hover.is_some_and(|at| {
+                let (beat, pitch) = editor.at(at, self.notes_view.zoom);
+                matches!(
+                    note_edit::hit(&shown_notes, beat, pitch, f64::from(ppb)),
+                    Some((_, note_edit::Part::Start | note_edit::Part::End))
+                )
             });
+        // Drawn by the live layer, from the editor's start across the grid.
+        let playhead = self
+            .live_slot(
+                PaneKind::Bottom,
+                Live::Playhead {
+                    start: clip_start,
+                    ppb,
+                },
+            )
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0();
         let rubber = match &editor.drag {
             Some(NoteDrag::Box { from, to, .. }) => {
                 let origin = editor.drag_grid;
@@ -1343,19 +1402,18 @@ impl ProjectView {
                         }
                     }))
                     .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                        if let Some(editor) = &mut this.note_editor
-                            && editor.tool == Tool::Pen
-                        {
+                        // The pen's preview and the resize cursor follow it.
+                        if let Some(editor) = &mut this.note_editor {
                             editor.hover = Some(event.position);
                             cx.notify();
                         }
                     }))
-                    .when(resizing, |d| d.cursor_ew_resize())
+                    .when(resizing || over_edge, |d| d.cursor_ew_resize())
                     .child(paint)
                     .children(ghosts)
-                    .children(notes.collect::<Vec<_>>())
+                    .child(notes)
                     .children(pen_preview)
-                    .children(playhead)
+                    .child(playhead)
                     .children(rubber)
                     .on_mouse_down(
                         MouseButton::Left,
@@ -1480,22 +1538,37 @@ impl ProjectView {
 
         // Velocity bars under each note's start, following the scroll.
         let velocity_cell = editor.velocity.clone();
-        let bars = shown_notes.iter().enumerate().map(|(i, n)| {
-            let selected = selection.contains(&i);
-            let h = f32::from(n.velocity) / 127. * (VELOCITY_HEIGHT - 6.);
-            div()
-                .absolute()
-                .left(px(n.start.as_beats() as f32 * ppb))
-                .bottom(px(2.))
-                .w(px(3.))
-                .h(px(h))
-                .rounded(px(1.))
-                .bg(if selected {
+        let bars: Vec<(f32, f32, gpui::Hsla)> = shown_notes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let h = f32::from(n.velocity) / 127. * (VELOCITY_HEIGHT - 6.);
+                let color = if selection.contains(&i) {
                     theme.accent
                 } else {
                     colors.detail
-                })
-        });
+                };
+                (n.start.as_beats() as f32 * ppb, h, color)
+            })
+            .collect();
+        // Every bar in one drawing, standing on the lane's floor.
+        let bars = canvas(
+            |_, _, _| {},
+            move |bounds, (), window, _| {
+                let visible = window.content_mask().bounds;
+                for (x, h, color) in &bars {
+                    let rect = Bounds::new(
+                        point(bounds.left() + px(*x), bounds.bottom() - px(2. + h)),
+                        size(px(3.), px(*h)),
+                    );
+                    if rect.intersects(&visible) {
+                        window.paint_quad(fill(rect, *color).corner_radii(px(1.)));
+                    }
+                }
+            },
+        )
+        .absolute()
+        .size_full();
         let velocity = div()
             .h(px(VELOCITY_HEIGHT))
             .flex_none()
@@ -1532,7 +1605,7 @@ impl ProjectView {
                             .absolute()
                             .size_full(),
                         )
-                        .children(bars.collect::<Vec<_>>())
+                        .child(bars)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, event: &MouseDownEvent, _, _| {
@@ -1738,6 +1811,13 @@ fn song_length(snapshot: &daw_engine::Snapshot) -> Ticks {
         .max()
         .unwrap_or(Ticks::ZERO);
     (end + Ticks::from_bars(8)).max(Ticks::from_bars(32))
+}
+
+/// How far a bottom panel has slid up since it opened, 0 to 1 (about 0.2 s,
+/// easing out).
+pub(crate) fn slide(opened: Instant) -> f32 {
+    let t = (opened.elapsed().as_secs_f32() / 0.18).clamp(0., 1.);
+    1. - (1. - t).powi(3)
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
 use crate::layout::{BEATS_PER_BAR, PIXELS_PER_BEAT, timeline_bars};
+use crate::live::{Live, PaneKind};
 use crate::menu::{self, OpenMenu};
 use crate::parameters::{Lane, paint_curve, quiet_action, small_button};
 use crate::project::{ProjectView, RenameTarget};
@@ -317,13 +318,20 @@ impl ProjectView {
                 lane
             })
             .collect();
-        let playhead = div()
+        // Drawn by the live layer, from beat 0 across the lanes.
+        let playhead = self
+            .live_slot(
+                PaneKind::Main,
+                Live::Playhead {
+                    start: 0.,
+                    ppb: zoom.pixels_per_beat,
+                },
+            )
             .absolute()
             .top_0()
             .bottom_0()
-            .left(px(zoom.beat_to_x(self.session.position_beats())))
-            .w(px(1.))
-            .bg(theme.accent);
+            .left_0()
+            .right_0();
         let timeline = scroll::axis_locked(div())
             .id("signal-lanes")
             .flex_1()
@@ -435,6 +443,9 @@ impl ProjectView {
         let highlighted = self
             .signal_highlight
             .is_some_and(|(s, at)| s == id && at.elapsed() < crate::parameters::HIGHLIGHT_TIME);
+        if highlighted {
+            self.animate();
+        }
         let mut highlight = theme.accent;
         highlight.a = 0.18;
         let mut selected_bg = theme.accent;

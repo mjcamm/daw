@@ -316,6 +316,7 @@ impl ProjectView {
     pub(crate) fn with_inspector(
         &self,
         page: AnyElement,
+        inspector: Option<AnyElement>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -324,9 +325,7 @@ impl ProjectView {
             .min_h_0()
             .flex()
             .child(div().flex_1().min_w_0().flex().flex_col().child(page))
-            .when(self.inspector_open, |d| {
-                d.child(self.inspector_panel(theme, cx))
-            })
+            .children(inspector)
             .child(self.inspector_tray(theme, cx))
     }
 
@@ -375,7 +374,7 @@ impl ProjectView {
             .child(button)
     }
 
-    fn inspector_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn inspector_panel(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let resizing = self.inspector_resize.is_some();
         let mut handle_color = theme.accent;
         handle_color.a = if resizing { 0.6 } else { 0. };
