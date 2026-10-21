@@ -52,6 +52,13 @@ Working knowledge of the VST3 API for hosting, kept because the official docs ar
 - `IPlugViewContentScaleSupport::setContentScaleFactor`: call just before or after `attached`, and again when the window moves to a screen with another scale.
 - Linux: the host provides `Linux::IRunLoop` through the `IPlugFrame` and the host context (plugins use it for timers and file descriptors).
 
+## As built here
+
+- `vst3_host.rs` implements what plugins call back into: `IHostApplication` (its `createInstance` makes `IMessage` and `IAttributeList` objects, which SDK-based plugins ask for when connecting processor and controller), `IComponentHandler`, a memory `IBStream`, and preallocated `IParameterChanges` / `IParamValueQueue` (128 parameters × 64 points a block).
+- Buses: the main input and output are asked for stereo; other buses keep the plugin's arrangement and get silent scratch buffers (every bus gets buffers, active or not). A mono main output is copied to both sides.
+- Threading: create, connect, buses, `setupProcessing`, `setActive` on the host process's main thread (with COM initialised); the instance then moves to its audio thread (`setProcessing` and `process`) and comes back to be deactivated.
+- Measured 2026-10-21 (`tests/installed_plugins.rs`, opt-in): OTT, ValhallaRoom, ValhallaDelay, Serum 2 FX, Filtron, smartEQ3, Cassette all load (45–709 ms) and run 2 s of noise with no late block; slowest block 0.8–11 ms (smartEQ3's first).
+
 ## Out of process (lessons from yabridge and others)
 
 - Audio in shared memory sized at activation; control messages separately. yabridge pairs a shared audio buffer with a per-processor socket that both carries per-block metadata and synchronises.

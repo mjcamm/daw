@@ -18,6 +18,7 @@ pub mod host;
 pub mod scan;
 pub mod sys;
 pub mod vst3;
+pub mod vst3_host;
 
 #[cfg(test)]
 #[global_allocator]

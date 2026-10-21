@@ -9,6 +9,16 @@
     reason = "operating system calls; each is wrapped so the rest of the crate is safe"
 )]
 
+/// Initialises COM on this thread (plugins with windows or system services
+/// expect it on their host's main thread). No-op elsewhere.
+pub fn init_com() {
+    #[cfg(windows)]
+    #[allow(unsafe_code, reason = "a plain system call")]
+    unsafe {
+        windows_sys::Win32::System::Ole::OleInitialize(std::ptr::null());
+    }
+}
+
 /// Whether a wait ended because its object was signalled or the time ran out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {

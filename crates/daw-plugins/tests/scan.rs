@@ -6,9 +6,10 @@
 
 use daw_plugins::scan::{Catalog, Progress, ScanCommand, scan_bundle};
 use daw_plugins::sys::Job;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+mod common;
+use common::install;
 
 #[global_allocator]
 static ALLOCATOR: daw_rt::GuardedAllocator = daw_rt::GuardedAllocator;
@@ -27,35 +28,6 @@ fn misbehaving(mode: &str) -> ScanCommand {
         env: vec![("DAW_TEST_PLUGIN_SCAN".into(), mode.into())],
         ..scanner()
     }
-}
-
-/// The test plugin's DLL, built once into its own target folder (a nested
-/// build there never waits on the outer one's lock).
-fn test_plugin_dll() -> &'static Path {
-    static DLL: OnceLock<PathBuf> = OnceLock::new();
-    DLL.get_or_init(|| {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let target = workspace.join("target").join("test-plugin");
-        let status = std::process::Command::new(env!("CARGO"))
-            .args(["build", "-p", "daw-test-plugin", "--target-dir"])
-            .arg(&target)
-            .current_dir(&workspace)
-            .status()
-            .unwrap();
-        assert!(status.success(), "building the test plugin failed");
-        target.join("debug").join("daw_test_plugin.dll")
-    })
-}
-
-/// A bundle folder holding the test plugin, in a fresh folder.
-fn install(name: &str) -> (PathBuf, PathBuf) {
-    let root = std::env::temp_dir().join(format!("daw-scan-it-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let bundle = root.join("Test Plugin.vst3");
-    let bin = bundle.join("Contents").join("x86_64-win");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::copy(test_plugin_dll(), bin.join("Test Plugin.vst3")).unwrap();
-    (root, bundle)
 }
 
 #[test]

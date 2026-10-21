@@ -179,6 +179,14 @@ pub enum EffectKind {
 pub enum PluginSpec {
     /// Built-in devices for testing the plugin plumbing.
     Test(TestPlugin),
+    /// A VST3 plugin: its bundle and class id (Steinberg's text form), with
+    /// the name and vendor it had, to show if it goes missing.
+    Vst3 {
+        bundle: std::path::PathBuf,
+        cid: String,
+        name: String,
+        vendor: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -126,7 +126,7 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 
 1. **IPC and host process with built-in test devices** (no VST3 yet), **built**: the hand-off, deadlines, crash and hang detection (`daw-plugins`, tested with real processes); the engine's plugin effect, live deadlines (70% of each block) and offline waiting, Reload, states in the snapshot (`daw-plugins/tests/engine.rs`); the app and player as their own host (`daw_host::plugins`). Process groups other than Together come with the Preferences page.
 2. **Scanner** and Preferences → Plugins (built). The browser modal comes with step 3, so plugins can be added the moment they show.
-3. **Effects:** load, buses, process, parameters (pick from list), state.
+3. **Effects:** load, buses, process (**built**: `vst3_host.rs`, `PluginSpec::Vst3`; tested with the test plugin alone and in a song, and with seven installed commercial effects), then state, the modal browser, parameters (pick from list).
 4. **Instruments:** note events, multiple outputs later.
 5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn.
 6. **Delay compensation.**

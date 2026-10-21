@@ -71,6 +71,11 @@ pub struct Module {
     library: sys::Library,
 }
 
+// The factory is only called from the host's main thread; instances made
+// from it carry their own `Arc<Module>` so the code stays loaded.
+unsafe impl Send for Module {}
+unsafe impl Sync for Module {}
+
 impl std::fmt::Debug for Module {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Module")
@@ -92,6 +97,20 @@ impl Module {
             factory: Some(factory),
             library,
         })
+    }
+
+    /// Creates an instance of class `cid` with interface `I`.
+    pub fn create<I: vst3::Interface>(&self, cid: &TUID) -> Option<ComPtr<I>> {
+        let mut object = std::ptr::null_mut();
+        let result = unsafe {
+            self.factory()
+                .createInstance(cid.as_ptr(), I::IID.as_ptr().cast(), &mut object)
+        };
+        if result == kResultOk {
+            unsafe { ComPtr::from_raw(object.cast::<I>()) }
+        } else {
+            None
+        }
     }
 
     fn factory(&self) -> &ComPtr<IPluginFactory> {

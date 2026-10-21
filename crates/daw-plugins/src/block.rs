@@ -440,6 +440,20 @@ impl HostBlock<'_> {
         unsafe { std::slice::from_raw_parts_mut(self.shared.channel(index), self.frames) }
     }
 
+    /// Raw pointers to every input and output channel (unused ones null),
+    /// for a plugin's buffers. Valid for this block only.
+    pub fn channel_pointers(&mut self) -> ([*mut f32; MAX_CHANNELS], [*mut f32; MAX_CHANNELS]) {
+        let mut inputs = [std::ptr::null_mut(); MAX_CHANNELS];
+        let mut outputs = [std::ptr::null_mut(); MAX_CHANNELS];
+        for (ch, p) in inputs.iter_mut().enumerate().take(self.inputs()) {
+            *p = self.shared.channel(ch);
+        }
+        for (ch, p) in outputs.iter_mut().enumerate().take(self.outputs()) {
+            *p = self.shared.channel(self.inputs() + ch);
+        }
+        (inputs, outputs)
+    }
+
     pub fn params(&self) -> &[ParamChange] {
         let count = self.shared.header().param_count.load(Ordering::Relaxed) as usize;
         unsafe { std::slice::from_raw_parts(self.shared.params(), count.min(MAX_PARAM_CHANGES)) }
