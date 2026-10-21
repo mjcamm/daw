@@ -694,6 +694,17 @@ impl InstrumentInstance {
     }
 }
 
+/// The most control points one chunk can hold: one per control period,
+/// plus the chunk's start.
+const MAX_CONTROL_POINTS: usize = CHUNK_FRAMES / CONTROL_FRAMES as usize + 1;
+
+/// Where in a chunk parameters update, and the song position there.
+#[derive(Debug, Clone, Copy, Default)]
+struct ControlPoint {
+    offset: usize,
+    beat: f64,
+}
+
 /// A sounding note waiting for its scheduled end.
 #[derive(Debug, Clone, Copy)]
 struct PendingEnd {
@@ -734,6 +745,11 @@ struct NodePlayer {
     /// its own, so players render on any thread.
     scratch_left: Box<[f32; CHUNK_FRAMES]>,
     scratch_right: Box<[f32; CHUNK_FRAMES]>,
+    /// This chunk's control points, so the effect chain and the channel
+    /// can run over the whole chunk after the instruments (a plugin needs
+    /// whole blocks, not control periods).
+    controls: [ControlPoint; MAX_CONTROL_POINTS],
+    control_count: usize,
 }
 
 impl NodePlayer {
@@ -756,6 +772,8 @@ impl NodePlayer {
             bus_right: Box::new([0.0; CHUNK_FRAMES]),
             scratch_left: Box::new([0.0; CHUNK_FRAMES]),
             scratch_right: Box::new([0.0; CHUNK_FRAMES]),
+            controls: [ControlPoint::default(); MAX_CONTROL_POINTS],
+            control_count: 0,
         }
     }
 
@@ -806,6 +824,9 @@ impl NodePlayer {
     /// it stood at the chunk's start: notes on their exact frames,
     /// parameters on the control grid (counted from `start_frames`), the
     /// loop jumping back at its end. The bus already holds the children.
+    /// Clips and instruments render span by span; the effect chain, then
+    /// volume and pan, then run over the whole chunk, each taking its
+    /// parameters at the same control points.
     fn render_chunk(
         &mut self,
         node: &NodeRender,
@@ -814,8 +835,10 @@ impl NodePlayer {
         frames: usize,
     ) {
         let mut transport = start.clone();
+        let chunk = frames;
         let frames = frames as u64;
         let mut processed = start_frames;
+        self.control_count = 0;
         let mut done = 0;
         while done < frames {
             let playing = transport.is_playing();
@@ -828,7 +851,15 @@ impl NodePlayer {
             while done < segment_end {
                 let into_control = processed % CONTROL_FRAMES;
                 if into_control == 0 {
-                    self.update_params(node, transport.position());
+                    let beat = transport.position();
+                    self.update_instrument_params(node, beat);
+                    if self.control_count < MAX_CONTROL_POINTS {
+                        self.controls[self.control_count] = ControlPoint {
+                            offset: done as usize,
+                            beat,
+                        };
+                        self.control_count += 1;
+                    }
                 }
                 let mut next = (CONTROL_FRAMES - into_control).min(segment_end - done);
                 if playing {
@@ -850,10 +881,12 @@ impl NodePlayer {
                 self.seek(node, &transport);
             }
         }
+        self.process_effects(node, chunk);
+        self.apply_channel(node, chunk);
     }
 
-    /// A span with steady parameters: every instrument into the bus (their
-    /// sounds add up), then effects, volume and pan.
+    /// A span with steady parameters: its audio clips and every instrument
+    /// into the bus (their sounds add up).
     fn render_span(
         &mut self,
         node: &NodeRender,
@@ -884,7 +917,6 @@ impl NodePlayer {
                 }
             }
         }
-        self.process_span(node, span);
     }
 
     fn settle_gains(&mut self) {
@@ -936,8 +968,17 @@ impl NodePlayer {
 
     /// Evaluates every parameter's layers at `beat` and applies the results.
     fn update_params(&mut self, node: &NodeRender, beat: f64) {
+        self.update_instrument_params(node, beat);
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
+        for ((_, instance), effect) in self.effects.iter_mut().zip(&node.effects) {
+            evaluate(&effect.params, effect_params(effect.kind), beat, &mut plain);
+            instance.set_params(&plain);
+        }
+        self.update_channel(node, beat);
+    }
 
+    fn update_instrument_params(&mut self, node: &NodeRender, beat: f64) {
+        let mut plain = [0.0; MAX_DEVICE_PARAMS];
         for ((_, instance), instrument) in self.instruments.iter_mut().zip(&node.instruments) {
             evaluate(
                 &instrument.params,
@@ -947,12 +988,11 @@ impl NodePlayer {
             );
             instance.set_params(&plain);
         }
+    }
 
-        for ((_, instance), effect) in self.effects.iter_mut().zip(&node.effects) {
-            evaluate(&effect.params, effect_params(effect.kind), beat, &mut plain);
-            instance.set_params(&plain);
-        }
-
+    /// Volume and pan targets from the channel's layers at `beat`.
+    fn update_channel(&mut self, node: &NodeRender, beat: f64) {
+        let mut plain = [0.0; MAX_DEVICE_PARAMS];
         evaluate(&node.channel, &CHANNEL_PARAMS, beat, &mut plain);
         let (gain, pan) = channel_settings(&plain);
         let gain = if node.output_on { gain } else { 0.0 };
@@ -968,18 +1008,52 @@ impl NodePlayer {
         self.gain_right.set_target(gain * right);
     }
 
-    /// Effects (those switched on), then volume and pan, over a span of
-    /// the bus.
-    fn process_span(&mut self, node: &NodeRender, span: std::ops::Range<usize>) {
-        let (left, right) = (&mut self.bus_left[span.clone()], &mut self.bus_right[span]);
+    /// The effect chain over the chunk's bus, one effect after another; each
+    /// takes its parameters at the chunk's control points. Effects switched
+    /// off still follow their parameters, so they come back in step.
+    fn process_effects(&mut self, node: &NodeRender, frames: usize) {
+        let controls = &self.controls[..self.control_count];
+        let (left, right) = (&mut self.bus_left[..frames], &mut self.bus_right[..frames]);
+        let mut plain = [0.0; MAX_DEVICE_PARAMS];
         for ((_, effect), state) in self.effects.iter_mut().zip(&node.effects) {
+            let mut from = 0;
+            for point in controls {
+                if state.enabled {
+                    effect.process(
+                        &mut left[from..point.offset],
+                        &mut right[from..point.offset],
+                    );
+                }
+                evaluate(
+                    &state.params,
+                    effect_params(state.kind),
+                    point.beat,
+                    &mut plain,
+                );
+                effect.set_params(&plain);
+                from = point.offset;
+            }
             if state.enabled {
-                effect.process(left, right);
+                effect.process(&mut left[from..], &mut right[from..]);
             }
         }
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            *l *= self.gain_left.next_value();
-            *r *= self.gain_right.next_value();
+    }
+
+    /// Volume and pan over the chunk's bus, their targets moving at the
+    /// control points.
+    fn apply_channel(&mut self, node: &NodeRender, frames: usize) {
+        let mut from = 0;
+        for index in 0..=self.control_count {
+            let point = self.controls[..self.control_count].get(index).copied();
+            let to = point.map_or(frames, |p| p.offset);
+            for i in from..to {
+                self.bus_left[i] *= self.gain_left.next_value();
+                self.bus_right[i] *= self.gain_right.next_value();
+            }
+            if let Some(point) = point {
+                self.update_channel(node, point.beat);
+            }
+            from = to;
         }
     }
 
