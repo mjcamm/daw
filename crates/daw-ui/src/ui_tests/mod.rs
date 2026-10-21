@@ -4,6 +4,7 @@
 //! `./scripts/full-test.sh`.
 
 mod arrange;
+mod loop_strip;
 mod menus;
 mod perf;
 mod transport;

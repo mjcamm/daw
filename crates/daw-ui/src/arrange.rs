@@ -1371,21 +1371,15 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let bounds_cell = self.ruler_bounds.clone();
-        let mut loop_fill = theme.accent;
-        loop_fill.a = 0.2;
-
-        let loop_band = self.session.snapshot().loop_range.map(|range| {
-            let start = range.start.as_beats() as f32 * pixels_per_beat;
-            let end = range.end.as_beats() as f32 * pixels_per_beat;
-            div()
-                .absolute()
-                .top(px(2.))
-                .h(px(6.))
-                .left(px(start))
-                .w(px(end - start))
-                .rounded(px(2.))
-                .bg(loop_fill)
-        });
+        // The loop strip along the top half; bar numbers below it.
+        let width = bars as f32 * BEATS_PER_BAR as f32 * pixels_per_beat;
+        let loop_strip = self.render_loop_strip(
+            crate::loop_strip::LoopRuler::Main,
+            pixels_per_beat,
+            width,
+            theme,
+            cx,
+        );
 
         let step = ruler_label_step(pixels_per_beat);
         // Only labels near the screen (`paint::visible_x`).
@@ -1399,7 +1393,7 @@ impl ProjectView {
             div()
                 .absolute()
                 .left(px(bar as f32 * BEATS_PER_BAR as f32 * pixels_per_beat + 4.))
-                .bottom(px(4.))
+                .bottom(px(1.))
                 .text_size(px(10.))
                 .text_color(theme.text_tertiary)
                 .child((bar + 1).to_string())
@@ -1421,8 +1415,8 @@ impl ProjectView {
                 .absolute()
                 .size_full(),
             )
-            .children(loop_band)
             .children(labels)
+            .child(loop_strip)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, _| {

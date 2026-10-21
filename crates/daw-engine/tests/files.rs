@@ -171,3 +171,19 @@ fn clearing_history_keeps_the_project() {
     assert!(!snapshot.can_undo && !snapshot.can_redo);
     assert_eq!(snapshot.song_name, "Saved Song");
 }
+
+#[test]
+fn a_loop_switched_off_is_saved_with_its_region() {
+    let (mut original, _) = busy_engine();
+    original.apply(Command::SetLoopEnabled(false)).unwrap();
+    let json = original.to_file().to_json();
+
+    let (mut reopened, _) = Engine::new(EngineConfig::default());
+    reopened
+        .load(ProjectFile::from_json(&json).unwrap())
+        .unwrap();
+    let snapshot = reopened.snapshot();
+    assert_eq!(snapshot.loop_range, original.snapshot().loop_range);
+    assert!(snapshot.loop_range.is_some());
+    assert!(!snapshot.loop_enabled);
+}

@@ -46,6 +46,8 @@ One design everywhere (`slider.rs`): hairline track, fill, round thumb, relative
 
 ## Timeline frame (Arrange, Parameters, Signals, and the bottom panel)
 
+Every timeline's ruler is 28 px: the loop strip on top (`loop-strip.md`), bar numbers below.
+
 ```text
 [ body                                  ][v-scroll]
 [                                       ][v-zoom  ]

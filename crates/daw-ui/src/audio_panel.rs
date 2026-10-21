@@ -27,7 +27,8 @@ use gpui::{
 use std::time::Instant;
 
 const HEADER_HEIGHT: f32 = 34.;
-const RULER_HEIGHT: f32 = 22.;
+/// As tall as the other rulers: the loop strip over the bar numbers.
+const RULER_HEIGHT: f32 = 28.;
 /// Width of the settings column on the right.
 const INFO_WIDTH: f32 = 260.;
 const DEFAULT_HEIGHT: f32 = 300.;
@@ -600,11 +601,13 @@ impl ProjectView {
             div()
                 .absolute()
                 .left(px(bar as f32 * 4. * ppb + 3.))
-                .bottom(px(2.))
+                .bottom(px(1.))
                 .text_size(px(10.))
                 .text_color(theme.text_tertiary)
                 .child((bar + 1).to_string())
         });
+        let loop_strip =
+            self.render_loop_strip(crate::loop_strip::LoopRuler::Audio, ppb, width, theme, cx);
         let ruler = div()
             .h(px(RULER_HEIGHT))
             .flex_none()
@@ -618,7 +621,8 @@ impl ProjectView {
                     .left(offset.x)
                     .w(px(width))
                     .h(px(RULER_HEIGHT))
-                    .children(labels.collect::<Vec<_>>()),
+                    .children(labels.collect::<Vec<_>>())
+                    .child(loop_strip),
             );
         let body = div()
             .flex_1()

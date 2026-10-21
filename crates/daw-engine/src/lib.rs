@@ -95,6 +95,8 @@ pub struct Engine {
     content_revision: u64,
     playing: bool,
     loop_range: Option<LoopRange>,
+    /// Whether playback loops over `loop_range` (never without one).
+    loop_enabled: bool,
     outbox: VecDeque<AudioMsg>,
     to_audio: rtrb::Producer<AudioMsg>,
     garbage: rtrb::Consumer<Box<RenderState>>,
@@ -133,6 +135,7 @@ impl Engine {
             content_revision: 0,
             playing: false,
             loop_range: None,
+            loop_enabled: false,
             outbox: VecDeque::new(),
             to_audio,
             garbage,
@@ -183,8 +186,7 @@ impl Engine {
         // Whatever the old processor had not received is moot now.
         self.outbox.clear();
         self.outbox.push_back(AudioMsg::Locate(position));
-        let loop_range = self.loop_range;
-        self.set_loop(loop_range);
+        self.send_loop();
         if self.playing {
             self.outbox.push_back(AudioMsg::SetPlaying(true));
         }
@@ -235,7 +237,12 @@ impl Engine {
                 if let Some(range) = range {
                     check_loop(range)?;
                 }
-                self.set_loop(range);
+                self.set_loop(range, range.is_some());
+                self.content_revision += 1;
+            }
+            Command::SetLoopEnabled(on) => {
+                let range = self.loop_range;
+                self.set_loop(range, on);
                 self.content_revision += 1;
             }
             Command::Edit(edit) => {
@@ -288,6 +295,7 @@ impl Engine {
             playing: self.playing,
             position_beats,
             loop_range: self.loop_range,
+            loop_enabled: self.loop_enabled,
             nodes: self
                 .project
                 .nodes()
@@ -385,20 +393,23 @@ impl Engine {
 
     /// The project as a file, ready to save.
     pub fn to_file(&self) -> ProjectFile {
-        ProjectFile::new(&self.project, self.loop_range)
+        let mut file = ProjectFile::new(&self.project, self.loop_range);
+        file.loop_enabled = self.loop_enabled;
+        file
     }
 
     /// Replaces the project with one loaded from a file. The transport stops
     /// at the start and undo history is cleared. A file that fails to load
     /// changes nothing.
     pub fn load(&mut self, file: ProjectFile) -> Result<(), LoadError> {
+        let loop_enabled = file.loop_enabled;
         let (project, loop_range) = file.into_project()?;
         self.project = project;
         self.history = History::default();
         self.playing = false;
         self.outbox.push_back(AudioMsg::SetPlaying(false));
         self.outbox.push_back(AudioMsg::Locate(0.0));
-        self.set_loop(loop_range);
+        self.set_loop(loop_range, loop_enabled);
         self.publish_state();
         self.revision += 1;
         self.content_revision += 1;
@@ -406,9 +417,18 @@ impl Engine {
         Ok(())
     }
 
-    fn set_loop(&mut self, range: Option<LoopRange>) {
+    fn set_loop(&mut self, range: Option<LoopRange>, enabled: bool) {
         self.loop_range = range;
-        let beats = range.map(|r| (r.start.as_beats(), r.end.as_beats()));
+        self.loop_enabled = enabled && range.is_some();
+        self.send_loop();
+    }
+
+    /// Tells the audio side the loop that plays: the region, if looping.
+    fn send_loop(&mut self) {
+        let beats = self
+            .loop_range
+            .filter(|_| self.loop_enabled)
+            .map(|r| (r.start.as_beats(), r.end.as_beats()));
         self.outbox.push_back(AudioMsg::SetLoop(beats));
     }
 

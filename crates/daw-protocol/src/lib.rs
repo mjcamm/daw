@@ -31,8 +31,12 @@ pub enum Command {
     Stop,
     /// Move the transport to a song position.
     Locate { position: Ticks },
-    /// Set or clear the loop region. Not part of undo history.
+    /// Set the loop region and switch looping on, or clear the region (and
+    /// looping). Not part of undo history.
     SetLoop(Option<LoopRange>),
+    /// Switch looping on or off, keeping the region. Without a region,
+    /// looping stays off. Not part of undo history.
+    SetLoopEnabled(bool),
     /// Change the project. Edits are recorded in the undo history.
     Edit(Edit),
     /// Revert the most recent edit.
@@ -417,7 +421,10 @@ pub struct Snapshot {
     pub playing: bool,
     /// Transport position in beats, as last reported by the audio side.
     pub position_beats: f64,
+    /// The loop region, kept while looping is off.
     pub loop_range: Option<LoopRange>,
+    /// Whether playback loops over `loop_range`.
+    pub loop_enabled: bool,
     /// Every node in tree order: each parent before its children, the Song
     /// first.
     pub nodes: Vec<NodeSnapshot>,

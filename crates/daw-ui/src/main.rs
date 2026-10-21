@@ -18,6 +18,8 @@ mod inspector;
 mod launch;
 mod layout;
 mod live;
+mod loop_strip;
+mod loop_view;
 mod menu;
 mod mixer;
 mod motion;

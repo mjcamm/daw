@@ -34,7 +34,8 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_HEIGHT: f32 = 300.;
 const MIN_HEIGHT: f32 = 160.;
 const HEADER_HEIGHT: f32 = 30.;
-const RULER_HEIGHT: f32 = 18.;
+/// As tall as the other rulers: the loop strip over the bar numbers.
+const RULER_HEIGHT: f32 = 28.;
 const KEYS_WIDTH: f32 = 52.;
 const VELOCITY_HEIGHT: f32 = 56.;
 /// The piano roll's zoom when first opened (the clip's fit then sets the
@@ -1555,11 +1556,13 @@ impl ProjectView {
             div()
                 .absolute()
                 .left(px(bar as f32 * 4. * ppb + 3.))
-                .bottom(px(2.))
+                .bottom(px(1.))
                 .text_size(px(10.))
                 .text_color(theme.text_tertiary)
                 .child(song_bar.to_string())
         });
+        let loop_strip =
+            self.render_loop_strip(crate::loop_strip::LoopRuler::Notes, ppb, width, theme, cx);
         let ruler = div()
             .h(px(RULER_HEIGHT))
             .flex_none()
@@ -1581,7 +1584,8 @@ impl ProjectView {
                         .left(offset.x)
                         .w(px(width))
                         .h(px(RULER_HEIGHT))
-                        .children(labels.collect::<Vec<_>>()),
+                        .children(labels.collect::<Vec<_>>())
+                        .child(loop_strip),
                 ),
             );
 

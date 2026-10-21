@@ -27,7 +27,9 @@ pub const FORMAT: &str = "daw-project";
 /// version 11 made every branch one kind; version 12 added audio clips;
 /// version 13 merged MIDI clips stacked on a node (they never overlap now).
 /// Version 14 added looping clips (`looping`, absent in older files).
-pub const VERSION: u32 = 14;
+/// Version 15 keeps the loop region while looping is off (`loop_enabled`;
+/// older files loop over any region they have).
+pub const VERSION: u32 = 15;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -36,6 +38,10 @@ pub struct ProjectFile {
     pub name: String,
     pub tempo_bpm: f64,
     pub loop_range: Option<LoopRange>,
+    /// Whether playback loops over `loop_range`. Missing before version 15,
+    /// when a region always looped.
+    #[serde(default = "looping_by_default")]
+    pub loop_enabled: bool,
     /// The Song and everything under it.
     pub root: NodeFile,
     /// Motion signals. Missing in version 1 files.
@@ -251,8 +257,13 @@ fn file_node(file: NodeFile) -> Result<(NodeId, Node), LoadError> {
     Ok((file.id, node))
 }
 
+fn looping_by_default() -> bool {
+    true
+}
+
 impl ProjectFile {
-    /// Captures a project and its loop region.
+    /// Captures a project and its loop region (looping over it if there is
+    /// one; set `loop_enabled` to keep a region with looping off).
     pub fn new(project: &Project, loop_range: Option<LoopRange>) -> Self {
         Self {
             format: FORMAT.to_owned(),
@@ -260,6 +271,7 @@ impl ProjectFile {
             name: project.name.clone(),
             tempo_bpm: project.tempo_bpm,
             loop_range,
+            loop_enabled: loop_range.is_some(),
             root: node_file(NodeId::ROOT, &project.root),
             signals: project
                 .signals

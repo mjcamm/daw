@@ -885,6 +885,7 @@ impl ProjectView {
     /// Updates the preview of whatever is being dragged.
     pub(crate) fn drag_to(&mut self, position: Point<Pixels>, modifiers: Modifiers) {
         if self.drag_frame(position)
+            || self.drag_loop(position, modifiers)
             || self.drag_inspector(position, modifiers.shift)
             || self.drag_clips(position, modifiers)
             || self.drag_mixer(position, modifiers.shift)
@@ -939,6 +940,7 @@ impl ProjectView {
     /// Ends a drag, sending the change as one edit.
     pub(crate) fn finish_drag(&mut self) {
         self.frame_drag = None;
+        self.finish_loop_drag();
         self.finish_inspector_drag();
         self.finish_clip_drag();
         self.finish_mixer_drag();

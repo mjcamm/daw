@@ -12,7 +12,7 @@ use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::Theme;
 use crate::zoom::Zoom;
 use daw_engine::{
-    BlockId, Command, Edit, LayerId, LoopRange, MidiClip, NodeId, NodeSnapshot, SignalId, Snapshot,
+    BlockId, Command, Edit, LayerId, MidiClip, NodeId, NodeSnapshot, SignalId, Snapshot,
 };
 use gpui::{
     AnyElement, AnyView, Bounds, Context, DispatchPhase, Entity, EventEmitter, FocusHandle,
@@ -96,8 +96,9 @@ pub enum ProjectEvent {
 pub struct ProjectView {
     pub(crate) session: Session,
     pub(crate) page: Page,
-    /// The loop region to restore when looping is switched back on.
-    pub(crate) saved_loop: Option<LoopRange>,
+    /// A loop being drawn or an end of it moved on a ruler's loop strip.
+    pub(crate) loop_drag: Option<crate::loop_strip::LoopDrag>,
+    pub(crate) loop_strip_bounds: crate::loop_view::StripBounds,
     /// Where the timeline ruler was last drawn, for turning clicks into
     /// song positions.
     pub(crate) ruler_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -290,11 +291,11 @@ impl ProjectView {
     pub fn new(session: Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
-        let saved_loop = session.snapshot().loop_range;
         Self {
             session,
             page: Page::Arrange,
-            saved_loop,
+            loop_drag: None,
+            loop_strip_bounds: Default::default(),
             ruler_bounds: Rc::default(),
             open_menu: None,
             dismissed_menu: None,
@@ -382,13 +383,12 @@ impl ProjectView {
         self.session.apply(command);
     }
 
+    /// The transport's loop button: looping on or off, keeping the region.
     pub(crate) fn toggle_loop(&mut self) {
-        let current = self.session.snapshot().loop_range;
-        if current.is_some() {
-            self.saved_loop = current;
-            self.session.apply(Command::SetLoop(None));
-        } else if let Some(range) = self.saved_loop {
-            self.session.apply(Command::SetLoop(Some(range)));
+        let snapshot = self.session.snapshot();
+        if snapshot.loop_range.is_some() {
+            let on = !snapshot.loop_enabled;
+            self.session.apply(Command::SetLoopEnabled(on));
         }
     }
 
@@ -612,6 +612,7 @@ impl Render for ProjectView {
             .on_action(cx.listener(|this, _: &DeleteSelection, _, _| this.delete_selection()))
             .on_action(cx.listener(|this, _: &CancelDrag, _, _| {
                 this.cancel_clip_drag();
+                this.loop_drag = None;
             }))
             .on_action(cx.listener(|this, _: &ToolSelect, _, _| {
                 this.choose_tool(
@@ -1009,6 +1010,7 @@ impl ProjectView {
             || self.base_drag.is_some()
             || self.mix_drag.is_some()
             || self.frame_drag.is_some()
+            || self.loop_drag.is_some()
             || self.inspector_resize.is_some()
             || self.notes_drag.is_some()
             || self.clip_drag.is_some()

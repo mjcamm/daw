@@ -44,7 +44,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Drag a node row onto a row or a map bar to move or nest it | – |
 | Chevrons fold a parent (shared with the mixer); pulling the map scrolls it | – |
 | Signal button: publish notes as a signal; lists the node's signals with go-to | – |
-| Click the ruler to locate | – |
+| Click the ruler (below its loop strip) to locate | – |
 | Click a node to select it (enables Parameters, points the editor at it) | – |
 | Track → Import Audio…: each file on a new audio node at the playhead | – |
 | Drop files: into an audio node, or new nodes in the edge zones; a MIDI node refuses | – |
@@ -123,6 +123,11 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 |---|---|
 | Menus open on press (like native menus); pressing an open menu's trigger closes it | `menus::a_menu_opens_on_press_and_its_trigger_closes_it` |
 | Space plays and stops | – |
+| Loop strip on every ruler (`loop-strip.md`): drag draws a fresh loop, snapped to the page's grid (Slide: unsnapped), and switches looping on | `loop_strip::dragging_on_the_loop_strip_draws_a_loop_that_plays`, `loop_strip::sliding_leaves_the_loop_off_the_grid` |
+| Any drag on the strip but a handle draws a fresh loop, inside the loop too | `loop_strip::a_drag_inside_the_loop_draws_a_fresh_one` |
+| Drag a loop's start or end handle to move that end | `loop_strip::dragging_a_handle_moves_only_that_end` |
+| The piano roll's strip snaps to the roll's own grid | `loop_strip::the_piano_roll_strip_uses_the_rolls_grid` |
+| The transport's loop button switches looping, keeping the region (grey while off) | `loop_strip::the_loop_button_switches_looping_and_keeps_the_region` |
 | Tempo beside the transport: click to type, Enter applies (one undo step) | `transport::typing_a_tempo_sets_the_song_tempo` |
 | Escape, or a tempo outside 20 to 999, leaves it | `transport::escape_or_an_impossible_tempo_leaves_the_tempo` |
 | Ctrl+S saves; Ctrl+Z / Ctrl+Shift+Z undo and redo | – |

@@ -182,7 +182,8 @@ impl ProjectView {
     fn render_transport(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.session.snapshot();
         let playing = snapshot.playing;
-        let looping = snapshot.loop_range.is_some();
+        let looping = snapshot.loop_enabled;
+        let has_loop = snapshot.loop_range.is_some();
 
         let to_start = transport_button("to-start", theme, false)
             .on_click(cx.listener(|this, _, _, _| {
@@ -199,13 +200,21 @@ impl ProjectView {
                 14.,
             ));
         let loop_button = transport_button("loop", theme, looping)
+            .debug_selector(|| "transport-loop".into())
             .on_click(cx.listener(|this, _, _, _| this.toggle_loop()))
+            .tooltip(tooltip::text(if has_loop {
+                "Loop: switch looping on or off"
+            } else {
+                "Loop: drag on a ruler's top strip to make a loop"
+            }))
             .child(icon(
                 Icon::Loop,
                 if looping {
                     theme.accent
-                } else {
+                } else if has_loop {
                     theme.text_secondary
+                } else {
+                    theme.text_tertiary
                 },
                 14.,
             ));

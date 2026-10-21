@@ -15,8 +15,10 @@
 - **Audio clips** (2026-10-19, `docs/design/audio-clips.md`): stretched live at playback by the user's own stretcher (`crates/daw-stretch`, `docs/design/stretcher.md`). Track → Import Audio…, dropping files on Arrange, waveforms, move/copy/trim/reveal, the scissors tool on Arrange (keys 1 and 3), and the audio panel (double-click an audio clip: BPM, Follow tempo, Gain, Fades).
 - **UI speed** (2026-10-20, `docs/design/ui-speed.md`): cached panes that redraw only on change, a live layer for playheads and meters, no frames when idle, dense content painted and culled, the faster GPU requested on dual-GPU laptops. Playback frames 1.3–2.6 ms; full redraws 5.5–8.8 ms (release, full song). **Next, if wanted:** the last few ms are GPUI's per-element and per-glyph cost; less text on Arrange or fewer interactive elements per row and strip.
 - **Looping clips** (2026-10-20, `docs/design/clip-loops.md`): MIDI and audio clips loop like blocks, with linked repeats; expanded at compile time, so the audio thread is unchanged.
+- **Tempo** (2026-10-21): typed in a box beside the transport.
+- **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
-The project file is at **version 14** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
+The project file is at **version 15** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
 ## In the app (`cargo run -p daw-ui`)
 
@@ -28,6 +30,7 @@ The project file is at **version 14** (`crates/daw-engine/src/file.rs`); `upgrad
 - **Signals:** "+ Add Signal" makes a drawn signal; draw on its lane like a layer. Colour bar picks a colour, double-click renames, × deletes, the uses chip lists listening layers with go-to icons. Click a row to select it; a notes signal's settings are in the inspector.
 - **Mixer:** strips with instruments (+ Instrument opens the browser), effect slots, pan, fader, meters, M/S; the nesting map along the bottom.
 - **Inspector:** the tray icon at the far right lights up when the selection has settings; click to open or close, drag the panel's left edge to resize.
+- **Rulers:** the top half is the loop strip (drag to draw a loop, handles move its ends); click below it to locate.
 - **Timeline pages:** scrollbars with zoom sliders at their ends; wheel scrolls vertically, Shift+wheel sideways.
 - **Shortcuts:** Space play/stop, Ctrl+S save, Ctrl+Z / Ctrl+Shift+Z undo/redo, Delete removes what is selected (notes, then clips, then the node; a block on Parameters and Signals), 1 / 3 pointer / scissors (1 / 2 / 3 select, pen, scissors over the piano roll), Q quantize, Alt flips snap while dragging. Autosave every 30 s (`project.autosave.json`, removed on save).
 
@@ -35,6 +38,7 @@ The project file is at **version 14** (`crates/daw-engine/src/file.rs`); `upgrad
 
 - **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; older files convert exactly (Replace only when nothing below it acts). **Layer mix** scales every block's weight on a layer.
 - **Signals** (version 4): drawn, or ADSR hits from MIDI notes. A layer listens with `Layer.signal`; its blocks are windows onto the signal. No range: block depth and invert do it. **Velocity clamp** (version 5) and on/off switches for it and the pitch range (version 6).
+- **Loop on/off** (version 15): the region is kept while looping is off (`Snapshot.loop_enabled`, `Command::SetLoopEnabled`).
 - **Tree** (version 7): older files nest their node under the Song, bit-for-bit the same sound. **Layered instruments** (version 8): `Node.instruments`, each playing the notes it takes. **Samples** (version 9).
 - **Node kinds** (the user's call): every node is MIDI or Audio (`NodeKind`). There is no folder type: a parent is any node with children. **A branch never mixes kinds** (version 11): a node goes only under a parent of its own kind; the Song takes either and holds no clips. Only MIDI nodes have instruments.
 - **Notes flow up** (`note-flow.md`): instruments play only the notes they take (a SingleSampler its trigger note); a node's notes pass up to its parents' instruments, never down.
@@ -44,6 +48,7 @@ The project file is at **version 14** (`crates/daw-engine/src/file.rs`); `upgrad
 ## Waiting on the user (try it)
 
 - **Tempo** (2026-10-21): the field beside the transport, and changing it while audio clips play.
+- **Loop strip** (2026-10-21): drawing loops on each ruler, the handles, snapping, the loop button. The bottom panels' rulers grew from 18/22 px to 28 px.
 - **UI speed:** does it feel instant?
 - **Looping clips:** looping MIDI and audio clips, and hearing the seams (looped audio not yet seen running by Claude either).
 - **Audio clips:** importing, dropping files from Explorer (Claude could not test that), clip BPM and stretching by ear. The song tempo is now typed beside the transport (2026-10-21), so stretching can be heard by changing either the song's or a clip's BPM.

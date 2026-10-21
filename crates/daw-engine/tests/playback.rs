@@ -508,3 +508,45 @@ fn the_test_tone_plays_one_second_at_minus_12_db() {
     assert!((peak(tone) - 0.251).abs() < 0.01, "peak {}", peak(tone));
     assert_silent(frames(&rendered, 48_000..60_000));
 }
+
+#[test]
+fn switching_looping_off_keeps_the_region() {
+    let (mut engine, mut processor) = engine();
+    add_clip(&mut engine, 1, 0.0, 8.0, &[(0.0, 0.5, 60)]);
+    let range = LoopRange {
+        start: Ticks::ZERO,
+        end: Ticks::from_bars(1),
+    };
+    engine.apply(Command::SetLoop(Some(range))).unwrap();
+    assert!(engine.snapshot().loop_enabled, "a new region loops");
+
+    engine.apply(Command::SetLoopEnabled(false)).unwrap();
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.loop_range, Some(range), "the region stays");
+    assert!(!snapshot.loop_enabled);
+    engine.apply(Command::Play).unwrap();
+    render(&mut engine, &mut processor, 6 * FRAMES_PER_BEAT, &[480]);
+    assert!(
+        engine.snapshot().position_beats > 5.0,
+        "plays on past the region"
+    );
+
+    engine.apply(Command::SetLoopEnabled(true)).unwrap();
+    assert!(engine.snapshot().loop_enabled);
+}
+
+#[test]
+fn looping_cannot_be_switched_on_without_a_region() {
+    let (mut engine, _processor) = engine();
+    engine.apply(Command::SetLoopEnabled(true)).unwrap();
+    assert!(!engine.snapshot().loop_enabled);
+    let range = LoopRange {
+        start: Ticks::ZERO,
+        end: Ticks::from_bars(1),
+    };
+    engine.apply(Command::SetLoop(Some(range))).unwrap();
+    engine.apply(Command::SetLoop(None)).unwrap();
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.loop_range, None, "clearing removes the region");
+    assert!(!snapshot.loop_enabled);
+}
