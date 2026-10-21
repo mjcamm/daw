@@ -15,6 +15,7 @@ daw-automation = { path = "crates/daw-automation" }
 daw-dsp = { path = "crates/daw-dsp" }
 daw-engine = { path = "crates/daw-engine" }
 daw-host = { path = "crates/daw-host" }
+daw-plugins = { path = "crates/daw-plugins" }
 daw-protocol = { path = "crates/daw-protocol" }
 daw-rt = { path = "crates/daw-rt" }
 daw-stretch = { path = "crates/daw-stretch" }

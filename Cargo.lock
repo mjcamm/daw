@@ -1466,6 +1466,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "daw-plugins"
+version = "0.1.0"
+dependencies = [
+ "audio_thread_priority",
+ "daw-rt",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "daw-protocol"
 version = "0.1.0"
 dependencies = [

@@ -31,14 +31,16 @@ API facts and gotchas: `docs/vst3-notes.md`.
 - **The DAW's realtime rules stay absolute.** The DAW audio thread only copies into shared memory, signals and waits with a deadline, so the allocation guard needs no exception. In the host process, plugin calls run inside a counting guard (never aborting), reported as diagnostics ("this plugin allocates on the audio thread").
 - **Editors live in the host process**, so a plugin window is a native top-level window owned by the process that runs the plugin. That gives floating windows for free and suits the app's own native plugins later, which can use the same window host.
 
-## New crates
+## Crates
 
 | Crate | What |
 |---|---|
-| `daw-plugin-ipc` | The shared-memory layout, the control-channel messages and the wake-up primitives. Used by both sides; no VST3 knowledge. Heavily unit tested |
-| `daw-plugin-host` (binary) | The plugin host process: loads modules, runs plugins, owns editor windows. Also the **scanner** (`--scan <path>`) |
-| `daw-vst3` | The VST3 layer inside the host process, on the `vst3` crate: module loading, the call sequence, host interfaces (`IHostApplication`, `IComponentHandler`, `IPlugFrame`, `IParameterChanges`, `IEventList`, `IBStream`), state |
-| `daw-engine` (changed) | A new device kind, **plugin**, whose instance on the audio side is a slot talking to a host process. Plugin delay compensation (below) |
+| `daw-plugins` (built) | Both sides of the process boundary: `block` (the shared-memory audio channel and hand-off), `control` (messages), `client` (the DAW side: starting a host, calls, noticing it is gone), `host` (the host process side), `sys` (Windows calls). The `daw-plugin-host` binary runs a host for tests |
+| `daw-vst3` (to come) | The VST3 layer inside the host process, on the `vst3` crate: module loading, the call sequence, host interfaces (`IHostApplication`, `IComponentHandler`, `IPlugFrame`, `IParameterChanges`, `IEventList`, `IBStream`), state |
+| `daw-engine` (to change) | A plugin device whose audio-side instance is a `DawBlock`. Plugin delay compensation |
+
+- **The app is its own host:** it starts host processes by running its own executable in plugin-host mode (as Chrome does), so host and app always match and there is no second program to ship or find. The scanner is the same mode with another argument.
+- **A job object** ends every host process when the DAW exits, even if it crashes; a host also stops when its stdin closes.
 
 ## Audio across processes
 
@@ -51,7 +53,7 @@ API facts and gotchas: `docs/vst3-notes.md`.
 
 ## Control channel
 
-A message channel per host process (Windows: a named pipe; elsewhere a Unix socket) carrying everything that is not audio: load and unload, bus setup, activate, parameter info, state get and set, editor open and close, and callbacks from the plugin (`beginEdit`, `performEdit`, `endEdit`, `restartComponent`, `resizeView`). Requests carry ids so replies and callbacks interleave safely (yabridge's lesson: blocking one-call-at-a-time sockets deadlock on re-entrant calls such as editor resize). Messages are serialised with a small, versioned format.
+A message channel per host process, over its stdin and stdout (length-prefixed JSON; cross-platform, no names), carrying everything that is not audio: load and unload, bus setup, activate, parameter info, state get and set, editor open and close, and callbacks from the plugin (`beginEdit`, `performEdit`, `endEdit`, `restartComponent`, `resizeView`). Requests carry ids so replies and callbacks interleave safely (yabridge's lesson: blocking one-call-at-a-time sockets deadlock on re-entrant calls such as editor resize). Messages are serialised with a small, versioned format.
 
 ## Process groups
 
@@ -111,7 +113,7 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 
 ## Build order (each step usable and tested before the next)
 
-1. **IPC and host process with a built-in test device** (no VST3 yet): the hand-off, deadlines, crash and hang detection, Reload, groups. Proves the hard part first.
+1. **IPC and host process with built-in test devices** (no VST3 yet): the hand-off, deadlines, crash and hang detection (**built**, `daw-plugins`, tested with real processes), then the engine's plugin device, Reload and groups. Proves the hard part first.
 2. **Scanner** and the plugin list in the browsers.
 3. **Effects:** load, buses, process, parameters (pick from list), state.
 4. **Instruments:** note events, multiple outputs later.
