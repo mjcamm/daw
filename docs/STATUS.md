@@ -56,9 +56,10 @@ The project file is at **version 15** (`crates/daw-engine/src/file.rs`); `upgrad
 
 ## Next up
 
-1. **Phase 5, rest:** a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call).
-2. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): three so far (Arrange double-click, looping a clip, menus). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
-3. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI). Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
+1. **Phase 8, VST3 hosting** (`docs/design/vst3-hosting.md`, API facts in `docs/vst3-notes.md`): designed, plugins in their own processes from the start. Waiting on the user's answers to its open questions, then step 1 (IPC and the host process with a built-in test device).
+2. **Phase 5, rest:** a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call).
+3. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): three so far (Arrange double-click, looping a clip, menus). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
+4. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI). Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
 
 ## Design rules the user has set
 
