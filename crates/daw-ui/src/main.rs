@@ -91,7 +91,10 @@ fn key_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    if let Some(code) = daw_host::plugins::run_if_host() {
+        return code;
+    }
     Application::new()
         .with_assets(icons::Assets)
         .run(|cx: &mut App| {
@@ -118,4 +121,5 @@ fn main() {
             cx.on_window_closed(|cx| cx.quit()).detach();
             cx.activate(true);
         });
+    std::process::ExitCode::SUCCESS
 }

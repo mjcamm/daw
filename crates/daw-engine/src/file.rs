@@ -29,7 +29,8 @@ pub const FORMAT: &str = "daw-project";
 /// Version 14 added looping clips (`looping`, absent in older files).
 /// Version 15 keeps the loop region while looping is off (`loop_enabled`;
 /// older files loop over any region they have).
-pub const VERSION: u32 = 15;
+/// Version 16 added plugin effects (`EffectKind::Plugin` with `plugin`).
+pub const VERSION: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {

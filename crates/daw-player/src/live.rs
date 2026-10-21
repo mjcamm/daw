@@ -29,6 +29,9 @@ pub fn play(bars: u32, compare: bool) -> Result<()> {
     println!("{}", demo::DESCRIPTION);
 
     let (mut engine, processor) = Engine::new(config);
+    if let Some(command) = daw_host::plugins::host_command() {
+        engine.set_plugin_host(command);
+    }
     demo::load(&mut engine)?;
     // Queued now, so the very first callback starts playing from the top,
     // exactly like an offline render.

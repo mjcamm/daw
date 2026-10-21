@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 audio_thread_priority.workspace = true
+daw-protocol.workspace = true
 daw-rt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,6 +23,10 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Memory",
     "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+daw-engine.workspace = true
+daw-testkit.workspace = true
 
 [lints]
 workspace = true

@@ -17,6 +17,7 @@ pub mod devices;
 mod file;
 mod history;
 mod parallel;
+mod plugins;
 mod project;
 pub mod samples;
 mod schedule;
@@ -30,9 +31,9 @@ pub use daw_protocol::{
     Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId,
     LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip,
     MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId,
-    ParamSnapshot, ParamState, Peaks, Piece, SEAM_FADE, SampleId, SampleRef, SampleSnapshot,
-    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
-    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, Ticks,
+    ParamSnapshot, ParamState, Peaks, Piece, PluginSnapshot, PluginSpec, PluginState, SEAM_FADE,
+    SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal,
+    SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -41,7 +42,7 @@ pub use project::{
 };
 pub use schedule::{EffectState, NodeRender, RenderState, ScheduledNote};
 
-use audio::{AudioMsg, SharedStatus};
+use audio::{AudioMsg, AudioQueues, SharedStatus};
 use daw_automation::{Automation, Signals};
 use devices::{ParamInfo, effect_name};
 use history::History;
@@ -52,6 +53,8 @@ use std::sync::Arc;
 /// Capacity of each control/audio queue. Generous, because a full queue only
 /// delays delivery until the next [`Engine::maintain`].
 const QUEUE_CAPACITY: usize = 1024;
+/// Room for every plugin channel there can be, so returning one never fails.
+const RETIRED_CAPACITY: usize = MAX_NODES * MAX_EFFECTS;
 
 /// Shortest allowed loop: a 64th note.
 pub const MIN_LOOP_LENGTH: Ticks = Ticks(TICKS_PER_BEAT / 16);
@@ -103,6 +106,10 @@ pub struct Engine {
     status: Arc<SharedStatus>,
     /// Decoded sample audio, read from the project folder as needed.
     samples: SamplePool,
+    /// Plugin effects' instances, in host processes.
+    plugins: plugins::Plugins,
+    /// Plugin channels the audio side let go of, to free here.
+    retired: rtrb::Consumer<Box<daw_plugins::block::DawBlock>>,
 }
 
 impl Engine {
@@ -117,14 +124,18 @@ impl Engine {
         let project = Project::default();
         let (to_audio, from_control) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let (garbage_tx, garbage) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let (retired_tx, retired) = rtrb::RingBuffer::new(RETIRED_CAPACITY);
         let status = Arc::new(SharedStatus::default());
         let processor = AudioProcessor::new(
             config.sample_rate,
             usize::from(config.channels),
             config.threads.max(1),
             Box::new(RenderState::compile(&project)),
-            from_control,
-            garbage_tx,
+            AudioQueues {
+                from_control,
+                garbage: garbage_tx,
+                retired: retired_tx,
+            },
             Arc::clone(&status),
         );
         let engine = Self {
@@ -141,6 +152,8 @@ impl Engine {
             garbage,
             status,
             samples: SamplePool::default(),
+            plugins: plugins::Plugins::default(),
+            retired,
         };
         (engine, processor)
     }
@@ -161,6 +174,7 @@ impl Engine {
             .convert_clips(&self.project, config.sample_rate);
         let (to_audio, from_control) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
         let (garbage_tx, garbage) = rtrb::RingBuffer::new(QUEUE_CAPACITY);
+        let (retired_tx, retired) = rtrb::RingBuffer::new(RETIRED_CAPACITY);
         let status = Arc::new(SharedStatus::default());
         status.set_position_beats(position);
         let processor = AudioProcessor::new(
@@ -172,13 +186,20 @@ impl Engine {
                 &self.samples,
                 config.sample_rate,
             )),
-            from_control,
-            garbage_tx,
+            AudioQueues {
+                from_control,
+                garbage: garbage_tx,
+                retired: retired_tx,
+            },
             Arc::clone(&status),
         );
         while let Ok(retired) = self.garbage.pop() {
             drop(retired);
         }
+        while let Ok(block) = self.retired.pop() {
+            self.plugins.retired(block);
+        }
+        self.retired = retired;
         self.to_audio = to_audio;
         self.garbage = garbage;
         self.status = status;
@@ -190,6 +211,8 @@ impl Engine {
         if self.playing {
             self.outbox.push_back(AudioMsg::SetPlaying(true));
         }
+        self.plugins
+            .reactivate(&self.project, config.sample_rate, &mut self.outbox);
         self.revision += 1;
         self.maintain();
         processor
@@ -233,6 +256,11 @@ impl Engine {
                 });
             }
             Command::TestTone => self.outbox.push_back(AudioMsg::TestTone),
+            Command::ReloadPlugins => {
+                self.plugins
+                    .reload(&self.project, self.config.sample_rate, &mut self.outbox);
+                self.revision += 1;
+            }
             Command::SetLoop(range) => {
                 if let Some(range) = range {
                     check_loop(range)?;
@@ -266,6 +294,15 @@ impl Engine {
         Ok(())
     }
 
+    /// How to start a plugin host process (the app runs itself in
+    /// plugin-host mode). Without one, plugin effects are silent and say so.
+    pub fn set_plugin_host(&mut self, command: daw_plugins::client::HostCommand) {
+        self.plugins.set_command(command);
+        self.publish_state();
+        self.revision += 1;
+        self.maintain();
+    }
+
     /// The project folder, where sample files are found. Samples that could
     /// not be read are tried again.
     pub fn set_sample_dir(&mut self, dir: Option<std::path::PathBuf>) {
@@ -288,7 +325,7 @@ impl Engine {
         let position_beats = self.status.position_beats();
         let signals = schedule::compile_signals(&self.project);
         let listeners = self.project.listeners();
-        Snapshot {
+        let mut snapshot = Snapshot {
             revision: self.revision,
             song_name: self.project.name.clone(),
             tempo_bpm: self.project.tempo_bpm,
@@ -332,7 +369,27 @@ impl Engine {
                 .collect(),
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
+        };
+        for node in &mut snapshot.nodes {
+            let Some(project_node) = self.project.node(node.id) else {
+                continue;
+            };
+            for device in &mut node.devices {
+                if let DeviceRef::Effect(id) = device.device
+                    && let Some((_, effect)) = project_node.effect(id)
+                    && let Some(spec) = &effect.plugin
+                {
+                    device.plugin = Some(PluginSnapshot {
+                        spec: spec.clone(),
+                        state: self
+                            .plugins
+                            .state(id)
+                            .unwrap_or_else(|| PluginState::Failed("not started".into())),
+                    });
+                }
+            }
         }
+        snapshot
     }
 
     /// Increases every time a command changes engine state; a front end
@@ -375,6 +432,9 @@ impl Engine {
     pub fn maintain(&mut self) {
         while let Ok(retired) = self.garbage.pop() {
             drop(retired);
+        }
+        while let Ok(block) = self.retired.pop() {
+            self.plugins.retired(block);
         }
         while let Some(msg) = self.outbox.pop_front() {
             if let Err(rtrb::PushError::Full(msg)) = self.to_audio.push(msg) {
@@ -445,6 +505,10 @@ impl Engine {
             self.config.sample_rate,
         ));
         self.outbox.push_back(AudioMsg::SwapState(state));
+        // After the state: its plugin effects exist when their channels
+        // arrive.
+        self.plugins
+            .sync(&self.project, self.config.sample_rate, &mut self.outbox);
     }
 }
 
@@ -514,6 +578,7 @@ fn node_snapshot(
                         }
                         DeviceRef::Channel => true,
                     },
+                    plugin: None,
                     name: device_name(node, device).to_owned(),
                     params: params
                         .iter()

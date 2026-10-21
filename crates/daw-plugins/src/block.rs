@@ -49,9 +49,12 @@ pub struct Names {
 }
 
 impl Names {
-    /// Unique per DAW process and instance.
-    pub fn new(instance: u64) -> Self {
-        let base = format!("Local\\daw-plugins-{}-{instance}", std::process::id());
+    /// Fresh names, unique in this DAW process: every activation gets its
+    /// own, so a new channel never opens an old one still mapped.
+    pub fn unique() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let base = format!("Local\\daw-plugins-{}-{n}", std::process::id());
         Self {
             memory: format!("{base}-memory"),
             go: format!("{base}-go"),
@@ -178,12 +181,19 @@ pub struct DawBlock {
     timer: Timer,
     issued: u64,
     alive: Arc<AtomicBool>,
+    stats: Arc<BlockStats>,
+    instance: u64,
 }
 
 impl DawBlock {
-    /// Creates the shared memory and events. `alive` turns false when the
-    /// host process is known to be gone.
-    pub fn create(names: &Names, layout: Layout, alive: Arc<AtomicBool>) -> io::Result<Self> {
+    /// Creates the shared memory and events for `instance`. `alive` turns
+    /// false when the host process is known to be gone.
+    pub fn create(
+        instance: u64,
+        names: &Names,
+        layout: Layout,
+        alive: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
         layout.check()?;
         let shared = Shared {
             memory: SharedMemory::create(&names.memory, layout.size())?,
@@ -195,6 +205,9 @@ impl DawBlock {
         h.max_frames.store(layout.max_frames, Ordering::Relaxed);
         h.inputs.store(layout.inputs, Ordering::Relaxed);
         h.outputs.store(layout.outputs, Ordering::Relaxed);
+        h.shutdown.store(0, Ordering::Relaxed);
+        h.issued.store(0, Ordering::Relaxed);
+        h.finished.store(0, Ordering::Release);
         Ok(Self {
             shared,
             go: Event::create(&names.go)?,
@@ -202,11 +215,23 @@ impl DawBlock {
             timer: Timer::new()?,
             issued: 0,
             alive,
+            stats: Arc::default(),
+            instance,
         })
     }
 
     pub fn layout(&self) -> Layout {
         self.shared.layout
+    }
+
+    /// The host instance this channel feeds.
+    pub fn instance(&self) -> u64 {
+        self.instance
+    }
+
+    /// Counts of this instance's blocks, shared with the control side.
+    pub fn stats(&self) -> Arc<BlockStats> {
+        self.stats.clone()
     }
 
     /// Hands one block to the host and waits for it until `deadline`
@@ -221,23 +246,66 @@ impl DawBlock {
         outputs: &mut [&mut [f32]],
         deadline: Option<Instant>,
     ) -> Outcome {
+        let frames = outputs.first().map_or(0, |o| o.len());
+        let outcome = self.exchange(
+            frames,
+            |ch| inputs.get(ch).copied(),
+            params,
+            context,
+            deadline,
+        );
+        if outcome == Outcome::Done {
+            self.read_outputs(outputs, frames);
+        }
+        outcome
+    }
+
+    /// As [`DawBlock::process`], with `audio` as both the inputs and the
+    /// outputs (an effect on a bus). Left as it was unless `Done`.
+    pub fn process_in_place(
+        &mut self,
+        audio: &mut [&mut [f32]],
+        params: &[ParamChange],
+        context: Context,
+        deadline: Option<Instant>,
+    ) -> Outcome {
+        let frames = audio.first().map_or(0, |a| a.len());
+        let outcome = self.exchange(
+            frames,
+            |ch| audio.get(ch).map(|a| &**a),
+            params,
+            context,
+            deadline,
+        );
+        if outcome == Outcome::Done {
+            self.read_outputs(audio, frames);
+        }
+        outcome
+    }
+
+    /// Writes a block, issues it and waits for it.
+    fn exchange<'a>(
+        &mut self,
+        frames: usize,
+        input: impl Fn(usize) -> Option<&'a [f32]>,
+        params: &[ParamChange],
+        context: Context,
+        deadline: Option<Instant>,
+    ) -> Outcome {
         if !self.alive.load(Ordering::Acquire) {
             return Outcome::Dead;
         }
         let layout = self.shared.layout;
         let h = self.shared.header();
         if h.finished.load(Ordering::Acquire) != self.issued {
+            self.stats.missed();
             return Outcome::Busy;
         }
-        let frames = outputs
-            .first()
-            .map_or(0, |o| o.len())
-            .min(layout.max_frames as usize);
-
+        let frames = frames.min(layout.max_frames as usize);
         for ch in 0..layout.inputs as usize {
             // The host is not reading: it finished every block issued.
             let dst = unsafe { std::slice::from_raw_parts_mut(self.shared.channel(ch), frames) };
-            match inputs.get(ch) {
+            match input(ch) {
                 Some(src) if src.len() >= frames => dst.copy_from_slice(&src[..frames]),
                 _ => dst.fill(0.),
             }
@@ -262,21 +330,14 @@ impl DawBlock {
 
         loop {
             if h.finished.load(Ordering::Acquire) == self.issued {
-                for (ch, out) in outputs.iter_mut().enumerate().take(layout.outputs as usize) {
-                    let src = unsafe {
-                        std::slice::from_raw_parts(
-                            self.shared.channel(layout.inputs as usize + ch),
-                            frames,
-                        )
-                    };
-                    out[..frames].copy_from_slice(src);
-                }
+                self.stats.done();
                 return Outcome::Done;
             }
             match deadline {
                 Some(deadline) => {
                     let now = Instant::now();
                     if now >= deadline {
+                        self.stats.missed();
                         return Outcome::Late;
                     }
                     self.timer.arm(deadline - now);
@@ -292,6 +353,51 @@ impl DawBlock {
                 }
             }
         }
+    }
+
+    /// Copies the host's finished outputs (call only after `Done`).
+    fn read_outputs(&self, outputs: &mut [&mut [f32]], frames: usize) {
+        let layout = self.shared.layout;
+        let frames = frames.min(layout.max_frames as usize);
+        for (ch, out) in outputs.iter_mut().enumerate().take(layout.outputs as usize) {
+            let src = unsafe {
+                std::slice::from_raw_parts(self.shared.channel(layout.inputs as usize + ch), frames)
+            };
+            out[..frames].copy_from_slice(src);
+        }
+    }
+}
+
+/// How an instance's blocks went, read by the control side.
+#[derive(Debug, Default)]
+pub struct BlockStats {
+    missed_in_a_row: AtomicU32,
+    missed: AtomicU64,
+    done: AtomicU64,
+}
+
+impl BlockStats {
+    fn done(&self) {
+        self.missed_in_a_row.store(0, Ordering::Relaxed);
+        self.done.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn missed(&self) {
+        self.missed_in_a_row.fetch_add(1, Ordering::Relaxed);
+        self.missed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Blocks late or skipped since the last one done.
+    pub fn missed_in_a_row(&self) -> u32 {
+        self.missed_in_a_row.load(Ordering::Relaxed)
+    }
+
+    pub fn missed_total(&self) -> u64 {
+        self.missed.load(Ordering::Relaxed)
+    }
+
+    pub fn done_total(&self) -> u64 {
+        self.done.load(Ordering::Relaxed)
     }
 }
 
@@ -450,8 +556,7 @@ mod tests {
     };
 
     fn names() -> Names {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        Names::new(1_000 + NEXT.fetch_add(1, Ordering::Relaxed))
+        Names::unique()
     }
 
     /// A DAW end and a host thread running `process` on every block until
@@ -461,7 +566,7 @@ mod tests {
     ) -> (DawBlock, Arc<AtomicBool>, thread::JoinHandle<()>) {
         let names = names();
         let alive = Arc::new(AtomicBool::new(true));
-        let daw = DawBlock::create(&names, LAYOUT, alive.clone()).unwrap();
+        let daw = DawBlock::create(0, &names, LAYOUT, alive.clone()).unwrap();
         let mut host = HostEnd::open(&names, LAYOUT).unwrap();
         let mut process = process;
         let stop = AtomicBool::new(false);
@@ -634,7 +739,7 @@ mod tests {
     #[test]
     fn the_host_refuses_a_different_layout() {
         let names = names();
-        let _daw = DawBlock::create(&names, LAYOUT, Arc::new(AtomicBool::new(true))).unwrap();
+        let _daw = DawBlock::create(0, &names, LAYOUT, Arc::new(AtomicBool::new(true))).unwrap();
         let other = Layout {
             outputs: 1,
             ..LAYOUT

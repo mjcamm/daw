@@ -845,6 +845,7 @@ impl Project {
                     return Err(CommandError::TooManyEffects { max: MAX_EFFECTS });
                 }
                 check_index(index, len)?;
+                check_plugin(id, &effect)?;
                 prepare_params(
                     &mut effect.params,
                     effect_params(effect.kind),
@@ -1279,6 +1280,7 @@ fn prepare_node(
     }
     for (effect_id, effect) in &mut node.effects {
         used.claim_device(*effect_id)?;
+        check_plugin(*effect_id, effect)?;
         prepare_params(
             &mut effect.params,
             effect_params(effect.kind),
@@ -1353,6 +1355,15 @@ fn check_normalized(value: f64) -> Result<(), CommandError> {
         Ok(())
     } else {
         Err(CommandError::ValueOutOfRange { value })
+    }
+}
+
+/// A plugin effect names its plugin, and nothing else names one.
+fn check_plugin(id: DeviceId, effect: &Effect) -> Result<(), CommandError> {
+    if (effect.kind == daw_protocol::EffectKind::Plugin) == effect.plugin.is_some() {
+        Ok(())
+    } else {
+        Err(CommandError::PluginMismatch { id })
     }
 }
 

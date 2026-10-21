@@ -108,6 +108,9 @@ impl Session {
             .as_ref()
             .map_or_else(|_| EngineConfig::default(), OutputDevice::engine_config);
         let (mut engine, processor) = Engine::new(config);
+        if let Some(command) = daw_host::plugins::host_command() {
+            engine.set_plugin_host(command);
+        }
         engine.set_sample_dir(Some(folder.clone()));
         setup(&mut engine)?;
         let info = device.as_ref().ok().map(audio_info);

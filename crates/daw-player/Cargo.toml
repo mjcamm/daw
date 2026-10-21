@@ -15,5 +15,8 @@ daw-rt.workspace = true
 hound.workspace = true
 rtrb.workspace = true
 
+[dev-dependencies]
+daw-plugins.workspace = true
+
 [lints]
 workspace = true

@@ -157,6 +157,8 @@ pub static FILTER_PARAMS: [ParamInfo; 3] = [
 pub fn effect_params(kind: EffectKind) -> &'static [ParamInfo] {
     match kind {
         EffectKind::Filter => &FILTER_PARAMS,
+        // A plugin's parameters come from the plugin (later).
+        EffectKind::Plugin => &[],
     }
 }
 
@@ -188,6 +190,7 @@ pub fn instrument_params(kind: InstrumentKind) -> &'static [ParamInfo] {
 pub fn effect_name(kind: EffectKind) -> &'static str {
     match kind {
         EffectKind::Filter => "Filter",
+        EffectKind::Plugin => "Plugin",
     }
 }
 

@@ -26,6 +26,9 @@ const USAGE: &str = "usage:
 const DEFAULT_BARS: u32 = 8;
 
 fn main() -> ExitCode {
+    if let Some(code) = daw_host::plugins::run_if_host() {
+        return code;
+    }
     match run(std::env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

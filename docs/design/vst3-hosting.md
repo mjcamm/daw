@@ -37,7 +37,7 @@ API facts and gotchas: `docs/vst3-notes.md`.
 |---|---|
 | `daw-plugins` (built) | Both sides of the process boundary: `block` (the shared-memory audio channel and hand-off), `control` (messages), `client` (the DAW side: starting a host, calls, noticing it is gone), `host` (the host process side), `sys` (Windows calls). The `daw-plugin-host` binary runs a host for tests |
 | `daw-vst3` (to come) | The VST3 layer inside the host process, on the `vst3` crate: module loading, the call sequence, host interfaces (`IHostApplication`, `IComponentHandler`, `IPlugFrame`, `IParameterChanges`, `IEventList`, `IBStream`), state |
-| `daw-engine` (to change) | A plugin device whose audio-side instance is a `DawBlock`. Plugin delay compensation |
+| `daw-engine` (built: `plugins.rs`, `audio.rs`) | Plugin effects: `EffectKind::Plugin` with `Effect.plugin` (a `PluginSpec`); the control side keeps an instance per plugin effect and hands its `DawBlock` to the audio side (`AudioMsg::AttachPlugin`); channels come back through the `retired` queue and an instance is ended only once its channel is back. Still to come: delay compensation |
 
 - **The app is its own host:** it starts host processes by running its own executable in plugin-host mode (as Chrome does), so host and app always match and there is no second program to ship or find. The scanner is the same mode with another argument.
 - **A job object** ends every host process when the DAW exits, even if it crashes; a host also stops when its stdin closes.
@@ -54,6 +54,13 @@ API facts and gotchas: `docs/vst3-notes.md`.
 ## Control channel
 
 A message channel per host process, over its stdin and stdout (length-prefixed JSON; cross-platform, no names), carrying everything that is not audio: load and unload, bus setup, activate, parameter info, state get and set, editor open and close, and callbacks from the plugin (`beginEdit`, `performEdit`, `endEdit`, `restartComponent`, `resizeView`). Requests carry ids so replies and callbacks interleave safely (yabridge's lesson: blocking one-call-at-a-time sockets deadlock on re-entrant calls such as editor resize). Messages are serialised with a small, versioned format.
+
+## In the engine
+
+- A plugin effect runs over whole chunks (the node's other effects still take parameters on the 32-frame grid), in place on the node's bus.
+- **Live** (the processor's default) a plugin block has a deadline of 70% of the device block's time; **offline** (`AudioProcessor::set_offline(true)`, used by every render to a file) plugins take as long as they need. A plugin with no channel yet, or late, hung or crashed, is silent for that chunk; the rest of the song plays on.
+- `Snapshot` devices carry `plugin: Option<PluginSnapshot>` (spec and state: Running, Hung after 64 missed blocks in a row, Crashed, Failed with why). `Command::ReloadPlugins` kills the host and starts every plugin again.
+- Starting the host and instances happens on the control thread when an edit adds a plugin effect: the first one takes a moment (to move off the UI thread later).
 
 ## Process groups
 
@@ -113,7 +120,7 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 
 ## Build order (each step usable and tested before the next)
 
-1. **IPC and host process with built-in test devices** (no VST3 yet): the hand-off, deadlines, crash and hang detection (**built**, `daw-plugins`, tested with real processes), then the engine's plugin device, Reload and groups. Proves the hard part first.
+1. **IPC and host process with built-in test devices** (no VST3 yet), **built**: the hand-off, deadlines, crash and hang detection (`daw-plugins`, tested with real processes); the engine's plugin effect, live deadlines (70% of each block) and offline waiting, Reload, states in the snapshot (`daw-plugins/tests/engine.rs`); the app and player as their own host (`daw_host::plugins`). Process groups other than Together come with the Preferences page.
 2. **Scanner** and the plugin list in the browsers.
 3. **Effects:** load, buses, process, parameters (pick from list), state.
 4. **Instruments:** note events, multiple outputs later.

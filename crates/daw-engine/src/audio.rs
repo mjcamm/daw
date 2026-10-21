@@ -27,13 +27,15 @@ use daw_dsp::pan::{balance, equal_power};
 use daw_dsp::sampler::Sampler;
 use daw_dsp::smoothing::Smoothed;
 use daw_dsp::synth::{MAX_VOICES, Synth};
+use daw_plugins::block::{Context as PluginContext, DawBlock, Outcome};
 use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 /// Frames rendered per internal chunk; host blocks of any size are split
 /// into chunks of at most this many frames.
-const CHUNK_FRAMES: usize = 1024;
+pub(crate) const CHUNK_FRAMES: usize = 1024;
 /// Parameters are evaluated every this many frames, counted from the
 /// processor's start so results never depend on host block sizes. Gains ramp
 /// linearly between evaluations; other parameters step.
@@ -45,6 +47,30 @@ const MAX_PENDING_ENDS: usize = MAX_VOICES * 2;
 const NO_PLAYER: usize = usize::MAX;
 /// Clip players made up front: at most this many audio nodes play clips.
 pub const MAX_CLIP_PLAYERS: usize = 64;
+/// Share of each block's time a plugin may take, live, before its block is
+/// dropped (the rest of the tree and the device need the remainder).
+const PLUGIN_DEADLINE_SHARE: f64 = 0.7;
+
+/// Plugin channels the audio side lets go of, freed on the control side.
+pub(crate) type Retired = rtrb::Producer<Box<DawBlock>>;
+
+/// Hands a channel back to be freed on the control side. The queue has
+/// room for every plugin there can be; were it ever full, leaking the
+/// channel is better than freeing it here.
+fn retire(retired: &mut Retired, block: Box<DawBlock>) {
+    if let Err(rtrb::PushError::Full(block)) = retired.push(block) {
+        std::mem::forget(block);
+    }
+}
+
+/// How plugin effects run this block.
+#[derive(Debug, Clone, Copy)]
+struct PluginRun {
+    /// `None` offline: plugins take as long as they need.
+    deadline: Option<Instant>,
+    offline: bool,
+    tempo_bpm: f64,
+}
 
 /// Control-to-audio messages.
 #[derive(Debug)]
@@ -53,6 +79,11 @@ pub(crate) enum AudioMsg {
     Locate(f64),
     SetLoop(Option<(f64, f64)>),
     SwapState(Box<RenderState>),
+    /// A plugin effect's audio channel to its host process.
+    AttachPlugin {
+        effect: DeviceId,
+        block: Box<DawBlock>,
+    },
     /// A short tone over the output, to check the device.
     TestTone,
     /// A note heard straight away while editing.
@@ -191,7 +222,19 @@ pub struct AudioProcessor {
     tone_played: u32,
     from_control: rtrb::Consumer<AudioMsg>,
     garbage: rtrb::Producer<Box<RenderState>>,
+    retired: Retired,
+    /// Offline (rendering to a file), plugins have no deadline.
+    offline: bool,
     status: Arc<SharedStatus>,
+}
+
+/// The audio side's ends of its queues to the control side.
+#[derive(Debug)]
+pub(crate) struct AudioQueues {
+    pub from_control: rtrb::Consumer<AudioMsg>,
+    /// Replaced render states, freed on the control side.
+    pub garbage: rtrb::Producer<Box<RenderState>>,
+    pub retired: Retired,
 }
 
 impl AudioProcessor {
@@ -202,10 +245,14 @@ impl AudioProcessor {
         channels: usize,
         threads: usize,
         state: Box<RenderState>,
-        from_control: rtrb::Consumer<AudioMsg>,
-        garbage: rtrb::Producer<Box<RenderState>>,
+        queues: AudioQueues,
         status: Arc<SharedStatus>,
     ) -> Self {
+        let AudioQueues {
+            from_control,
+            garbage,
+            retired,
+        } = queues;
         let rate = sample_rate;
         let sample_rate = sample_rate as f32;
         let mut processor = Self {
@@ -242,6 +289,8 @@ impl AudioProcessor {
             tone_played: 0,
             from_control,
             garbage,
+            retired,
+            offline: false,
             status,
         };
         processor.assign_players();
@@ -261,6 +310,13 @@ impl AudioProcessor {
         self.pool.threads()
     }
 
+    /// Offline (rendering to a file) plugins take as long as they need;
+    /// live (the default), a plugin that misses its share of a block's
+    /// time is silent for that block.
+    pub fn set_offline(&mut self, offline: bool) {
+        self.offline = offline;
+    }
+
     /// Renders one block of interleaved audio into `out`.
     ///
     /// `out.len()` must be a multiple of the channel count. Real-time safe.
@@ -273,9 +329,14 @@ impl AudioProcessor {
     fn process_block(&mut self, out: &mut [f32]) {
         debug_assert_eq!(out.len() % self.channels, 0, "partial frame in block");
         self.receive();
+        let block_frames = out.len() / self.channels;
+        let deadline = (!self.offline).then(|| {
+            let seconds = block_frames as f64 / f64::from(self.sample_rate);
+            Instant::now() + Duration::from_secs_f64(seconds * PLUGIN_DEADLINE_SHARE)
+        });
         for chunk in out.chunks_mut(CHUNK_FRAMES * self.channels) {
             let frames = chunk.len() / self.channels;
-            self.render(frames);
+            self.render(frames, deadline);
             self.add_test_tone(frames);
             let (left, right) = (&self.left[..frames], &self.right[..frames]);
             self.status.output.record(peak(left), peak(right));
@@ -363,6 +424,7 @@ impl AudioProcessor {
                         }
                     }
                 }
+                AudioMsg::AttachPlugin { effect, block } => self.attach_plugin(effect, block),
                 AudioMsg::SwapState(state) => {
                     self.transport.set_tempo(state.tempo_bpm);
                     let old = std::mem::replace(&mut self.state, state);
@@ -374,6 +436,22 @@ impl AudioProcessor {
             }
         }
         self.seek();
+    }
+
+    /// Puts a plugin effect's channel into its running instance, handing
+    /// back any it replaces (or this one, if the effect is gone).
+    fn attach_plugin(&mut self, effect: DeviceId, block: Box<DawBlock>) {
+        for player in self.players.iter_mut() {
+            if let Some((_, EffectInstance::Plugin(slot))) =
+                player.effects.iter_mut().find(|(id, _)| *id == effect)
+            {
+                if let Some(old) = slot.replace(block) {
+                    retire(&mut self.retired, old);
+                }
+                return;
+            }
+        }
+        retire(&mut self.retired, block);
     }
 
     /// Gives every node in the state a player: its own if it had one, else
@@ -395,7 +473,7 @@ impl AudioProcessor {
         }
         for (index, player) in self.players.iter_mut().enumerate() {
             if !taken[index] && player.node.is_some() {
-                player.free(&self.status.meters[index]);
+                player.free(&self.status.meters[index], &mut self.retired);
                 if let Some(clips) = player.clips.take() {
                     self.spare_clips.push(clips);
                 }
@@ -411,13 +489,13 @@ impl AudioProcessor {
                 let id = self.state.nodes[slot].id;
                 self.players
                     .get_mut(free)
-                    .start(id, &self.status.meters[free]);
+                    .start(id, &self.status.meters[free], &mut self.retired);
             }
         }
         let beat = self.transport.position();
         for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
             let player = self.players.get_mut(index);
-            player.sync_effects(&node.effects, self.sample_rate);
+            player.sync_effects(&node.effects, self.sample_rate, &mut self.retired);
             player.sync_instruments(&node.instruments);
             // Audio nodes with clips borrow a clip player; without clips
             // they give it back.
@@ -491,8 +569,13 @@ impl AudioProcessor {
         unsafe_code,
         reason = "parallel tasks share the players; see the SAFETY note"
     )]
-    fn render(&mut self, frames: usize) {
+    fn render(&mut self, frames: usize, deadline: Option<Instant>) {
         let start = self.transport.clone();
+        let plugin = PluginRun {
+            deadline,
+            offline: self.offline,
+            tempo_bpm: self.state.tempo_bpm,
+        };
         let start_frames = self.frames_processed;
         let players = &self.players;
         let nodes = &self.state.nodes;
@@ -515,7 +598,7 @@ impl AudioProcessor {
                     let child = unsafe { players.task_ref(slots[child]) };
                     player.add_bus(child, frames);
                 }
-                player.render_chunk(&nodes[slot], &start, start_frames, frames);
+                player.render_chunk(&nodes[slot], &start, start_frames, frames, plugin);
             };
             self.pool.run(level.len(), &task);
             begin = end;
@@ -596,18 +679,22 @@ fn write_output(left: &[f32], right: &[f32], out: &mut [f32], channels: usize) {
 #[derive(Debug)]
 enum EffectInstance {
     Filter(FilterEffect),
+    /// Its channel to the host process, once the control side sends it.
+    Plugin(Option<Box<DawBlock>>),
 }
 
 impl EffectInstance {
     fn new(kind: EffectKind, sample_rate: f32) -> Self {
         match kind {
             EffectKind::Filter => Self::Filter(FilterEffect::new(sample_rate)),
+            EffectKind::Plugin => Self::Plugin(None),
         }
     }
 
     fn kind(&self) -> EffectKind {
         match self {
             Self::Filter(_) => EffectKind::Filter,
+            Self::Plugin(_) => EffectKind::Plugin,
         }
     }
 
@@ -615,11 +702,14 @@ impl EffectInstance {
     fn set_params(&mut self, plain: &[f64]) {
         match self {
             Self::Filter(filter) => filter.set_params(filter_params(plain)),
+            Self::Plugin(_) => {}
         }
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         match self {
+            // Plugins run over whole chunks (`run_plugin`).
+            Self::Plugin(_) => {}
             Self::Filter(filter) => filter.process(left, right),
         }
     }
@@ -705,6 +795,34 @@ struct ControlPoint {
     beat: f64,
 }
 
+impl EffectInstance {
+    fn take_block(&mut self) -> Option<Box<DawBlock>> {
+        match self {
+            Self::Plugin(block) => block.take(),
+            Self::Filter(_) => None,
+        }
+    }
+}
+
+/// A plugin effect over a whole chunk, in place. Silent when it has no
+/// channel yet, misses its deadline or its process is gone.
+fn run_plugin(
+    block: Option<&mut DawBlock>,
+    left: &mut [f32],
+    right: &mut [f32],
+    context: PluginContext,
+    deadline: Option<Instant>,
+) {
+    let done = block.is_some_and(|block| {
+        block.process_in_place(&mut [&mut *left, &mut *right], &[], context, deadline)
+            == Outcome::Done
+    });
+    if !done {
+        left.fill(0.0);
+        right.fill(0.0);
+    }
+}
+
 /// A sounding note waiting for its scheduled end.
 #[derive(Debug, Clone, Copy)]
 struct PendingEnd {
@@ -778,11 +896,11 @@ impl NodePlayer {
     }
 
     /// Takes on `node`, starting from silence. Allocation-free.
-    fn start(&mut self, node: NodeId, meter: &PlayerMeter) {
+    fn start(&mut self, node: NodeId, meter: &PlayerMeter, retired: &mut Retired) {
         self.node = Some(node);
         self.fresh = true;
         self.instruments.clear();
-        self.effects.clear();
+        self.retire_effects(retired);
         self.cursor = 0;
         self.pending_ends = [None; MAX_PENDING_ENDS];
         meter.node.store(node.0 + 1, Ordering::Relaxed);
@@ -790,11 +908,11 @@ impl NodePlayer {
     }
 
     /// Goes back to the pool.
-    fn free(&mut self, meter: &PlayerMeter) {
+    fn free(&mut self, meter: &PlayerMeter, retired: &mut Retired) {
         self.node = None;
         self.release_all();
         self.instruments.clear();
-        self.effects.clear();
+        self.retire_effects(retired);
         meter.node.store(0, Ordering::Relaxed);
         meter.peaks.take();
     }
@@ -833,6 +951,7 @@ impl NodePlayer {
         start: &Transport,
         start_frames: u64,
         frames: usize,
+        plugin: PluginRun,
     ) {
         let mut transport = start.clone();
         let chunk = frames;
@@ -881,7 +1000,13 @@ impl NodePlayer {
                 self.seek(node, &transport);
             }
         }
-        self.process_effects(node, chunk);
+        let context = PluginContext {
+            tempo_bpm: plugin.tempo_bpm,
+            position_beats: start.position(),
+            playing: start.is_playing(),
+            offline: plugin.offline,
+        };
+        self.process_effects(node, chunk, context, plugin.deadline);
         self.apply_channel(node, chunk);
     }
 
@@ -926,7 +1051,16 @@ impl NodePlayer {
 
     /// Rebuilds the running chain to match `wanted`, keeping existing effects
     /// (and their filter memory) by id. Allocation-free.
-    fn sync_effects(&mut self, wanted: &[EffectState], sample_rate: f32) {
+    /// Empties the chain, handing plugin channels back.
+    fn retire_effects(&mut self, retired: &mut Retired) {
+        for (_, mut effect) in self.effects.drain(..) {
+            if let Some(block) = effect.take_block() {
+                retire(retired, block);
+            }
+        }
+    }
+
+    fn sync_effects(&mut self, wanted: &[EffectState], sample_rate: f32, retired: &mut Retired) {
         debug_assert!(wanted.len() <= MAX_EFFECTS);
         self.spare_effects.clear();
         for effect in wanted {
@@ -941,7 +1075,7 @@ impl NodePlayer {
             self.spare_effects.push((effect.id, instance));
         }
         // Whatever is left was removed from the chain.
-        self.effects.clear();
+        self.retire_effects(retired);
         std::mem::swap(&mut self.effects, &mut self.spare_effects);
     }
 
@@ -1011,11 +1145,23 @@ impl NodePlayer {
     /// The effect chain over the chunk's bus, one effect after another; each
     /// takes its parameters at the chunk's control points. Effects switched
     /// off still follow their parameters, so they come back in step.
-    fn process_effects(&mut self, node: &NodeRender, frames: usize) {
+    fn process_effects(
+        &mut self,
+        node: &NodeRender,
+        frames: usize,
+        context: PluginContext,
+        deadline: Option<Instant>,
+    ) {
         let controls = &self.controls[..self.control_count];
         let (left, right) = (&mut self.bus_left[..frames], &mut self.bus_right[..frames]);
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
         for ((_, effect), state) in self.effects.iter_mut().zip(&node.effects) {
+            if let EffectInstance::Plugin(block) = effect {
+                if state.enabled {
+                    run_plugin(block.as_deref_mut(), left, right, context, deadline);
+                }
+                continue;
+            }
             let mut from = 0;
             for point in controls {
                 if state.enabled {
@@ -1194,8 +1340,11 @@ mod tests {
             2,
             1,
             state(100.0),
-            from_control,
-            garbage_tx,
+            AudioQueues {
+                from_control,
+                garbage: garbage_tx,
+                retired: rtrb::RingBuffer::new(1).0,
+            },
             Arc::default(),
         );
         for bpm in [110.0, 120.0, 130.0] {
@@ -1227,8 +1376,11 @@ mod tests {
             2,
             1,
             state(120.0),
-            from_control,
-            garbage_tx,
+            AudioQueues {
+                from_control,
+                garbage: garbage_tx,
+                retired: rtrb::RingBuffer::new(1).0,
+            },
             Arc::default(),
         );
         let player_of = |p: &AudioProcessor, id: NodeId| {

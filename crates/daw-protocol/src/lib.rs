@@ -14,7 +14,8 @@ pub use audio_clip::{AudioClip, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MI
 pub use automation::{
     BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect, EffectKind,
     Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId, ParamState,
-    SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSource,
+    PluginSpec, SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSource,
+    TestPlugin,
 };
 pub use clip_loop::{ClipLoop, Piece, SEAM_FADE};
 pub use peaks::{FINEST_SPAN, MinMax, PeakLevel, Peaks};
@@ -43,6 +44,9 @@ pub enum Command {
     Undo,
     /// Reapply the most recently undone edit.
     Redo,
+    /// End every plugin host process and start the plugins again, as after
+    /// a crash or a hang. Not part of the song or undo.
+    ReloadPlugins,
     /// Play a short 440 Hz tone (A4) at -12 dB through the output, over
     /// whatever is playing, to check the audio device.
     TestTone,
@@ -509,6 +513,27 @@ pub struct DeviceSnapshot {
     pub enabled: bool,
     pub name: String,
     pub params: Vec<ParamSnapshot>,
+    /// For a plugin effect: which plugin, and how its process is doing.
+    pub plugin: Option<PluginSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginSnapshot {
+    pub spec: PluginSpec,
+    pub state: PluginState,
+}
+
+/// A plugin effect's state, for the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginState {
+    Running,
+    /// Missing its deadlines (frozen or too slow): silent until it catches
+    /// up, or Reload.
+    Hung,
+    /// Its process is gone: silent until Reload.
+    Crashed,
+    /// It could not start, and why.
+    Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -662,6 +687,10 @@ pub enum CommandError {
     /// Audio clips go on audio nodes, never a MIDI node or the Song.
     NotAudio {
         node: NodeId,
+    },
+    /// An effect of kind `Plugin` needs a plugin, and only it has one.
+    PluginMismatch {
+        id: DeviceId,
     },
     /// Clips on a node never overlap (touching is fine): stacked MIDI
     /// clips hide each other's notes and tear apart when one is cut or
@@ -841,6 +870,11 @@ impl fmt::Display for CommandError {
             Self::TooManyNodes { max } => write!(f, "a project holds at most {max} nodes"),
             Self::NotMidi { node } => write!(f, "node {} cannot hold MIDI clips", node.0),
             Self::NotAudio { node } => write!(f, "node {} cannot hold audio clips", node.0),
+            Self::PluginMismatch { id } => write!(
+                f,
+                "effect {} must be of kind Plugin exactly when it names a plugin",
+                id.0
+            ),
             Self::StackedClips { node, clip, over } => write!(
                 f,
                 "clips {} and {} overlap on node {}; clips on a node never overlap",

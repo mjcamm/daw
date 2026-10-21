@@ -165,11 +165,32 @@ impl Instrument {
     }
 }
 
-/// Built-in effects.
+/// Built-in effects, and plugins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EffectKind {
     /// Multi-mode resonant filter.
     Filter,
+    /// A plugin, run in its own process; `Effect::plugin` says which.
+    Plugin,
+}
+
+/// Which plugin a plugin effect runs.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum PluginSpec {
+    /// Built-in devices for testing the plugin plumbing.
+    Test(TestPlugin),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TestPlugin {
+    /// Output = input x 2 x parameter 0 (unity until it is set).
+    Gain,
+    /// Passes sound, then crashes its process on this block.
+    CrashAt(u64),
+    /// Passes sound, then never returns from this block.
+    HangAt(u64),
+    /// Passes sound, taking this long over every block.
+    Slow { millis: u64 },
 }
 
 /// An effect and the state of its parameters.
@@ -182,6 +203,9 @@ pub struct Effect {
     pub enabled: bool,
     /// One entry per parameter, in index order. Empty means all defaults.
     pub params: Vec<ParamState>,
+    /// The plugin, for a plugin effect (and only then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginSpec>,
 }
 
 fn on() -> bool {
@@ -195,6 +219,15 @@ impl Effect {
             kind,
             enabled: true,
             params: Vec::new(),
+            plugin: None,
+        }
+    }
+
+    /// A plugin effect, on.
+    pub fn plugin(spec: PluginSpec) -> Self {
+        Self {
+            plugin: Some(spec),
+            ..Self::new(EffectKind::Plugin)
         }
     }
 }

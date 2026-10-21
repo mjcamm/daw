@@ -18,7 +18,7 @@
 - **Tempo** (2026-10-21): typed in a box beside the transport.
 - **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
-The project file is at **version 15** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
+The project file is at **version 16** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
 ## In the app (`cargo run -p daw-ui`)
 
@@ -56,7 +56,7 @@ The project file is at **version 15** (`crates/daw-engine/src/file.rs`); `upgrad
 
 ## Next up
 
-1. **Phase 8, VST3 hosting** (`docs/design/vst3-hosting.md`, API facts in `docs/vst3-notes.md`): agreed: plugins in their own processes from the start (default: all together, as Bitwig), state in the project file, our own Rust test plugin, unlinked floating windows (a cross-process owner window was measured to freeze the DAW when the plugin hangs). Next: step 1, the IPC and the host process with a built-in test device.
+1. **Phase 8, VST3 hosting** (`docs/design/vst3-hosting.md`, API facts in `docs/vst3-notes.md`): agreed: plugins in their own processes from the start (default: all together, as Bitwig), state in the project file, our own Rust test plugin, unlinked floating windows (a cross-process owner window was measured to freeze the DAW when the plugin hangs). **Step 1 built** (2026-10-21): `daw-plugins` (shared-memory audio with deadlines, host processes, crash and hang detection) and plugin effects in the engine with built-in test devices; the app and player run themselves as plugin hosts. No VST3 or UI yet. Next: step 2, the scanner, then effects from real VST3 plugins.
 2. **Phase 5, rest:** a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call).
 3. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): three so far (Arrange double-click, looping a clip, menus). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
 4. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI). Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.

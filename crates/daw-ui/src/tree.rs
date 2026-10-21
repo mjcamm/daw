@@ -351,6 +351,7 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
                         kind,
                         enabled: device.enabled,
                         params: copy_params(&device.params, ids),
+                        plugin: device.plugin.as_ref().map(|p| p.spec.clone()),
                     };
                     copy.effects
                         .push((DeviceId(FreshIds::next(&mut ids.device)), effect));

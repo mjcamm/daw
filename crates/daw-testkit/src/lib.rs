@@ -69,6 +69,8 @@ pub fn render(
     let config = engine.config();
     let channels = usize::from(config.channels);
     let mut samples = vec![0.0; frames * channels];
+    // A render to a file: plugins take as long as they need.
+    processor.set_offline(true);
     let mut start = 0;
     for &block in block_frames.iter().cycle() {
         if start == frames {

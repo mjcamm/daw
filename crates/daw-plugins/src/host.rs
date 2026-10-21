@@ -4,7 +4,7 @@
 
 use crate::block::{HostBlock, HostEnd, Served};
 use crate::control::{
-    Device, FromHost, PROTOCOL, Request, TestDevice, ToHost, read_message, write_message,
+    FromHost, PROTOCOL, PluginSpec, Request, TestPlugin, ToHost, read_message, write_message,
 };
 use crate::sys::Event;
 use std::collections::HashMap;
@@ -130,7 +130,7 @@ fn handle(instances: &mut HashMap<u64, Instance>, request: Request) -> Result<()
 
 #[derive(Debug)]
 struct Instance {
-    device: Device,
+    device: PluginSpec,
     running: Option<Running>,
 }
 
@@ -163,12 +163,12 @@ enum Processor {
 }
 
 impl Processor {
-    fn new(device: &Device) -> Self {
+    fn new(device: &PluginSpec) -> Self {
         match device {
-            Device::Test(TestDevice::Gain) => Self::Gain { gain: 1. },
-            Device::Test(TestDevice::CrashAt(at)) => Self::CrashAt { at: *at, blocks: 0 },
-            Device::Test(TestDevice::HangAt(at)) => Self::HangAt { at: *at, blocks: 0 },
-            Device::Test(TestDevice::Slow { millis }) => Self::Slow { millis: *millis },
+            PluginSpec::Test(TestPlugin::Gain) => Self::Gain { gain: 1. },
+            PluginSpec::Test(TestPlugin::CrashAt(at)) => Self::CrashAt { at: *at, blocks: 0 },
+            PluginSpec::Test(TestPlugin::HangAt(at)) => Self::HangAt { at: *at, blocks: 0 },
+            PluginSpec::Test(TestPlugin::Slow { millis }) => Self::Slow { millis: *millis },
         }
     }
 

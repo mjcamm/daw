@@ -1430,6 +1430,7 @@ dependencies = [
  "audio_thread_priority",
  "daw-automation",
  "daw-dsp",
+ "daw-plugins",
  "daw-protocol",
  "daw-rt",
  "daw-stretch",
@@ -1447,6 +1448,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "daw-engine",
+ "daw-plugins",
  "daw-rt",
  "dirs 7.0.0",
  "hound",
@@ -1460,6 +1462,7 @@ version = "0.1.0"
 dependencies = [
  "daw-engine",
  "daw-host",
+ "daw-plugins",
  "daw-rt",
  "hound",
  "rtrb",
@@ -1470,7 +1473,10 @@ name = "daw-plugins"
 version = "0.1.0"
 dependencies = [
  "audio_thread_priority",
+ "daw-engine",
+ "daw-protocol",
  "daw-rt",
+ "daw-testkit",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",

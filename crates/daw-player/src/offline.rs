@@ -21,6 +21,11 @@ pub fn render_demo(config: EngineConfig, frames: usize) -> Result<Vec<f32>> {
 }
 
 fn render_into(engine: &mut Engine, processor: &mut daw_engine::AudioProcessor, out: &mut [f32]) {
+    if let Some(command) = daw_host::plugins::host_command() {
+        engine.set_plugin_host(command);
+    }
+    // To a file: plugins take as long as they need.
+    processor.set_offline(true);
     let channels = processor.channels();
     for block in out.chunks_mut(BLOCK_FRAMES * channels) {
         engine.maintain();

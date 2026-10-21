@@ -5,7 +5,7 @@
 
 use daw_plugins::block::{Context, Layout, Outcome, ParamChange};
 use daw_plugins::client::{HostCommand, HostError, HostProcess, next_instance};
-use daw_plugins::control::{Device, TestDevice};
+use daw_plugins::control::{PluginSpec, TestPlugin};
 use std::time::{Duration, Instant};
 
 #[global_allocator]
@@ -51,7 +51,7 @@ fn run(
 fn a_device_in_a_host_process_processes_audio_and_parameters() {
     let mut host = host();
     let id = next_instance();
-    host.create(id, Device::Test(TestDevice::Gain)).unwrap();
+    host.create(id, PluginSpec::Test(TestPlugin::Gain)).unwrap();
     let mut block = host.activate(id, LAYOUT, 48_000.).unwrap();
     assert_eq!(run(&mut block, &[], 1_000), (Outcome::Done, 1.));
     let half = [ParamChange {
@@ -69,7 +69,7 @@ fn a_device_in_a_host_process_processes_audio_and_parameters() {
 fn a_crashing_device_takes_only_its_host_process_down() {
     let mut host = host();
     let id = next_instance();
-    host.create(id, Device::Test(TestDevice::CrashAt(3)))
+    host.create(id, PluginSpec::Test(TestPlugin::CrashAt(3)))
         .unwrap();
     let mut block = host.activate(id, LAYOUT, 48_000.).unwrap();
     assert_eq!(run(&mut block, &[], 1_000).0, Outcome::Done);
@@ -95,7 +95,7 @@ fn a_crashing_device_takes_only_its_host_process_down() {
 fn a_hung_device_costs_one_deadline_then_blocks_are_skipped_until_killed() {
     let mut host = host();
     let id = next_instance();
-    host.create(id, Device::Test(TestDevice::HangAt(2)))
+    host.create(id, PluginSpec::Test(TestPlugin::HangAt(2)))
         .unwrap();
     let mut block = host.activate(id, LAYOUT, 48_000.).unwrap();
     assert_eq!(run(&mut block, &[], 1_000).0, Outcome::Done);
@@ -124,9 +124,9 @@ fn calls_the_host_cannot_do_are_refused() {
         Err(HostError::Refused(_))
     ));
     let id = next_instance();
-    host.create(id, Device::Test(TestDevice::Gain)).unwrap();
+    host.create(id, PluginSpec::Test(TestPlugin::Gain)).unwrap();
     assert!(matches!(
-        host.create(id, Device::Test(TestDevice::Gain)),
+        host.create(id, PluginSpec::Test(TestPlugin::Gain)),
         Err(HostError::Refused(_))
     ));
 }
@@ -135,8 +135,8 @@ fn calls_the_host_cannot_do_are_refused() {
 fn several_instances_share_one_host_process() {
     let mut host = host();
     let (a, b) = (next_instance(), next_instance());
-    host.create(a, Device::Test(TestDevice::Gain)).unwrap();
-    host.create(b, Device::Test(TestDevice::Gain)).unwrap();
+    host.create(a, PluginSpec::Test(TestPlugin::Gain)).unwrap();
+    host.create(b, PluginSpec::Test(TestPlugin::Gain)).unwrap();
     let mut block_a = host.activate(a, LAYOUT, 48_000.).unwrap();
     let mut block_b = host.activate(b, LAYOUT, 48_000.).unwrap();
     let quiet = [ParamChange {

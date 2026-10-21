@@ -7,7 +7,9 @@
 )]
 
 use crate::block::{DawBlock, Layout, Names};
-use crate::control::{Device, FromHost, PROTOCOL, Request, ToHost, read_message, write_message};
+use crate::control::{
+    FromHost, PROTOCOL, PluginSpec, Request, ToHost, read_message, write_message,
+};
 use crate::sys::Job;
 use std::fmt;
 use std::io::{self, BufReader, BufWriter};
@@ -139,7 +141,7 @@ impl HostProcess {
         self.alive.load(Ordering::Acquire)
     }
 
-    pub fn create(&mut self, instance: u64, device: Device) -> Result<(), HostError> {
+    pub fn create(&mut self, instance: u64, device: PluginSpec) -> Result<(), HostError> {
         self.call(Request::Create { instance, device })
     }
 
@@ -151,9 +153,9 @@ impl HostProcess {
         layout: Layout,
         sample_rate: f64,
     ) -> Result<DawBlock, HostError> {
-        let names = Names::new(instance);
-        let block =
-            DawBlock::create(&names, layout, self.alive.clone()).map_err(HostError::Spawn)?;
+        let names = Names::unique();
+        let block = DawBlock::create(instance, &names, layout, self.alive.clone())
+            .map_err(HostError::Spawn)?;
         self.call(Request::Activate {
             instance,
             names,

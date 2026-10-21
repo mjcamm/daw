@@ -12,6 +12,7 @@ publish.workspace = true
 audio_thread_priority.workspace = true
 daw-automation.workspace = true
 daw-dsp.workspace = true
+daw-plugins.workspace = true
 daw-protocol.workspace = true
 daw-rt.workspace = true
 daw-stretch.workspace = true

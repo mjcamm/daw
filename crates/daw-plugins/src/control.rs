@@ -13,30 +13,13 @@ pub const PROTOCOL: u32 = 1;
 /// Largest message accepted, so a garbled length can't allocate gigabytes.
 const MAX_MESSAGE: u32 = 64 << 20;
 
-/// What a host process runs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Device {
-    /// Built-in devices for testing the plumbing (no plugin code).
-    Test(TestDevice),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum TestDevice {
-    /// Output = input × 2 × parameter 0 (default 0.5: unity).
-    Gain,
-    /// Passes sound, then aborts the process on this block.
-    CrashAt(u64),
-    /// Passes sound, then never returns from this block.
-    HangAt(u64),
-    /// Passes sound, taking this long over every block.
-    Slow { millis: u64 },
-}
+pub use daw_protocol::{PluginSpec, TestPlugin};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Request {
     Create {
         instance: u64,
-        device: Device,
+        device: PluginSpec,
     },
     /// Opens the instance's audio channel (made by the DAW) and starts its
     /// audio thread.
@@ -117,7 +100,7 @@ mod tests {
             id: 3,
             request: Request::Create {
                 instance: 9,
-                device: Device::Test(TestDevice::Slow { millis: 2 }),
+                device: PluginSpec::Test(TestPlugin::Slow { millis: 2 }),
             },
         };
         write_message(&mut wire, &sent).unwrap();

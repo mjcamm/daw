@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 cpal.workspace = true
 daw-engine.workspace = true
+daw-plugins.workspace = true
 daw-rt.workspace = true
 dirs.workspace = true
 hound.workspace = true
