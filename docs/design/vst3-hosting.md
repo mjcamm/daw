@@ -1,6 +1,6 @@
 # VST3 Hosting (Phase 8 design)
 
-*Status: draft for review, 2026-10-21. Decided with the user: plugins run **in their own processes from the start** ("build it right first"), best practice everywhere, **floating windows** for plugin editors (and later the app's own native plugins), parameters **picked from a list or learned by wiggling a knob**, and the **`vst3` crate** for the bindings. Nothing is built yet. The open questions at the end need the user's answers.*
+*Status: agreed with the user, 2026-10-21. Decided with the user: plugins run **in their own processes from the start** ("build it right first"), best practice everywhere, **floating windows** for plugin editors (and later the app's own native plugins), parameters **picked from a list or learned by wiggling a knob**, and the **`vst3` crate** for the bindings. Nothing is built yet.*
 
 ## Licences and references
 
@@ -55,12 +55,12 @@ A message channel per host process (Windows: a named pipe; elsewhere a Unix sock
 
 ## Process groups
 
-Like Bitwig's hosting modes, a preference decides how instances share processes:
+Like Bitwig's hosting modes, a preference decides how instances share processes. The default follows Bitwig's ("Together"), the main DAW that isolates plugins (the user: default to what the big players do; Ableton Live and Logic Pro run most plugins inside the app):
 
 | Mode | Processes | Trade-off |
 |---|---|---|
-| Together | One for all plugins | Least memory; one crash silences all plugins (never the DAW) |
-| **By plugin** (proposed default) | One per plugin module (all instances of the same `.vst3`) | Plugins whose instances talk to each other (some EQs share analysers across instances) keep working; a crash affects one product |
+| **Together** (default) | One for all plugins | Least memory; one crash silences all plugins until Reload (never the DAW) |
+| By plugin | One per plugin module (all instances of the same `.vst3`) | Plugins whose instances talk to each other (some EQs share analysers across instances) keep working; a crash affects one product |
 | Individually | One per instance | Safest, most memory and CPU |
 
 ## The VST3 call sequence
@@ -80,14 +80,14 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 
 ## State
 
-- Saved with the project: the component's `getState` and the controller's `getState`, as two binary blobs per plugin instance. Proposed: inside the project file (base64), so a save stays one atomic file write. The plugin's class id and version are saved with them.
+- Saved inside the project file (the user's call): the component's and the controller's `getState`, two binary blobs per plugin instance (base64), so a save stays one file write. The plugin's class id and version are saved with them.
 - On load: `setState` on the component, `setComponentState` and `setState` on the controller.
 - `.vstpreset` import and export later (format is documented: header "VST3", class id, chunk list).
 
 ## Editor windows
 
 - Opened from the plugin's slot (layout to be agreed). The host process makes a native top-level window and attaches the plugin's view to it; the plugin and the user can resize it (`vst3-notes.md`, Editor). Content scale follows the screen.
-- **Staying above the DAW:** a cross-process owner relationship would keep plugin windows above the main window, but on Windows it ties the two processes' input queues together, so a hung plugin could freeze the DAW's UI. Proposed instead: the DAW tells host processes when it gains or loses focus and they raise or lower their windows. To prototype early, as it decides how the windows feel.
+- **Staying above the DAW, without linking windows:** measured on Windows, a plugin window owned by the DAW's window (across processes) froze the DAW's UI for as long as the plugin hung (`vst3-notes.md`). So windows stay unlinked: the DAW tells host processes when it becomes or stops being the active app, and they keep their windows above it while it is.
 - Window positions are remembered per plugin instance. Closing the window leaves the plugin running.
 - The same window host later serves the app's own native plugins' editors.
 
@@ -104,9 +104,9 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 
 ## Testing
 
-- **A test plugin built in this repo:** a small VST3 written in Rust with the `vst3` crate (gain, a parameter, latency, state, an editor), so tests are self-contained and repeatable. Variants that crash, hang or allocate on purpose test the watchdog, deadlines and diagnostics.
+- **A test plugin built in this repo** (the user's call): a small VST3 written in Rust with the `vst3` crate (gain, a parameter, latency, state, an editor), so tests are self-contained and repeatable. Variants that crash, hang or allocate on purpose test the watchdog, deadlines and diagnostics.
 - IPC layer: unit tests for the layout, the hand-off and timeouts. Engine: a plugin slot renders identically live and offline, at any block size, for the test plugin.
-- Steinberg's validator on the test plugin; the user's real plugins tried by hand.
+- Steinberg's validator on the test plugin; the user's real plugins tried by hand. First: **Serum 2** (instrument, large resizable editor), **OTT** (simple effect), a **Valhalla** reverb (tail). Later, heavier ones as stress tests (Native Instruments, Spectrasonics, iZotope, Arturia).
 - Speed tests: many plugin slots playing.
 
 ## Build order (each step usable and tested before the next)
@@ -119,13 +119,9 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 6. **Delay compensation.**
 7. `restartComponent` handling, bypass, presets, diagnostics.
 
-## Open questions (for the user)
+## Still to decide
 
-1. **Default grouping:** "By plugin" (one process per plugin product), with Together and Individually in Preferences?
-2. **State in the project file** (one atomic save, base64), or as files in the project folder?
-3. **A test plugin written in Rust in this repo** for automated tests (instead of building Steinberg's C++ samples)?
-4. **Which real plugins** should work first (one instrument, one effect)?
-5. Where plugin windows open from, and the Preferences → Plugins page, to be laid out with the user when those steps come.
+- Where plugin windows open from, and the Preferences → Plugins page: laid out with the user when those steps come.
 
 ## Sources
 
