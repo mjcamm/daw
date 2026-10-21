@@ -1,6 +1,6 @@
 # Status and Next Steps
 
-*Last updated: 2026-10-21 (docs checked against the code). Read this first when picking up the project.*
+*Last updated: 2026-10-21, as a handover between sessions (everything committed, `3f9b1a7`). Read this first when picking up the project; then "In progress" below.*
 
 ## Where we are
 
@@ -20,9 +20,33 @@
 
 The project file is at **version 16** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
+## In progress: Phase 8, VST3 hosting
+
+Decisions: `docs/design/vst3-hosting.md`. VST3 API facts and gotchas: `docs/vst3-notes.md` (read both before plugin work). Agreed with the user: plugins in their own processes from the start ("build it right first"), default grouping Together (as Bitwig), plugin state inside the project file, our own Rust test plugin, unlinked floating editor windows (a cross-process owner window was measured to freeze the DAW when the plugin hangs), parameters picked from a list or learned by wiggling a knob, the `vst3` crate for bindings.
+
+**Built (all committed, tested):**
+
+- **Step 1, plugins in a process** (`crates/daw-plugins`): `block.rs` (shared-memory audio, deadlines on a high-resolution timer, late/busy/dead), `control.rs` (JSON over the host's stdin/stdout), `client.rs` (`HostProcess`: start, calls, death seen as EOF, job object), `host.rs` (the host process: one audio thread per instance). Engine: `EffectKind::Plugin` + `Effect.plugin: Option<PluginSpec>` (file version 16), `daw-engine/src/plugins.rs` keeps instances in step with the song, live deadline 70% of a block, offline (`AudioProcessor::set_offline`) none, `PluginState` in snapshots, `Command::ReloadPlugins`. The app and player run themselves as hosts (`--plugin-host`, `daw_host::plugins`).
+- **Step 2, scanning** (`scan.rs`, `vst3.rs`): bundles found recursively, `moduleinfo.json` or a scanner process (`--plugin-scan <bundle>`, 4 at once, 30 s timeout), cached in `%APPDATA%\daw\plugins.json`. User's machine: 148 plugins, none failed, 21.7 s first time. The app scans in the background from startup; **Preferences → Plugins** (`daw-ui/src/plugin_settings.rs`): folders, Add Folder, Rescan, progress, Couldn't load with Retry.
+- **Step 3, first part, VST3 effects run** (`vst3_host.rs`, `PluginSpec::Vst3 { bundle, cid, name, vendor }`): Steinberg's call order, host interfaces, buses, process from shared memory without allocating. `daw-test-plugin` is a real VST3 ("Test Gain": processor + controller, parameter 0, state). Seven of the user's commercial effects pass `tests/installed_plugins.rs` (opt-in).
+
+**Next, in order:**
+
+1. **Plugin state in the song.** Save each VST3 instance's component and controller state (`Vst3Instance::state` / `set_state` exist in `vst3_host.rs`) inside the project file, base64. Needs: a reply payload on the control channel (`FromHost::Reply` carries only `Result<(), String>` now), a `GetState` request, state passed with `Create`, the engine asking every plugin for its state when saving (`Engine::to_file`) and restoring on load. Test with the test plugin's gain (its state is the gain value).
+2. **The modal browser** (layout agreed 2026-10-21, sketch in the conversation): "+ Instrument" and the effect slots' "+" open one centred modal (about 560 × 520, dimmed backdrop, click outside or Esc closes) titled Add Instrument / Add Effect; a segmented **Built-in | Plugins** split top left with a search field beside it (search covers the shown side; an empty result says if the other side matches); plugins grouped under vendor headings, each row its name with its type on the right; click (or arrows + Enter) adds and closes; it opens on the side used last; "Scanning n of N…" while a scan runs. Replaces today's 260 px instrument popover and the effect "+" menu (both listed in `docs/behaviours.md`: their lines change with this, as agreed). Needs the catalog handed from `AppView` to `ProjectView`. Instruments from plugins can be listed but only added once step 4 lands (or list effects only until then: ask).
+3. **Parameters from a plugin** ("+ Add Parameter" lists a plugin's automatable parameters; the engine's `ParamId` currently indexes built-in device params; plugin params need their VST3 id).
+4. **Step 4, instruments** (note events into `IEventList`; the shared block has no event area yet).
+5. **Step 5, editor windows** (floating, owned by the host process, kept above the DAW without linking windows; knob moves as resting values; learn), **6, delay compensation**, **7, restart flags, bypass, presets.**
+
+**Gotchas from this session:**
+
+- Never set `RUSTFLAGS` and never add target folders: each is a separate full GPUI build (the scripts no longer set it). Build and test in the normal `target/`; use `target/claude` only to launch Claude's own copy of the app while the user's is open.
+- `daw-plugins`' tests build `daw-test-plugin` with a nested cargo into `target/test-plugin` (`tests/common`). Linking `daw_testkit` installs the allocation guard: a test that uses it must not declare its own `#[global_allocator]`.
+- Editing files: `cargo fmt` rewraps lines, so exact-text edits must match the formatted text. Windows PowerShell 5.1's `Out-File -Encoding utf8` writes a byte-order mark, which serde_json rejects (it silently resets the user's preferences); write JSON without one.
+
 ## In the app (`cargo run -p daw-ui`)
 
-- **Menu bar:** File → Preferences… (Ctrl+,: Audio and Appearance) and Quit (Ctrl+Q, saves first); Track → Import Audio….
+- **Menu bar:** File → Preferences… (Ctrl+,: Audio, Appearance and Plugins) and Quit (Ctrl+Q, saves first); Track → Import Audio….
 - **Launch page:** new project (`Documents/DAW Projects/<name>/project.json`), Open…, recent projects. New songs start with one Synth node and one clip of demo notes.
 - **Header:** song name menu (Save, Rename, Back to projects) with "4/4 · Saved" under it, page tabs (Arrange, Parameters, Signals, Mixer), the pointer / scissors tool and snap control, transport (back, play/stop, loop, position) and **tempo** (click to type, Enter applies, Escape cancels; 20 to 999 BPM, two decimals), CPU meter.
 - **Arrange:** the node list (colour, name, meter, signal button, M/S) with the nesting map and toolbar, and clips on the timeline. Click the ruler to locate; click a node to select it (this enables Parameters and points the bottom panel at it). Double-click a clip, or an empty lane, to open the bottom panel: the piano roll for MIDI, the audio panel for audio.
@@ -47,6 +71,7 @@ The project file is at **version 16** (`crates/daw-engine/src/file.rs`); `upgrad
 
 ## Waiting on the user (try it)
 
+- **Preferences → Plugins** (2026-10-21): the folder list, Rescan, and that 148 plugins show. `cargo run -p daw-player -- plugins` lists them by vendor.
 - **Tempo** (2026-10-21): the field beside the transport, and changing it while audio clips play.
 - **Loop strip** (2026-10-21): drawing loops on each ruler, the handles, snapping, the loop button. The bottom panels' rulers grew from 18/22 px to 28 px.
 - **UI speed:** does it feel instant?
@@ -56,7 +81,7 @@ The project file is at **version 16** (`crates/daw-engine/src/file.rs`); `upgrad
 
 ## Next up
 
-1. **Phase 8, VST3 hosting** (`docs/design/vst3-hosting.md`, API facts in `docs/vst3-notes.md`): agreed: plugins in their own processes from the start (default: all together, as Bitwig), state in the project file, our own Rust test plugin, unlinked floating windows (a cross-process owner window was measured to freeze the DAW when the plugin hangs). **Step 1 built** (2026-10-21): `daw-plugins` (shared-memory audio with deadlines, host processes, crash and hang detection) and plugin effects in the engine with built-in test devices; the app and player run themselves as plugin hosts. No VST3 or UI yet. **Step 2 scanner built** (2026-10-21): finds and reads every installed VST3 (148 plugins, none failed, on the user's machine), cached; `cargo run -p daw-player -- plugins` lists them. Preferences → Plugins built (folders, Rescan, progress, failures with Retry); the app scans in the background from startup. Next: step 3, effects from real VST3 plugins, with the modal browser (Built-in | Plugins) for adding instruments and effects.
+1. **Phase 8, VST3 hosting:** see "In progress" above.
 2. **Phase 5, rest:** a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call).
 3. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): three so far (Arrange double-click, looping a clip, menus). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
 4. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI). Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
@@ -80,6 +105,7 @@ The project file is at **version 16** (`crates/daw-engine/src/file.rs`); `upgrad
 
 - **TODO (user, 2026-10-19): audio file types beyond WAV** (MP3, FLAC, AIFF; `symphonia` is the likely crate) for samples and audio clips. Reading files in the background, too.
 - No node colour picker yet (the engine has `SetNodeColor`).
+- Plugin hosting: starting the host process and creating instances happens on the control (UI) thread, so the first plugin in a song pauses the UI briefly; Windows only (macOS and Linux report "unsupported"); no delay compensation yet; plugins always run in realtime mode (offline exports should set up `kOffline`).
 - One built-in effect (Filter) and two instruments (Synth, SingleSampler). Effects are added on the mixer; their settings show only on Parameters for now.
 - Recording, MIDI keyboard input, MIDI file import and more instruments are Phase 9.
 - The inspector shows nothing on Parameters, for drawn signals, or for a selected effect or instrument.
