@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 
 ./scripts/check.sh
 
-export RUSTFLAGS="-D warnings"
+# No RUSTFLAGS (see check.sh): clippy denies warnings.
 cargo clippy -p daw-ui --all-targets --features ui-tests -- -D warnings
 cargo test -p daw-ui --features ui-tests ui_tests
 # Frame-time budgets on a full-size song: release, one test at a time.

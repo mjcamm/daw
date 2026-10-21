@@ -3,7 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-export RUSTFLAGS="-D warnings"
+# No RUSTFLAGS: changing them rebuilds every crate (GPUI included) and
+# stops these builds sharing with `cargo run`. Clippy below denies warnings.
 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
