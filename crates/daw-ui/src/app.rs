@@ -59,13 +59,13 @@ enum Choice {
     Threads,
 }
 
-enum Screen {
+pub(crate) enum Screen {
     Launch(Entity<LaunchView>),
     Project(Entity<ProjectView>),
 }
 
 pub struct AppView {
-    screen: Screen,
+    pub(crate) screen: Screen,
     recent: RecentProjects,
     pub(crate) preferences: StoredPreferences,
     /// The menu bar's open menu, if any.
@@ -181,6 +181,7 @@ impl AppView {
             },
         );
         self.screen = Screen::Project(view);
+        self.share_plugins(cx);
         cx.notify();
     }
 

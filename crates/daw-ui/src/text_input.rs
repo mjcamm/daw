@@ -66,6 +66,8 @@ pub enum TextInputEvent {
     Confirm(String),
     /// Escape was pressed.
     Cancel,
+    /// The text changed (typing, deleting, pasting); carries the text.
+    Changed(String),
 }
 
 pub struct TextInput {
@@ -78,6 +80,8 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// No box of its own: the field sits in a box drawn around it.
+    plain: bool,
 }
 
 impl EventEmitter<TextInputEvent> for TextInput {}
@@ -95,7 +99,14 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            plain: false,
         }
+    }
+
+    /// Without its own box, for a field drawn inside another (a search box).
+    pub fn plain(mut self) -> Self {
+        self.plain = true;
+        self
     }
 
     pub fn text(&self) -> &str {
@@ -348,6 +359,7 @@ impl EntityInputHandler for TextInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        cx.emit(TextInputEvent::Changed(self.content.to_string()));
         cx.notify();
     }
 
@@ -374,6 +386,7 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .map(|new_range| new_range.start + range.start..new_range.end + range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        cx.emit(TextInputEvent::Changed(self.content.to_string()));
         cx.notify();
     }
 
@@ -609,12 +622,14 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .w_full()
-            .px(px(6.))
-            .py(px(2.))
-            .rounded(px(5.))
-            .bg(theme.window)
-            .border_1()
-            .border_color(theme.accent)
+            .when(!self.plain, |d| {
+                d.px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(5.))
+                    .bg(theme.window)
+                    .border_1()
+                    .border_color(theme.accent)
+            })
             .text_color(theme.text)
             .child(TextElement { input: cx.entity() })
     }

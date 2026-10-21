@@ -108,7 +108,10 @@ impl Session {
             .as_ref()
             .map_or_else(|_| EngineConfig::default(), OutputDevice::engine_config);
         let (mut engine, processor) = Engine::new(config);
-        if let Some(command) = daw_host::plugins::host_command() {
+        // Tests run no plugins (their binary can't be a plugin host).
+        if let Some(command) = daw_host::plugins::host_command()
+            && !cfg!(test)
+        {
             engine.set_plugin_host(command);
         }
         engine.set_sample_dir(Some(folder.clone()));

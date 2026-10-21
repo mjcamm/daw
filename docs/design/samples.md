@@ -26,7 +26,7 @@
 
 ## UI (first pass)
 
-- The instrument browser lists SingleSampler under BUILT-IN.
+- The device browser lists SingleSampler under Built-in.
 - A MIDI node's subtitle on Arrange names its first instrument and how many more are layered ("MIDI · SingleSampler", "MIDI · Synth +1").
 - On a strip, a SingleSampler's chip shows its sample's name. Clicking the chip's name opens a small panel: the sample's name (or "No sample"), and **Choose sample…**, which opens a file picker for WAV files, copies the file into the project and sets it as the sample (one undo step). The panel also shows **Plays note**, the trigger note, changed by dragging sideways.
 

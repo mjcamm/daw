@@ -3,6 +3,7 @@
 //! not load (`docs/design/vst3-hosting.md`, Scanning).
 
 use crate::app::AppView;
+use crate::browser::PluginShelf;
 use crate::icons::{Icon, icon};
 use crate::inspector::{group, section_label};
 use crate::theme::Theme;
@@ -38,6 +39,25 @@ fn panel(theme: &Theme) -> gpui::Div {
 const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 
 impl AppView {
+    /// Hands the plugins (and a running scan) to the open project, for its
+    /// device browser.
+    pub(crate) fn share_plugins(&self, cx: &mut Context<Self>) {
+        let crate::app::Screen::Project(view) = &self.screen else {
+            return;
+        };
+        let plugins = self
+            .scan
+            .catalog
+            .as_ref()
+            .map(|c| c.plugins().into_iter().cloned().collect())
+            .unwrap_or_default();
+        let shelf = PluginShelf {
+            plugins: Arc::new(plugins),
+            scanning: self.scan.scanning.then(|| self.scan.progress.clone()),
+        };
+        view.update(cx, |view, cx| view.set_plugins(shelf, cx));
+    }
+
     /// Brings the catalog up to date in the background: standard folders
     /// and the user's, scanning only what is new or changed.
     pub(crate) fn start_scan(&mut self, cx: &mut Context<Self>) {
@@ -46,6 +66,7 @@ impl AppView {
         }
         self.scan.scanning = true;
         self.scan.progress = Arc::default();
+        self.share_plugins(cx);
         let extra = self.preferences.preferences.plugin_folders.clone();
         let progress = self.scan.progress.clone();
         let task = cx
@@ -62,6 +83,7 @@ impl AppView {
                     }
                     Err(e) => this.scan.error = Some(e),
                 }
+                this.share_plugins(cx);
                 cx.notify();
             });
         })

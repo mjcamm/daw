@@ -189,6 +189,16 @@ pub enum PluginSpec {
     },
 }
 
+impl PluginSpec {
+    /// The name to show for it.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Test(_) => "Test",
+            Self::Vst3 { name, .. } => name,
+        }
+    }
+}
+
 /// A plugin instance's saved state: the processor's and the controller's
 /// own data (each opaque to the DAW), written as base64 in files and
 /// messages.

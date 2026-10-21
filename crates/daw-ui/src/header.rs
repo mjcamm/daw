@@ -308,6 +308,9 @@ impl ProjectView {
             &input,
             window,
             |this, _, event: &TextInputEvent, window, _| {
+                if matches!(event, TextInputEvent::Changed(_)) {
+                    return;
+                }
                 if let TextInputEvent::Confirm(text) = event
                     && let Some(bpm) = parse_tempo(text)
                     && bpm != this.session.snapshot().tempo_bpm

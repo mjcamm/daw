@@ -1,6 +1,7 @@
 //! An open project: header and the current page.
 
 use crate::block_edit::Snap;
+use crate::browser::{BrowserEvent, Choice, DeviceBrowser, PluginShelf, Side, Target};
 use crate::frame::{FrameDrag, TimelineView};
 use crate::layout::PIXELS_PER_BEAT;
 use crate::live::{LiveLayer, PaneKind};
@@ -219,6 +220,12 @@ pub struct ProjectView {
     /// A scrollbar or zoom slider being dragged.
     pub(crate) frame_drag: Option<FrameDrag>,
     pub(crate) rename: Option<Rename>,
+    /// The device browser, while open.
+    pub(crate) browser: Option<(Entity<DeviceBrowser>, Subscription)>,
+    /// The browser's side the user chose last; it opens there.
+    browser_side: Side,
+    /// The plugins the browser offers (handed over by the app).
+    plugins: PluginShelf,
     pub(crate) save_error: Option<String>,
     window_title: String,
     pub(crate) focus: FocusHandle,
@@ -356,6 +363,9 @@ impl ProjectView {
             pending_param: None,
             frame_drag: None,
             rename: None,
+            browser: None,
+            browser_side: Side::default(),
+            plugins: PluginShelf::default(),
             save_error: None,
             window_title: String::new(),
             focus,
@@ -452,6 +462,7 @@ impl ProjectView {
                 let name = match event {
                     TextInputEvent::Confirm(name) => Some(name.clone()),
                     TextInputEvent::Cancel => None,
+                    TextInputEvent::Changed(_) => return,
                 };
                 this.finish_rename(name, window, cx);
             },
@@ -650,6 +661,12 @@ impl Render for ProjectView {
             .children(self.import_error.clone().map(banner))
             .child(page)
             .child(live_layer)
+            .when_some(self.browser.as_ref(), |d, (browser, _)| {
+                // Its own cached view: playback frames reuse it.
+                d.child(div().absolute().size_full().child(
+                    AnyView::from(browser.clone()).cached(StyleRefinement::default().size_full()),
+                ))
+            })
     }
 }
 
@@ -979,6 +996,76 @@ impl ProjectView {
                 self.scissors_at = None;
             }
             _ => self.set_note_tool(note),
+        }
+    }
+
+    /// The plugins the browser offers, and a scan's progress.
+    pub(crate) fn set_plugins(&mut self, shelf: PluginShelf, cx: &mut Context<Self>) {
+        self.plugins = shelf.clone();
+        if let Some((browser, _)) = &self.browser {
+            browser.update(cx, |b, cx| b.set_shelf(shelf, cx));
+        }
+    }
+
+    /// Opens the device browser for adding to `target`.
+    pub(crate) fn open_browser(
+        &mut self,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu = None;
+        let (side, shelf) = (self.browser_side, self.plugins.clone());
+        let browser = cx.new(|cx| DeviceBrowser::new(target, side, shelf, window, cx));
+        let subscription = cx.subscribe_in(
+            &browser,
+            window,
+            |this, browser, event: &BrowserEvent, window, cx| {
+                let target = browser.read(cx).target();
+                if let BrowserEvent::Chose(choice) = event {
+                    this.add_device(target, choice.clone());
+                }
+                this.close_browser(window, cx);
+            },
+        );
+        self.browser = Some((browser, subscription));
+        self.invalidate_all(cx);
+        cx.notify();
+    }
+
+    /// The browser's target, while it is open.
+    pub(crate) fn browsing(&self, cx: &gpui::App) -> Option<Target> {
+        self.browser.as_ref().map(|(b, _)| b.read(cx).target())
+    }
+
+    fn close_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((browser, _)) = self.browser.take() {
+            self.browser_side = browser.read(cx).side();
+        }
+        window.focus(&self.focus);
+        self.invalidate_all(cx);
+        cx.notify();
+    }
+
+    /// Adds what the browser chose.
+    fn add_device(&mut self, target: Target, choice: Choice) {
+        let node = target.node();
+        match (target, choice) {
+            (Target::Instrument(_), Choice::Instrument(kind)) => self.add_instrument(node, kind),
+            (Target::Effect(_), Choice::Effect(kind)) => {
+                self.add_effect(node, daw_engine::Effect::new(kind));
+            }
+            (Target::Effect(_), Choice::Plugin(info)) => {
+                let spec = daw_engine::PluginSpec::Vst3 {
+                    bundle: info.bundle,
+                    cid: info.cid,
+                    name: info.name,
+                    vendor: info.vendor,
+                };
+                self.add_effect(node, daw_engine::Effect::plugin(spec));
+            }
+            // Plugin instruments can't be chosen yet.
+            _ => {}
         }
     }
 

@@ -50,6 +50,7 @@ impl LaunchView {
                 match event {
                     TextInputEvent::Confirm(name) => this.create(name.clone(), cx),
                     TextInputEvent::Cancel => this.new_name = None,
+                    TextInputEvent::Changed(_) => return,
                 }
                 cx.notify();
             });

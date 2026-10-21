@@ -5,6 +5,7 @@ mod arrange;
 mod audio_import;
 mod audio_panel;
 mod block_edit;
+mod browser;
 mod clip_drag;
 mod clip_edit;
 mod clip_paint;
@@ -89,6 +90,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-a", SelectAll, not_typing),
         KeyBinding::new("secondary-c", CopyNotes, not_typing),
         KeyBinding::new("secondary-v", PasteNotes, not_typing),
+        // The device browser's list, while typing in its search.
+        KeyBinding::new("up", browser::Up, Some(browser::KEY_CONTEXT)),
+        KeyBinding::new("down", browser::Down, Some(browser::KEY_CONTEXT)),
     ]
 }
 

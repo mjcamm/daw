@@ -313,6 +313,40 @@ fn perf_mixer() {
     check("mixer", t, 6., 20.);
 }
 
+/// The device browser open over the mixer, on the Plugins side with 150
+/// plugins (the user's machine has 148).
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_browser() {
+    use crate::browser::{PluginShelf, Target};
+    let mut h = Harness::new("perf-browser");
+    heavy_song(&mut h);
+    let plugins = (0..150)
+        .map(|i| daw_plugins::scan::PluginInfo {
+            bundle: format!("C:/VST3/Plugin {i}.vst3").into(),
+            cid: format!("{i:032X}"),
+            name: format!("Plugin {i}"),
+            vendor: format!("Vendor {}", i / 6),
+            version: "1.0".into(),
+            subcategories: vec!["Fx".into(), "Delay".into()],
+        })
+        .collect();
+    let shelf = PluginShelf {
+        plugins: std::sync::Arc::new(plugins),
+        scanning: None,
+    };
+    h.view.update_in(h.cx, |view, window, cx| {
+        view.page = Page::Mixer;
+        view.set_plugins(shelf, cx);
+        view.open_browser(Target::Effect(daw_engine::FIRST_NODE), window, cx);
+    });
+    h.redraw();
+    let plugins = h.bounds("browser-side-Plugins").center();
+    h.click(plugins, 1);
+    let t = measure(&mut h, "browser");
+    check("browser", t, 6., 20.);
+}
+
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timings need a release build")]
 fn perf_parameters() {

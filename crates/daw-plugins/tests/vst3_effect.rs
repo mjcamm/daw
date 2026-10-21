@@ -9,8 +9,8 @@ mod common;
 use common::{GAIN_CID, install};
 use daw_engine::AudioProcessor;
 use daw_engine::{
-    ClipId, Command, DeviceId, Edit, Effect, Engine, EngineConfig, FIRST_NODE, MidiClip, MidiNote,
-    PluginData, PluginSpec, ProjectFile, Ticks,
+    ClipId, Command, DeviceId, DeviceRef, Edit, Effect, Engine, EngineConfig, FIRST_NODE, MidiClip,
+    MidiNote, PluginData, PluginSpec, ProjectFile, Ticks,
 };
 use daw_plugins::block::{Context, Layout, Outcome, ParamChange};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
@@ -193,6 +193,13 @@ fn a_plugins_state_is_saved_in_the_song_and_survives_undo() {
     let half = |r: &Rendered| r.samples.iter().map(|s| s * 0.5).collect::<Vec<_>>();
 
     let (mut engine, _) = song(Some(gain(&bundle)));
+    let named = engine.snapshot().node(FIRST_NODE).and_then(|n| {
+        n.devices
+            .iter()
+            .find(|d| d.device == DeviceRef::Effect(EFFECT))
+            .map(|d| d.name.clone())
+    });
+    assert_eq!(named.as_deref(), Some("Test Gain"), "shown by its own name");
     let mut file = engine.to_file();
     assert_eq!(
         file.plugin_states().get(&EFFECT),

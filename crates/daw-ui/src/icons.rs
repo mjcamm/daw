@@ -37,10 +37,16 @@ pub enum Icon {
     Fold,
     Unfold,
     Group,
+    Search,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 28] = [
+const ICONS: [(Icon, &str, &[u8]); 29] = [
+    (
+        Icon::Search,
+        "icons/search.svg",
+        include_bytes!("../assets/icons/search.svg"),
+    ),
     (
         Icon::Play,
         "icons/play.svg",

@@ -75,6 +75,8 @@ Application::new()
 - This app draws its own menu bar (a strip of `menu::item` dropdowns in `app.rs`) rather than `cx.set_menus`, so it looks the same on every platform.
 - Global actions: `cx.on_action(|_: &Quit, cx| ...)` runs when no element on the focus path handles the action. Element `.on_action` handlers stop propagation by default, so the root view's handler wins when it is on the path.
 - Modal: an absolutely positioned, `.occlude()`d full-size scrim as the root's last child, with the panel inside it also `.occlude()`d. Clicks on the panel never reach the scrim, so the scrim's `on_click` can close the modal.
+- A modal over a project whose root redraws every playback frame: make it its own view and add it as `AnyView::from(entity).cached(..)` inside an absolute full-size div (`browser.rs`), so playback frames reuse it.
+- Long lists: `uniform_list(id, count, cx.processor(|this, range, window, cx| rows))` builds only the rows on screen (all rows one height); `.track_scroll(UniformListScrollHandle)` and `scroll_to_item(i, ScrollStrategy::Center)` follow a keyboard highlight.
 - Re-theming at runtime: set the `Theme` global, then `window.refresh()` so every view redraws.
 
 ## Events between views

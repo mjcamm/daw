@@ -194,6 +194,16 @@ pub fn effect_name(kind: EffectKind) -> &'static str {
     }
 }
 
+pub fn effect_description(kind: EffectKind) -> &'static str {
+    match kind {
+        EffectKind::Filter => "Resonant low-, high- or band-pass filter",
+        EffectKind::Plugin => "A plugin",
+    }
+}
+
+/// Every built-in effect, for the browser.
+pub const EFFECTS: [EffectKind; 1] = [EffectKind::Filter];
+
 /// Parameters of the channel; instruments and effects depend on their kind.
 pub fn fixed_device_params(device: DeviceRef) -> Option<&'static [ParamInfo]> {
     match device {

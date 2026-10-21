@@ -112,7 +112,9 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Behaviour | Test |
 |---|---|
 | Fader and pan (double-click resets); mute and solo | – |
-| + Instrument opens the browser; effect slots add, switch, remove | – |
+| + Instrument and + Effect open the device browser (Built-in \| Plugins, plugins under vendor headings); search and Enter add a plugin | `browser::a_plugin_effect_is_found_by_search_and_added_with_enter` |
+| The device browser opens on the side used last; arrows and Enter pick; Escape or a click outside closes | `browser::the_browser_remembers_its_side_and_works_from_the_keys` |
+| Effect slots switch and remove | – |
 | SingleSampler chip: Choose sample… | – |
 | SingleSampler panel: Plays note (its trigger note, auto-assigned from C1 among siblings) | – |
 | Map chevrons fold; strip-width slider | – |

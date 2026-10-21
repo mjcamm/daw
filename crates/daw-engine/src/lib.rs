@@ -585,7 +585,7 @@ fn node_snapshot(
                         DeviceRef::Channel => true,
                     },
                     plugin: None,
-                    name: device_name(node, device).to_owned(),
+                    name: device_name(node, device),
                     params: params
                         .iter()
                         .zip(infos)
@@ -605,17 +605,21 @@ fn node_snapshot(
     }
 }
 
-fn device_name(node: &Node, device: DeviceRef) -> &'static str {
+/// A device's name; a plugin's own name for a plugin effect.
+fn device_name(node: &Node, device: DeviceRef) -> String {
     match device {
         DeviceRef::Instrument(id) => node
             .instrument(id)
-            .map_or("Instrument", |(_, i)| devices::instrument_name(i.kind)),
-        DeviceRef::Channel => "Channel",
-        DeviceRef::Effect(id) => node
-            .effects
-            .iter()
-            .find(|(e, _)| *e == id)
-            .map_or("Effect", |(_, effect)| effect_name(effect.kind)),
+            .map_or("Instrument", |(_, i)| devices::instrument_name(i.kind))
+            .to_owned(),
+        DeviceRef::Channel => "Channel".to_owned(),
+        DeviceRef::Effect(id) => node.effects.iter().find(|(e, _)| *e == id).map_or(
+            "Effect".to_owned(),
+            |(_, effect)| match &effect.plugin {
+                Some(spec) => spec.name().to_owned(),
+                None => effect_name(effect.kind).to_owned(),
+            },
+        ),
     }
 }
 

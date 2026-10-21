@@ -371,6 +371,9 @@ impl ProjectView {
             &input,
             window,
             move |this, _, event: &TextInputEvent, window, _| {
+                if matches!(event, TextInputEvent::Changed(_)) {
+                    return;
+                }
                 if let TextInputEvent::Confirm(text) = event
                     && let Some(bpm) = parse_bpm(text)
                     && let Some((clip_id, clip)) = this.panel_clip()
