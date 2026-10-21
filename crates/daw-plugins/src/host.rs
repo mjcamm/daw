@@ -4,7 +4,8 @@
 
 use crate::block::{HostBlock, HostEnd, Served};
 use crate::control::{
-    FromHost, PROTOCOL, PluginSpec, Reply, Request, TestPlugin, ToHost, read_message, write_message,
+    FromHost, PROTOCOL, PluginParamInfo, PluginSpec, Reply, Request, TestPlugin, ToHost,
+    read_message, write_message,
 };
 use crate::sys::Event;
 use crate::vst3::Module;
@@ -90,6 +91,17 @@ impl Host {
                     Processor::Vst3(plugin) => Some(plugin.state_handle()),
                     Processor::Test(_) => None,
                 };
+                let test_params = match &device {
+                    PluginSpec::Test(TestPlugin::Gain) => vec![PluginParamInfo {
+                        id: 0,
+                        name: "Gain".into(),
+                        group: String::new(),
+                        unit: String::new(),
+                        steps: 0,
+                        value: 0.5,
+                    }],
+                    _ => Vec::new(),
+                };
                 if let (Some(handle), Some(state)) = (&handle, &state) {
                     handle.set(state);
                 }
@@ -97,6 +109,7 @@ impl Host {
                     instance,
                     Instance {
                         state: handle,
+                        test_params,
                         processor: Some(processor),
                         running: None,
                     },
@@ -109,6 +122,16 @@ impl Host {
                     .get(&instance)
                     .ok_or_else(|| format!("no instance {instance}"))?;
                 Ok(Reply::State(entry.state.as_ref().map(Vst3State::get)))
+            }
+            Request::GetParams { instance } => {
+                let entry = self
+                    .instances
+                    .get(&instance)
+                    .ok_or_else(|| format!("no instance {instance}"))?;
+                Ok(Reply::Params(match &entry.state {
+                    Some(handle) => handle.params(),
+                    None => entry.test_params.clone(),
+                }))
             }
             Request::Activate {
                 instance,
@@ -208,6 +231,8 @@ impl Host {
 struct Instance {
     /// Reads the plugin's state while it processes (none for test devices).
     state: Option<Vst3State>,
+    /// A built-in test device's parameters.
+    test_params: Vec<PluginParamInfo>,
     /// Here while not processing; with the audio thread while it is.
     processor: Option<Processor>,
     running: Option<Running>,

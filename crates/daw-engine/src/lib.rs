@@ -31,15 +31,15 @@ pub use daw_protocol::{
     Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId,
     LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip,
     MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId,
-    ParamSnapshot, ParamState, Peaks, Piece, PluginData, PluginSnapshot, PluginSpec, PluginState,
-    SEAM_FADE, SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape,
-    ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot,
-    TICKS_PER_BEAT, TestPlugin, Ticks,
+    ParamSnapshot, ParamState, Peaks, Piece, PluginData, PluginParam, PluginParamInfo,
+    PluginSnapshot, PluginSpec, PluginState, SEAM_FADE, SampleId, SampleRef, SampleSnapshot,
+    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
+    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
-    DEFAULT_TEMPO_BPM, FIRST_INSTRUMENT, FIRST_NODE, MAX_EFFECTS, MAX_INSTRUMENTS, MAX_NODES,
-    MAX_TEMPO_BPM, MIN_TEMPO_BPM, NodeExt, Project, song, synth_node,
+    DEFAULT_TEMPO_BPM, DeviceParams, FIRST_INSTRUMENT, FIRST_NODE, MAX_EFFECTS, MAX_INSTRUMENTS,
+    MAX_NODES, MAX_PLUGIN_PARAMS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, NodeExt, Project, song, synth_node,
 };
 pub use schedule::{EffectState, NodeRender, RenderState, ScheduledNote};
 
@@ -297,6 +297,14 @@ impl Engine {
 
     /// How to start a plugin host process (the app runs itself in
     /// plugin-host mode). Without one, plugin effects are silent and say so.
+    /// For a front end's tests, which run no plugin host: the parameters
+    /// a plugin effect would list if it were running.
+    #[doc(hidden)]
+    pub fn show_plugin_params(&mut self, effect: DeviceId, params: Vec<PluginParamInfo>) {
+        self.plugins.show_params(effect, params);
+        self.revision += 1;
+    }
+
     pub fn set_plugin_host(&mut self, command: daw_plugins::client::HostCommand) {
         self.plugins.set_command(command);
         self.publish_state();
@@ -386,6 +394,7 @@ impl Engine {
                             .plugins
                             .state(id)
                             .unwrap_or_else(|| PluginState::Failed("not started".into())),
+                        params: self.plugins.params(id),
                     });
                 }
             }
@@ -586,19 +595,39 @@ fn node_snapshot(
                     },
                     plugin: None,
                     name: device_name(node, device),
-                    params: params
-                        .iter()
-                        .zip(infos)
-                        .enumerate()
-                        .map(|(index, (state, info))| {
-                            let id = ParamId {
-                                node: entry.id,
-                                device,
-                                index: index as u32,
-                            };
-                            param_snapshot(id, state, info, signals, position_beats)
-                        })
-                        .collect(),
+                    params: match params {
+                        DeviceParams::Indexed(states) => states
+                            .iter()
+                            .zip(infos)
+                            .enumerate()
+                            .map(|(index, (state, info))| {
+                                let id = ParamId {
+                                    node: entry.id,
+                                    device,
+                                    index: index as u32,
+                                };
+                                param_snapshot(id, state, info, info.name, signals, position_beats)
+                            })
+                            .collect(),
+                        DeviceParams::Plugin(params) => params
+                            .iter()
+                            .map(|param| {
+                                let id = ParamId {
+                                    node: entry.id,
+                                    device,
+                                    index: param.id,
+                                };
+                                param_snapshot(
+                                    id,
+                                    &param.state,
+                                    &devices::PLUGIN_PARAM,
+                                    &param.name,
+                                    signals,
+                                    position_beats,
+                                )
+                            })
+                            .collect(),
+                    },
                 }
             })
             .collect(),
@@ -627,13 +656,14 @@ fn param_snapshot(
     id: ParamId,
     state: &ParamState,
     info: &ParamInfo,
+    name: &str,
     signals: &Signals,
     position_beats: f64,
 ) -> ParamSnapshot {
     let value = Automation::compile_with(state, signals).value_at(position_beats);
     ParamSnapshot {
         id,
-        name: info.name.to_owned(),
+        name: name.to_owned(),
         scale: info.scale,
         unit: info.unit.to_owned(),
         choices: info.choices.iter().map(|&c| c.to_owned()).collect(),

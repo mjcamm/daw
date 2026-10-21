@@ -32,7 +32,8 @@ use crate::zoom::Zoom;
 use daw_automation::{Automation, CompiledBlock, Signals};
 use daw_engine::{
     BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId,
-    NodeSnapshot, ParamId, ParamSnapshot, SignalId, SignalSource, Snapshot, Ticks,
+    NodeSnapshot, ParamId, ParamSnapshot, ParamState, PluginParam, SignalId, SignalSource,
+    Snapshot, Ticks,
 };
 use gpui::{
     AnyElement, Bounds, ClickEvent, Context, Div, FontWeight, Hsla, Modifiers, MouseButton,
@@ -1340,16 +1341,25 @@ impl ProjectView {
             Row::AddParam(device) => {
                 let open = self.open_menu == Some(OpenMenu::AddParam(device.device));
                 let device_ref = device.device;
+                // A plugin's parameters come in a searchable list.
+                let plugin = device.plugin.is_some().then(|| (*device).clone());
                 let button = quiet_action(
                     cell.pl(px(16.)),
                     ("add-param", index),
                     "Add Parameter",
                     theme,
                 )
+                .debug_selector(move || format!("add-param-{}", device_selector(device_ref)))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, _| {
-                        this.toggle_menu(OpenMenu::AddParam(device_ref));
+                    cx.listener(move |this, _, window, cx| match &plugin {
+                        Some(device) => {
+                            // The project would take focus back from the
+                            // list's search.
+                            cx.stop_propagation();
+                            this.open_param_picker(device, window, cx);
+                        }
+                        None => this.toggle_menu(OpenMenu::AddParam(device_ref)),
                     }),
                 );
                 div()
@@ -1642,6 +1652,23 @@ impl ProjectView {
         if let Some(param) = self.pending_param.filter(|p| p.device == device.device) {
             return menu::float(self.layer_kind_panel(param, 0, theme, cx));
         }
+        if device.plugin.is_some() {
+            let picker = self
+                .param_picker
+                .as_ref()
+                .filter(|(p, _)| p.read(cx).device() == device.device)
+                .map(|(p, _)| p.clone());
+            return menu::float(
+                menu::panel(theme)
+                    .p(px(8.))
+                    .on_mouse_down_out(cx.listener(|this, _, window, _| {
+                        this.dismiss_menu();
+                        this.param_picker = None;
+                        window.focus(&this.focus);
+                    }))
+                    .children(picker),
+            );
+        }
         let available: Vec<_> = device
             .params
             .iter()
@@ -1783,13 +1810,63 @@ impl ProjectView {
         let id = next_layer_id(self.session.snapshot());
         let mut layer = Layer::named(name, BlendMode::Add);
         layer.signal = signal;
-        self.session.apply(Command::Edit(Edit::AddLayer {
+        let add = Edit::AddLayer {
             param,
             id,
             index: 0,
             layer,
-        }));
+        };
+        // A plugin parameter joins the song with its first layer, in one
+        // undo step.
+        let edit = match plugin_param_to_add(self.session.snapshot(), param) {
+            Some(join) => Edit::Batch(vec![join, add]),
+            None => add,
+        };
+        self.session.apply(Command::Edit(edit));
     }
+}
+
+/// A device's name in element selectors: "channel", "instrument-3",
+/// "effect-900".
+pub(crate) fn device_selector(device: DeviceRef) -> String {
+    match device {
+        DeviceRef::Channel => "channel".into(),
+        DeviceRef::Instrument(id) => format!("instrument-{}", id.0),
+        DeviceRef::Effect(id) => format!("effect-{}", id.0),
+    }
+}
+
+/// The edit adding a plugin's parameter to the song, resting where the
+/// plugin holds it, if it is a plugin parameter not in the song yet.
+fn plugin_param_to_add(snapshot: &Snapshot, param: ParamId) -> Option<Edit> {
+    let DeviceRef::Effect(effect) = param.device else {
+        return None;
+    };
+    let device = snapshot
+        .node(param.node)?
+        .devices
+        .iter()
+        .find(|d| d.device == param.device)?;
+    if device.params.iter().any(|p| p.id == param) {
+        return None;
+    }
+    let info = device
+        .plugin
+        .as_ref()?
+        .params
+        .iter()
+        .find(|p| p.id == param.index)?;
+    Some(Edit::AddPluginParam {
+        effect,
+        param: PluginParam {
+            id: info.id,
+            name: info.name.clone(),
+            state: ParamState {
+                base: info.value,
+                layers: Vec::new(),
+            },
+        },
+    })
 }
 
 /// Which step the add-layer menu shows.
@@ -1812,6 +1889,7 @@ fn menu_row(
     let hover = theme.hover;
     div()
         .id(id)
+        .debug_selector(move || id.into())
         .flex()
         .items_center()
         .gap(px(8.))

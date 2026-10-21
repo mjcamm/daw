@@ -122,6 +122,34 @@ fn a_vst3_effect_starts_from_saved_state_and_reports_it_while_running() {
     host.destroy(id).unwrap();
 }
 
+#[test]
+fn a_vst3_effect_lists_its_automatable_parameters_with_their_groups() {
+    let (_, bundle) = install("vst3-params");
+    let mut host = HostProcess::spawn(&host_command()).unwrap();
+    let id = next_instance();
+    host.create(id, gain(&bundle), Some(gain_state(0.25)))
+        .unwrap();
+    let params = host.params(id).unwrap();
+    let listed: Vec<_> = params
+        .iter()
+        .map(|p| {
+            (
+                p.id,
+                p.name.as_str(),
+                p.group.as_str(),
+                p.unit.as_str(),
+                p.value,
+            )
+        })
+        .collect();
+    // The read-only Meter is not offered.
+    assert_eq!(
+        listed,
+        [(0, "Gain", "", "x", 0.25), (7, "Tilt", "Tone", "dB", 0.0)]
+    );
+    host.destroy(id).unwrap();
+}
+
 /// A song of two notes, through `effect` (as effect 900) if given.
 fn song(effect: Option<PluginSpec>) -> (Engine, AudioProcessor) {
     let (mut engine, processor) = Engine::new(EngineConfig::default());

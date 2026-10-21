@@ -70,6 +70,24 @@ fn installed_effects_process_audio_in_a_host_process() {
             failures.push(format!("{name}: create: {e}"));
             continue;
         }
+        // Their automatable parameters, as "+ Add Parameter" lists them.
+        match host.params(id) {
+            Ok(params) => {
+                let groups: std::collections::BTreeSet<&str> =
+                    params.iter().map(|p| p.group.as_str()).collect();
+                let first: Vec<String> = params
+                    .iter()
+                    .take(4)
+                    .map(|p| format!("{} [{}] {:.2}", p.name, p.group, p.value))
+                    .collect();
+                println!(
+                    "{name}: {} parameters in {} groups, first {first:?}",
+                    params.len(),
+                    groups.len()
+                );
+            }
+            Err(e) => failures.push(format!("{name}: params: {e}")),
+        }
         let mut block = match host.activate(id, layout, 48_000.) {
             Ok(block) => block,
             Err(e) => {

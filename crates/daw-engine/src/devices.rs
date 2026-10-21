@@ -154,10 +154,23 @@ pub static FILTER_PARAMS: [ParamInfo; 3] = [
     },
 ];
 
+/// How a plugin's parameter shows: its normalized value as a percentage
+/// (the plugin's own value text comes later). Named by the plugin.
+pub static PLUGIN_PARAM: ParamInfo = ParamInfo::new(
+    "",
+    "%",
+    Scale::Linear {
+        min: 0.0,
+        max: 100.0,
+    },
+    0.0,
+);
+
 pub fn effect_params(kind: EffectKind) -> &'static [ParamInfo] {
     match kind {
         EffectKind::Filter => &FILTER_PARAMS,
-        // A plugin's parameters come from the plugin (later).
+        // A plugin's parameters come from the plugin, by its ids
+        // (`Effect::plugin_params`).
         EffectKind::Plugin => &[],
     }
 }

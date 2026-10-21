@@ -69,6 +69,8 @@ pub struct EffectState {
     pub enabled: bool,
     /// One automation per parameter, in index order.
     pub params: Vec<Automation>,
+    /// A plugin's parameters in the song, by the plugin's ids.
+    pub plugin_params: Vec<(u32, Automation)>,
 }
 
 /// A note at an absolute song position, in beats.
@@ -248,6 +250,11 @@ fn compile_node(
                 kind: effect.kind,
                 enabled: effect.enabled,
                 params: compile_params(&effect.params, signals),
+                plugin_params: effect
+                    .plugin_params
+                    .iter()
+                    .map(|p| (p.id, Automation::compile_with(&p.state, signals)))
+                    .collect(),
             })
             .collect(),
         channel: compile_params(&node.channel, signals),

@@ -8,7 +8,8 @@
 
 use crate::block::{DawBlock, Layout, Names};
 use crate::control::{
-    FromHost, PROTOCOL, PluginData, PluginSpec, Reply, Request, ToHost, read_message, write_message,
+    FromHost, PROTOCOL, PluginData, PluginParamInfo, PluginSpec, Reply, Request, ToHost,
+    read_message, write_message,
 };
 use crate::sys::Job;
 use std::fmt;
@@ -161,7 +162,15 @@ impl HostProcess {
     pub fn state(&mut self, instance: u64) -> Result<Option<PluginData>, HostError> {
         match self.call(Request::GetState { instance })? {
             Reply::State(state) => Ok(state),
-            Reply::Done => Ok(None),
+            _ => Ok(None),
+        }
+    }
+
+    /// The instance's automatable parameters, in the plugin's order.
+    pub fn params(&mut self, instance: u64) -> Result<Vec<PluginParamInfo>, HostError> {
+        match self.call(Request::GetParams { instance })? {
+            Reply::Params(params) => Ok(params),
+            _ => Ok(Vec::new()),
         }
     }
 

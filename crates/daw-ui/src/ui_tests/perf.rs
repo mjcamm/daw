@@ -361,6 +361,53 @@ fn perf_parameters() {
     check("parameters", t, 6., 25.);
 }
 
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_param_picker() {
+    use daw_engine::{DeviceId, Effect, PluginParamInfo, PluginSpec, TestPlugin};
+    let mut h = Harness::new("perf-param-picker");
+    heavy_song(&mut h);
+    // A stem's few rows keep its effects on screen.
+    let stem = h.view.read_with(h.cx, |view, _| {
+        view.session()
+            .snapshot()
+            .nodes
+            .iter()
+            .find(|n| n.name == "Stem 0")
+            .map(|n| n.id)
+            .expect("a stem")
+    });
+    let plugin = DeviceId(9_000);
+    // As many parameters as a big synth, in groups of 40.
+    let params = (0..600)
+        .map(|i| PluginParamInfo {
+            id: i,
+            name: format!("Parameter {i}"),
+            group: format!("Group {}", i / 40),
+            unit: String::new(),
+            steps: 0,
+            value: 0.5,
+        })
+        .collect();
+    h.view.update(h.cx, |view, _| {
+        view.session.apply_or_panic(Command::Edit(Edit::AddEffect {
+            node: stem,
+            id: plugin,
+            index: 0,
+            effect: Effect::plugin(PluginSpec::Test(TestPlugin::Gain)),
+        }));
+        view.session.show_plugin_params(plugin, params);
+        view.selected_node = Some(stem);
+        view.page = Page::Parameters;
+    });
+    h.redraw_all();
+    let add = h.bounds("add-param-effect-9000").center();
+    h.click(add, 1);
+    h.bounds("param-picker");
+    let t = measure(&mut h, "parameters + plugin list");
+    check("parameters + plugin list", t, 3., 10.);
+}
+
 /// Saves the full-size song as a project, to try speed by hand in the app:
 /// `DAW_HEAVY_SONG=<folder> cargo test -p daw-ui --features ui-tests
 /// save_heavy_song -- --ignored`.

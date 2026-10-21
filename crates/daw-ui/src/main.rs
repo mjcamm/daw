@@ -27,6 +27,7 @@ mod motion;
 mod note_edit;
 mod paint;
 mod pane;
+mod param_picker;
 mod parameters;
 mod piano_roll;
 mod plugin_settings;
@@ -93,6 +94,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         // The device browser's list, while typing in its search.
         KeyBinding::new("up", browser::Up, Some(browser::KEY_CONTEXT)),
         KeyBinding::new("down", browser::Down, Some(browser::KEY_CONTEXT)),
+        // A plugin's parameter list, while typing in its search.
+        KeyBinding::new("up", browser::Up, Some(param_picker::KEY_CONTEXT)),
+        KeyBinding::new("down", browser::Down, Some(param_picker::KEY_CONTEXT)),
     ]
 }
 

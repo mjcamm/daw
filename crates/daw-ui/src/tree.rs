@@ -347,11 +347,29 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
             DeviceRef::Channel => copy.channel = copy_params(&device.params, ids),
             DeviceRef::Effect(_) => {
                 if let Some(kind) = device.effect {
+                    let params = copy_params(&device.params, ids);
+                    // A plugin's parameters go by the plugin's ids.
+                    let (params, plugin_params) = if device.plugin.is_some() {
+                        let plugin_params = device
+                            .params
+                            .iter()
+                            .zip(params)
+                            .map(|(p, state)| daw_engine::PluginParam {
+                                id: p.id.index,
+                                name: p.name.clone(),
+                                state,
+                            })
+                            .collect();
+                        (Vec::new(), plugin_params)
+                    } else {
+                        (params, Vec::new())
+                    };
                     let effect = Effect {
                         kind,
                         enabled: device.enabled,
-                        params: copy_params(&device.params, ids),
+                        params,
                         plugin: device.plugin.as_ref().map(|p| p.spec.clone()),
+                        plugin_params,
                     };
                     copy.effects
                         .push((DeviceId(FreshIds::next(&mut ids.device)), effect));

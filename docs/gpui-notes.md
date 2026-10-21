@@ -84,6 +84,7 @@ Application::new()
 - A view that emits: `impl EventEmitter<MyEvent> for MyView {}`, then `cx.emit(MyEvent::X)`.
 - Listen with `cx.subscribe_in(&entity, window, |this, emitter, event: &MyEvent, window, cx| ...)` (gives `window`), or `cx.subscribe(...)` without it. Keep the `Subscription`.
 - Child views render by putting the `Entity` in the tree: `.child(entity.clone())`.
+- Focusing a new text field from a mouse-down handler: call `cx.stop_propagation()` too, or the press bubbles to an ancestor that tracks focus (the project root) and GPUI focuses that instead, so typing never reaches the field (`ProjectView::open_param_picker`). The mixer's add buttons do the same.
 
 ## Keys
 

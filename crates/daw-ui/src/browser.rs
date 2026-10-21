@@ -132,7 +132,7 @@ pub fn plugin_type(info: &PluginInfo) -> String {
 }
 
 /// Whether every word of `query` is in one of `fields` (ignoring case).
-fn matches(query: &str, fields: &[&str]) -> bool {
+pub(crate) fn matches(query: &str, fields: &[&str]) -> bool {
     let fields: Vec<String> = fields.iter().map(|f| f.to_lowercase()).collect();
     query
         .to_lowercase()

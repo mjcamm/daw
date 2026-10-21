@@ -27,7 +27,9 @@ use daw_dsp::pan::{balance, equal_power};
 use daw_dsp::sampler::Sampler;
 use daw_dsp::smoothing::Smoothed;
 use daw_dsp::synth::{MAX_VOICES, Synth};
-use daw_plugins::block::{Context as PluginContext, DawBlock, Outcome};
+use daw_plugins::block::{
+    Context as PluginContext, DawBlock, MAX_PARAM_CHANGES, Outcome, ParamChange,
+};
 use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -825,17 +827,51 @@ fn run_plugin(
     block: Option<&mut DawBlock>,
     left: &mut [f32],
     right: &mut [f32],
+    params: &[ParamChange],
     context: PluginContext,
     deadline: Option<Instant>,
 ) {
     let done = block.is_some_and(|block| {
-        block.process_in_place(&mut [&mut *left, &mut *right], &[], context, deadline)
+        block.process_in_place(&mut [&mut *left, &mut *right], params, context, deadline)
             == Outcome::Done
     });
     if !done {
         left.fill(0.0);
         right.fill(0.0);
     }
+}
+
+/// A plugin's parameter values for a chunk, at its control points: each
+/// parameter's first point, then a point wherever its value changed. A
+/// parameter at rest costs one change per chunk, so the plugin always
+/// follows the song. Returns how many were written; changes past `out`'s
+/// room are dropped.
+fn plugin_changes(
+    params: &[(u32, Automation)],
+    controls: &[ControlPoint],
+    out: &mut [ParamChange],
+) -> usize {
+    let mut count = 0;
+    for (id, automation) in params {
+        let mut last = None;
+        for point in controls {
+            let value = automation.value_at(point.beat);
+            if last == Some(value) {
+                continue;
+            }
+            last = Some(value);
+            let Some(slot) = out.get_mut(count) else {
+                return count;
+            };
+            *slot = ParamChange {
+                id: *id,
+                offset: point.offset as u32,
+                value,
+            };
+            count += 1;
+        }
+    }
+    count
 }
 
 /// A sounding note waiting for its scheduled end.
@@ -883,6 +919,8 @@ struct NodePlayer {
     /// whole blocks, not control periods).
     controls: [ControlPoint; MAX_CONTROL_POINTS],
     control_count: usize,
+    /// A plugin effect's parameter changes for the chunk.
+    plugin_changes: Box<[ParamChange; MAX_PARAM_CHANGES]>,
 }
 
 impl NodePlayer {
@@ -907,6 +945,7 @@ impl NodePlayer {
             scratch_right: Box::new([0.0; CHUNK_FRAMES]),
             controls: [ControlPoint::default(); MAX_CONTROL_POINTS],
             control_count: 0,
+            plugin_changes: Box::new([ParamChange::default(); MAX_PARAM_CHANGES]),
         }
     }
 
@@ -1173,7 +1212,17 @@ impl NodePlayer {
         for ((_, effect), state) in self.effects.iter_mut().zip(&node.effects) {
             if let EffectInstance::Plugin(block) = effect {
                 if state.enabled {
-                    run_plugin(block.as_deref_mut(), left, right, context, deadline);
+                    let count =
+                        plugin_changes(&state.plugin_params, controls, &mut *self.plugin_changes);
+                    let changes = &self.plugin_changes[..count];
+                    run_plugin(
+                        block.as_deref_mut(),
+                        left,
+                        right,
+                        changes,
+                        context,
+                        deadline,
+                    );
                 }
                 continue;
             }
@@ -1438,5 +1487,51 @@ mod tests {
         let mut out = [9.0; 4];
         write_output(&[2.0, f32::NAN], &[-2.0, 0.25], &mut out, 2);
         assert_eq!(out, [1.0, -1.0, 0.0, 0.25]);
+    }
+
+    #[test]
+    fn plugin_parameters_send_their_first_value_then_only_changes() {
+        use daw_protocol::{BlendMode, Block, BlockId, Layer, LayerId, ParamState, Shape, Ticks};
+        let resting = ParamState {
+            base: 0.25,
+            layers: Vec::new(),
+        };
+        let mut layer = Layer::new(BlendMode::Add);
+        // Over beats 1..2 the layer ramps from the centre to the top.
+        layer.blocks.push((
+            BlockId(1),
+            Block::new(
+                Ticks::from_beats(1),
+                Ticks::from_beats(1),
+                Shape::ramp(0.5, 1.0),
+            ),
+        ));
+        let moving = ParamState {
+            base: 0.0,
+            layers: vec![(LayerId(1), layer)],
+        };
+        let signals = daw_automation::Signals::default();
+        let params = [
+            (3, Automation::compile_with(&resting, &signals)),
+            (9, Automation::compile_with(&moving, &signals)),
+        ];
+        let controls: Vec<ControlPoint> = [0.0, 0.5, 1.25, 1.5]
+            .iter()
+            .enumerate()
+            .map(|(i, &beat)| ControlPoint {
+                offset: i * 32,
+                beat,
+            })
+            .collect();
+        let mut out = [ParamChange::default(); 8];
+        let count = plugin_changes(&params, &controls, &mut out);
+        let sent: Vec<(u32, u32)> = out[..count].iter().map(|c| (c.id, c.offset)).collect();
+        // The resting one once; the moving one at its start, then where it
+        // moves (beats 0 and 0.5 are both before the block).
+        assert_eq!(sent, [(3, 0), (9, 0), (9, 64), (9, 96)]);
+        assert_eq!(out[0].value, 0.25);
+        assert!(out[3].value > out[2].value);
+        // Out of room, the rest is dropped.
+        assert_eq!(plugin_changes(&params, &controls, &mut out[..2]), 2);
     }
 }

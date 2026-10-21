@@ -14,8 +14,8 @@ pub use audio_clip::{AudioClip, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MI
 pub use automation::{
     BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect, EffectKind,
     Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId, ParamState,
-    PluginData, PluginSpec, SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
-    SignalSource, TestPlugin,
+    PluginData, PluginParam, PluginParamInfo, PluginSpec, SampleId, Scale, Segment, Shape,
+    ShapePoint, Signal, SignalId, SignalSource, TestPlugin,
 };
 pub use clip_loop::{ClipLoop, Piece, SEAM_FADE};
 pub use peaks::{FINEST_SPAN, MinMax, PeakLevel, Peaks};
@@ -171,6 +171,20 @@ pub enum Edit {
     SetDeviceEnabled {
         id: DeviceId,
         enabled: bool,
+    },
+    /// Add one of a plugin effect's parameters to the song, so layers can
+    /// move it. It has no layers yet; `state.base` is where it rests (the
+    /// value the plugin holds). The parameter is then
+    /// `ParamId { device: Effect(effect), index: param.id }`.
+    AddPluginParam {
+        effect: DeviceId,
+        param: PluginParam,
+    },
+    /// Take a plugin parameter out of the song again (only while it has no
+    /// layers): the undo of [`Edit::AddPluginParam`].
+    RemovePluginParam {
+        effect: DeviceId,
+        id: u32,
     },
     /// Insert a layer into a parameter's stack at `index` (0 is the bottom).
     AddLayer {
@@ -521,6 +535,9 @@ pub struct DeviceSnapshot {
 pub struct PluginSnapshot {
     pub spec: PluginSpec,
     pub state: PluginState,
+    /// The plugin's automatable parameters, in its own order; empty until
+    /// it runs.
+    pub params: std::sync::Arc<Vec<PluginParamInfo>>,
 }
 
 /// A plugin effect's state, for the UI.
@@ -691,6 +708,24 @@ pub enum CommandError {
     /// An effect of kind `Plugin` needs a plugin, and only it has one.
     PluginMismatch {
         id: DeviceId,
+    },
+    /// Only a plugin effect has plugin parameters.
+    NotAPlugin {
+        id: DeviceId,
+    },
+    /// A plugin parameter is added to the song once.
+    DuplicatePluginParam {
+        effect: DeviceId,
+        id: u32,
+    },
+    /// A plugin effect holds at most this many parameters in the song.
+    TooManyPluginParams {
+        max: usize,
+    },
+    /// A plugin parameter leaves the song only once its layers are gone.
+    PluginParamInUse {
+        effect: DeviceId,
+        id: u32,
     },
     /// Clips on a node never overlap (touching is fine): stacked MIDI
     /// clips hide each other's notes and tear apart when one is cut or
@@ -875,6 +910,18 @@ impl fmt::Display for CommandError {
                 "effect {} must be of kind Plugin exactly when it names a plugin",
                 id.0
             ),
+            Self::NotAPlugin { id } => write!(f, "effect {} is not a plugin", id.0),
+            Self::DuplicatePluginParam { effect, id } => write!(
+                f,
+                "parameter {id} of effect {} is already in the song",
+                effect.0
+            ),
+            Self::TooManyPluginParams { max } => {
+                write!(f, "a plugin holds at most {max} parameters in the song")
+            }
+            Self::PluginParamInUse { effect, id } => {
+                write!(f, "parameter {id} of effect {} still has layers", effect.0)
+            }
             Self::StackedClips { node, clip, over } => write!(
                 f,
                 "clips {} and {} overlap on node {}; clips on a node never overlap",
@@ -983,6 +1030,7 @@ pub fn format_param_value(unit: &str, choices: &[impl AsRef<str>], plain: f64) -
         "pan" if plain.abs() < 0.005 => "C".to_owned(),
         "pan" if plain < 0.0 => format!("L{:.0}", -plain * 100.0),
         "pan" => format!("R{:.0}", plain * 100.0),
+        "%" => format!("{plain:.0}%"),
         "" => format!("{plain:.2}"),
         unit => format!("{plain:.2} {unit}"),
     }

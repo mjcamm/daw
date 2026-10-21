@@ -5,8 +5,9 @@
 #![allow(clippy::unwrap_used, reason = "tests fail on error")]
 
 use daw_engine::{
-    AudioProcessor, ClipId, Command, DeviceId, Edit, Effect, Engine, EngineConfig, FIRST_NODE,
-    MidiClip, MidiNote, PluginSpec, PluginState, TestPlugin, Ticks,
+    AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
+    Engine, EngineConfig, FIRST_NODE, Layer, LayerId, MidiClip, MidiNote, ParamId, ParamState,
+    PluginParam, PluginSpec, PluginState, Shape, TestPlugin, Ticks,
 };
 use daw_plugins::client::HostCommand;
 use daw_testkit::{VARIED_BLOCKS, render};
@@ -176,4 +177,76 @@ fn without_a_plugin_host_a_plugin_effect_is_silent_and_says_why() {
         plugin_state(&engine),
         Some(PluginState::Failed(_))
     ));
+}
+
+#[test]
+fn a_plugin_parameter_follows_its_resting_value_and_its_layers() {
+    let (mut plain, mut plain_processor) = engine(None);
+    let expected = render(&mut plain, &mut plain_processor, 96_000, &[512]);
+    let (mut engine, mut processor) = engine(Some(TestPlugin::Gain));
+    let listed = engine.snapshot().node(FIRST_NODE).unwrap().devices[1]
+        .plugin
+        .clone()
+        .unwrap()
+        .params;
+    assert_eq!(
+        listed
+            .iter()
+            .map(|p| (p.id, p.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(0, "Gain")]
+    );
+
+    // Gain = 2 × value: resting at 0.25 halves the sound; from beat 2 a
+    // layer multiplies it down to nothing.
+    let gain = ParamId {
+        node: FIRST_NODE,
+        device: DeviceRef::Effect(PLUGIN),
+        index: 0,
+    };
+    for edit in [
+        Edit::AddPluginParam {
+            effect: PLUGIN,
+            param: PluginParam {
+                id: 0,
+                name: "Gain".into(),
+                state: ParamState {
+                    base: 0.25,
+                    layers: Vec::new(),
+                },
+            },
+        },
+        Edit::AddLayer {
+            param: gain,
+            id: LayerId(1),
+            index: 0,
+            layer: Layer::new(BlendMode::Multiply),
+        },
+        Edit::AddBlock {
+            layer: LayerId(1),
+            id: BlockId(1),
+            block: Block::new(
+                Ticks::from_beats(2),
+                Ticks::from_beats(2),
+                Shape::constant(0.0),
+            ),
+        },
+    ] {
+        engine.apply(Command::Edit(edit)).unwrap();
+    }
+    let out = render(&mut engine, &mut processor, 96_000, &[512]);
+    // Beat 2 (frame 48 000) falls inside the block from frame 47 616; the
+    // test plugin takes a block's last value for the whole block.
+    let halves = |range: std::ops::Range<usize>| {
+        out.samples[range.clone()]
+            .iter()
+            .zip(&expected.samples[range])
+            .all(|(o, e)| *o == e * 0.5)
+    };
+    assert!(halves(0..47_616 * 2), "rests at half");
+    assert!(
+        out.samples[48_128 * 2..].iter().all(|&s| s == 0.0),
+        "the layer pulls it to nothing"
+    );
+    assert!(!expected.samples[48_128 * 2..].iter().all(|&s| s == 0.0));
 }

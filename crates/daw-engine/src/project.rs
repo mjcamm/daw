@@ -10,10 +10,10 @@ use crate::devices::{
 };
 use daw_automation::{validate_block, validate_notes_source};
 use daw_protocol::{
-    AudioClip, Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument,
-    InstrumentKind, InvalidClip, Layer, LayerId, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM,
-    MIN_CLIP_GAIN_DB, MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef,
-    Signal, SignalId, SignalSource, SignalUse,
+    AudioClip, Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, EffectKind,
+    Instrument, InstrumentKind, InvalidClip, Layer, LayerId, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB,
+    MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, MidiClip, Node, NodeId, NodeKind, ParamId, ParamState,
+    PluginParam, SampleId, SampleRef, Signal, SignalId, SignalSource, SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -22,6 +22,9 @@ pub const MAX_TEMPO_BPM: f64 = 999.0;
 pub const DEFAULT_TEMPO_BPM: f64 = 120.0;
 /// Most effects in one node's chain.
 pub const MAX_EFFECTS: usize = 16;
+/// Most parameters of one plugin effect in the song (the host gives each
+/// block's changes room for this many).
+pub const MAX_PLUGIN_PARAMS: usize = 128;
 /// Most instruments layered on one node.
 pub const MAX_INSTRUMENTS: usize = 8;
 /// Most nodes in a project, the Song included. The audio side keeps a
@@ -101,30 +104,57 @@ pub fn default_params(infos: &[ParamInfo]) -> Vec<ParamState> {
         .collect()
 }
 
+/// A device's parameters: built-in devices by position, a plugin effect's
+/// by the plugin's ids.
+#[derive(Debug, Clone, Copy)]
+pub enum DeviceParams<'a> {
+    Indexed(&'a [ParamState]),
+    Plugin(&'a [PluginParam]),
+}
+
+impl<'a> DeviceParams<'a> {
+    /// Every parameter with its `ParamId::index`.
+    pub fn iter(self) -> impl Iterator<Item = (u32, &'a ParamState)> {
+        let (indexed, plugin): (&[ParamState], &[PluginParam]) = match self {
+            Self::Indexed(params) => (params, &[]),
+            Self::Plugin(params) => (&[], params),
+        };
+        indexed
+            .iter()
+            .enumerate()
+            .map(|(index, state)| (index as u32, state))
+            .chain(plugin.iter().map(|p| (p.id, &p.state)))
+    }
+}
+
 /// What the engine needs to know about one node, on its own.
 pub trait NodeExt {
     /// Every device on the node, in signal order, with its parameters.
-    fn devices(&self) -> impl Iterator<Item = (DeviceRef, &[ParamState])>;
+    fn devices(&self) -> impl Iterator<Item = (DeviceRef, DeviceParams<'_>)>;
     fn param_infos(&self, device: DeviceRef) -> Option<&'static [ParamInfo]>;
-    fn params(&self, device: DeviceRef) -> Option<&Vec<ParamState>>;
-    fn params_mut(&mut self, device: DeviceRef) -> Option<&mut Vec<ParamState>>;
+    /// A parameter's state by its `ParamId::index`.
+    fn param_state(&self, device: DeviceRef, index: u32) -> Option<&ParamState>;
+    fn param_state_mut(&mut self, device: DeviceRef, index: u32) -> Option<&mut ParamState>;
     fn effect(&self, id: DeviceId) -> Option<(usize, &Effect)>;
     fn instrument(&self, id: DeviceId) -> Option<(usize, &Instrument)>;
 }
 
 impl NodeExt for Node {
-    fn devices(&self) -> impl Iterator<Item = (DeviceRef, &[ParamState])> {
+    fn devices(&self) -> impl Iterator<Item = (DeviceRef, DeviceParams<'_>)> {
         self.instruments
             .iter()
-            .map(|(id, i)| (DeviceRef::Instrument(*id), i.params.as_slice()))
-            .chain(
-                self.effects
-                    .iter()
-                    .map(|(id, e)| (DeviceRef::Effect(*id), e.params.as_slice())),
-            )
+            .map(|(id, i)| (DeviceRef::Instrument(*id), DeviceParams::Indexed(&i.params)))
+            .chain(self.effects.iter().map(|(id, e)| {
+                let params = if e.kind == EffectKind::Plugin {
+                    DeviceParams::Plugin(&e.plugin_params)
+                } else {
+                    DeviceParams::Indexed(&e.params)
+                };
+                (DeviceRef::Effect(*id), params)
+            }))
             .chain(std::iter::once((
                 DeviceRef::Channel,
-                self.channel.as_slice(),
+                DeviceParams::Indexed(&self.channel),
             )))
     }
 
@@ -138,27 +168,47 @@ impl NodeExt for Node {
         }
     }
 
-    fn params(&self, device: DeviceRef) -> Option<&Vec<ParamState>> {
+    fn param_state(&self, device: DeviceRef, index: u32) -> Option<&ParamState> {
         match device {
-            DeviceRef::Instrument(id) => self.instrument(id).map(|(_, i)| &i.params),
-            DeviceRef::Channel => Some(&self.channel),
-            DeviceRef::Effect(id) => self.effect(id).map(|(_, e)| &e.params),
+            DeviceRef::Instrument(id) => self.instrument(id)?.1.params.get(index as usize),
+            DeviceRef::Channel => self.channel.get(index as usize),
+            DeviceRef::Effect(id) => {
+                let (_, effect) = self.effect(id)?;
+                if effect.kind == EffectKind::Plugin {
+                    effect
+                        .plugin_params
+                        .iter()
+                        .find(|p| p.id == index)
+                        .map(|p| &p.state)
+                } else {
+                    effect.params.get(index as usize)
+                }
+            }
         }
     }
 
-    fn params_mut(&mut self, device: DeviceRef) -> Option<&mut Vec<ParamState>> {
+    fn param_state_mut(&mut self, device: DeviceRef, index: u32) -> Option<&mut ParamState> {
         match device {
             DeviceRef::Instrument(id) => self
                 .instruments
                 .iter_mut()
-                .find(|(i, _)| *i == id)
-                .map(|(_, i)| &mut i.params),
-            DeviceRef::Channel => Some(&mut self.channel),
-            DeviceRef::Effect(id) => self
-                .effects
-                .iter_mut()
-                .find(|(e, _)| *e == id)
-                .map(|(_, e)| &mut e.params),
+                .find(|(i, _)| *i == id)?
+                .1
+                .params
+                .get_mut(index as usize),
+            DeviceRef::Channel => self.channel.get_mut(index as usize),
+            DeviceRef::Effect(id) => {
+                let effect = &mut self.effects.iter_mut().find(|(e, _)| *e == id)?.1;
+                if effect.kind == EffectKind::Plugin {
+                    effect
+                        .plugin_params
+                        .iter_mut()
+                        .find(|p| p.id == index)
+                        .map(|p| &mut p.state)
+                } else {
+                    effect.params.get_mut(index as usize)
+                }
+            }
         }
     }
 
@@ -317,6 +367,21 @@ impl Project {
         Ok(())
     }
 
+    fn plugin_params_mut(
+        &mut self,
+        effect: DeviceId,
+    ) -> Result<&mut Vec<PluginParam>, CommandError> {
+        let node = self
+            .effect_node(effect)
+            .ok_or(CommandError::UnknownDevice { id: effect })?;
+        self.node_or_err(node)?
+            .effects
+            .iter_mut()
+            .find(|(id, _)| *id == effect)
+            .map(|(_, e)| &mut e.plugin_params)
+            .ok_or(CommandError::UnknownDevice { id: effect })
+    }
+
     fn node_or_err(&mut self, id: NodeId) -> Result<&mut Node, CommandError> {
         self.node_mut(id).ok_or(CommandError::UnknownNode { id })
     }
@@ -331,14 +396,12 @@ impl Project {
 
     pub fn param(&self, param: ParamId) -> Option<&ParamState> {
         self.node(param.node)?
-            .params(param.device)?
-            .get(param.index as usize)
+            .param_state(param.device, param.index)
     }
 
     fn param_mut(&mut self, param: ParamId) -> Result<&mut ParamState, CommandError> {
         self.node_mut(param.node)
-            .and_then(|node| node.params_mut(param.device))
-            .and_then(|params| params.get_mut(param.index as usize))
+            .and_then(|node| node.param_state_mut(param.device, param.index))
             .ok_or(CommandError::UnknownParam { param })
     }
 
@@ -399,12 +462,12 @@ impl Project {
     pub fn find_layer(&self, id: LayerId) -> Option<(ParamId, usize)> {
         self.nodes().into_iter().find_map(|entry| {
             entry.node.devices().find_map(|(device, params)| {
-                params.iter().enumerate().find_map(|(index, state)| {
+                params.iter().find_map(|(index, state)| {
                     let position = state.layers.iter().position(|(l, _)| *l == id)?;
                     let param = ParamId {
                         node: entry.id,
                         device,
-                        index: index as u32,
+                        index,
                     };
                     Some((param, position))
                 })
@@ -417,7 +480,7 @@ impl Project {
     fn find_block(&self, id: BlockId) -> Option<(ParamId, usize, LayerId, usize)> {
         self.nodes().into_iter().find_map(|entry| {
             entry.node.devices().find_map(|(device, params)| {
-                params.iter().enumerate().find_map(|(index, state)| {
+                params.iter().find_map(|(index, state)| {
                     state
                         .layers
                         .iter()
@@ -427,7 +490,7 @@ impl Project {
                             let param = ParamId {
                                 node: entry.id,
                                 device,
-                                index: index as u32,
+                                index,
                             };
                             Some((param, layer_pos, *layer_id, block_pos))
                         })
@@ -449,11 +512,11 @@ impl Project {
         let mut out = Vec::new();
         for entry in self.nodes() {
             for (device, params) in entry.node.devices() {
-                for (index, state) in params.iter().enumerate() {
+                for (index, state) in params.iter() {
                     let param = ParamId {
                         node: entry.id,
                         device,
-                        index: index as u32,
+                        index,
                     };
                     for (layer, l) in &state.layers {
                         if let Some(signal) = l.signal {
@@ -484,7 +547,7 @@ impl Project {
             used.devices
                 .extend(entry.node.instruments.iter().map(|(id, _)| *id));
             for (_, params) in entry.node.devices() {
-                for state in params {
+                for (_, state) in params.iter() {
                     for (layer_id, layer) in &state.layers {
                         used.layers.insert(*layer_id);
                         used.blocks.extend(layer.blocks.iter().map(|(b, _)| *b));
@@ -829,6 +892,52 @@ impl Project {
                     value: previous,
                 })
             }
+            Edit::AddPluginParam { effect, mut param } => {
+                let target = self
+                    .effect_node(effect)
+                    .and_then(|node| self.node(node))
+                    .and_then(|node| node.effect(effect))
+                    .map(|(_, e)| e)
+                    .ok_or(CommandError::UnknownDevice { id: effect })?;
+                if target.kind != EffectKind::Plugin {
+                    return Err(CommandError::NotAPlugin { id: effect });
+                }
+                if target.plugin_params.iter().any(|p| p.id == param.id) {
+                    return Err(CommandError::DuplicatePluginParam {
+                        effect,
+                        id: param.id,
+                    });
+                }
+                if target.plugin_params.len() >= MAX_PLUGIN_PARAMS {
+                    return Err(CommandError::TooManyPluginParams {
+                        max: MAX_PLUGIN_PARAMS,
+                    });
+                }
+                let mut used = self.used_ids();
+                prepare_state(&mut param.state, &mut used, &self.signals)?;
+                let id = param.id;
+                self.plugin_params_mut(effect)?.push(param);
+                Ok(Edit::RemovePluginParam { effect, id })
+            }
+            Edit::RemovePluginParam { effect, id } => {
+                let params = self.plugin_params_mut(effect)?;
+                let index =
+                    params
+                        .iter()
+                        .position(|p| p.id == id)
+                        .ok_or(CommandError::UnknownParam {
+                            param: ParamId {
+                                node: NodeId::ROOT,
+                                device: DeviceRef::Effect(effect),
+                                index: id,
+                            },
+                        })?;
+                if !params[index].state.layers.is_empty() {
+                    return Err(CommandError::PluginParamInUse { effect, id });
+                }
+                let param = params.remove(index);
+                Ok(Edit::AddPluginParam { effect, param })
+            }
             Edit::AddEffect {
                 node,
                 id,
@@ -852,6 +961,7 @@ impl Project {
                     &mut used,
                     &self.signals,
                 )?;
+                prepare_plugin_params(id, &mut effect, &mut used, &self.signals)?;
                 self.node_or_err(node)?.effects.insert(index, (id, effect));
                 Ok(Edit::RemoveEffect { id })
             }
@@ -1287,6 +1397,7 @@ fn prepare_node(
             used,
             signals,
         )?;
+        prepare_plugin_params(*effect_id, effect, used, signals)?;
     }
     if node.kind == NodeKind::Audio && !node.instruments.is_empty() {
         return Err(CommandError::InstrumentOnAudio { node: id });
@@ -1332,10 +1443,53 @@ fn prepare_params(
         });
     }
     for state in params {
-        check_normalized(state.base)?;
-        for (layer_id, layer) in &mut state.layers {
-            prepare_layer(*layer_id, layer, used, signals)?;
+        prepare_state(state, used, signals)?;
+    }
+    Ok(())
+}
+
+/// Validates one parameter's resting value and claims its layer and block
+/// ids.
+fn prepare_state(
+    state: &mut ParamState,
+    used: &mut UsedIds,
+    signals: &BTreeMap<SignalId, Signal>,
+) -> Result<(), CommandError> {
+    check_normalized(state.base)?;
+    for (layer_id, layer) in &mut state.layers {
+        prepare_layer(*layer_id, layer, used, signals)?;
+    }
+    Ok(())
+}
+
+/// Validates an incoming effect's plugin parameters: only plugins have
+/// them, each id once, at most [`MAX_PLUGIN_PARAMS`].
+fn prepare_plugin_params(
+    id: DeviceId,
+    effect: &mut Effect,
+    used: &mut UsedIds,
+    signals: &BTreeMap<SignalId, Signal>,
+) -> Result<(), CommandError> {
+    if effect.plugin_params.is_empty() {
+        return Ok(());
+    }
+    if effect.kind != EffectKind::Plugin {
+        return Err(CommandError::NotAPlugin { id });
+    }
+    if effect.plugin_params.len() > MAX_PLUGIN_PARAMS {
+        return Err(CommandError::TooManyPluginParams {
+            max: MAX_PLUGIN_PARAMS,
+        });
+    }
+    let mut seen = HashSet::new();
+    for param in &mut effect.plugin_params {
+        if !seen.insert(param.id) {
+            return Err(CommandError::DuplicatePluginParam {
+                effect: id,
+                id: param.id,
+            });
         }
+        prepare_state(&mut param.state, used, signals)?;
     }
     Ok(())
 }
@@ -2415,6 +2569,157 @@ mod tests {
             );
             assert_eq!(err, CommandError::InvalidClip { reason });
         }
+    }
+
+    const PLUGIN: DeviceId = DeviceId(1);
+
+    fn plugin_param(id: u32, base: f64) -> PluginParam {
+        PluginParam {
+            id,
+            name: format!("Param {id}"),
+            state: ParamState {
+                base,
+                layers: Vec::new(),
+            },
+        }
+    }
+
+    /// A project with a plugin effect (device 1) on the first node.
+    fn with_plugin() -> Project {
+        let mut project = Project::default();
+        project
+            .apply(Edit::AddEffect {
+                node: FIRST_NODE,
+                id: PLUGIN,
+                index: 0,
+                effect: Effect::plugin(daw_protocol::PluginSpec::Test(
+                    daw_protocol::TestPlugin::Gain,
+                )),
+            })
+            .unwrap();
+        project
+    }
+
+    #[test]
+    fn a_plugin_parameter_is_added_by_its_id_layered_and_undone() {
+        let mut project = with_plugin();
+        let add = Edit::AddPluginParam {
+            effect: PLUGIN,
+            param: plugin_param(4097, 0.25),
+        };
+        assert_round_trip(project.clone(), add.clone());
+        project.apply(add).unwrap();
+        let param = ParamId {
+            node: FIRST_NODE,
+            device: DeviceRef::Effect(PLUGIN),
+            index: 4097,
+        };
+        assert_eq!(project.param(param).unwrap().base, 0.25);
+        assert_round_trip(project.clone(), add_layer(param, 7));
+        project.apply(add_layer(param, 7)).unwrap();
+        assert_eq!(project.find_layer(LayerId(7)), Some((param, 0)));
+        assert_round_trip(project.clone(), add_block(7, 8, block(0, 4)));
+        assert_round_trip(project.clone(), Edit::SetParam { param, value: 0.75 });
+        // Layer ids are claimed: no other layer may reuse 7.
+        assert_eq!(
+            assert_rejected(&mut project, add_layer(CUTOFF, 7)),
+            CommandError::DuplicateLayer { id: LayerId(7) }
+        );
+        // It leaves only once its layers are gone.
+        assert_eq!(
+            assert_rejected(
+                &mut project,
+                Edit::RemovePluginParam {
+                    effect: PLUGIN,
+                    id: 4097
+                }
+            ),
+            CommandError::PluginParamInUse {
+                effect: PLUGIN,
+                id: 4097
+            }
+        );
+        // Removing the effect and undoing brings the parameter back.
+        assert_round_trip(project, Edit::RemoveEffect { id: PLUGIN });
+    }
+
+    #[test]
+    fn plugin_parameters_are_checked() {
+        let mut project = with_plugin();
+        project
+            .apply(Edit::AddPluginParam {
+                effect: PLUGIN,
+                param: plugin_param(3, 0.5),
+            })
+            .unwrap();
+        assert_eq!(
+            assert_rejected(
+                &mut project,
+                Edit::AddPluginParam {
+                    effect: PLUGIN,
+                    param: plugin_param(3, 0.5),
+                }
+            ),
+            CommandError::DuplicatePluginParam {
+                effect: PLUGIN,
+                id: 3
+            }
+        );
+        assert_eq!(
+            assert_rejected(
+                &mut project,
+                Edit::AddPluginParam {
+                    effect: PLUGIN,
+                    param: plugin_param(4, 1.5),
+                }
+            ),
+            CommandError::ValueOutOfRange { value: 1.5 }
+        );
+        let mut filtered = populated();
+        assert_eq!(
+            assert_rejected(
+                &mut filtered,
+                Edit::AddPluginParam {
+                    effect: DeviceId(1),
+                    param: plugin_param(0, 0.5),
+                }
+            ),
+            CommandError::NotAPlugin { id: DeviceId(1) }
+        );
+        let mut filter = Effect::new(EffectKind::Filter);
+        filter.plugin_params.push(plugin_param(0, 0.5));
+        assert_eq!(
+            assert_rejected(
+                &mut Project::default(),
+                Edit::AddEffect {
+                    node: FIRST_NODE,
+                    id: DeviceId(9),
+                    index: 0,
+                    effect: filter,
+                }
+            ),
+            CommandError::NotAPlugin { id: DeviceId(9) }
+        );
+        for id in 4..(3 + MAX_PLUGIN_PARAMS as u32) {
+            project
+                .apply(Edit::AddPluginParam {
+                    effect: PLUGIN,
+                    param: plugin_param(id, 0.5),
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            assert_rejected(
+                &mut project,
+                Edit::AddPluginParam {
+                    effect: PLUGIN,
+                    param: plugin_param(9999, 0.5),
+                }
+            ),
+            CommandError::TooManyPluginParams {
+                max: MAX_PLUGIN_PARAMS
+            }
+        );
     }
 }
 

@@ -59,7 +59,7 @@ fn text(chars: &[c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn wide(chars: &[char16]) -> String {
+pub(crate) fn wide(chars: &[char16]) -> String {
     let units: Vec<u16> = chars.iter().take_while(|&&c| c != 0).copied().collect();
     String::from_utf16_lossy(&units)
 }

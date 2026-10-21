@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 /// Bump when messages change; the host refuses a different one.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 /// Largest message accepted, so a garbled length can't allocate gigabytes.
 const MAX_MESSAGE: u32 = 64 << 20;
 
-pub use daw_protocol::{PluginData, PluginSpec, TestPlugin};
+pub use daw_protocol::{PluginData, PluginParamInfo, PluginSpec, TestPlugin};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Request {
@@ -41,6 +41,10 @@ pub enum Request {
     GetState {
         instance: u64,
     },
+    /// The instance's automatable parameters ([`Reply::Params`]).
+    GetParams {
+        instance: u64,
+    },
 }
 
 /// What a call answers with.
@@ -49,6 +53,7 @@ pub enum Reply {
     Done,
     /// `None` for a device without state.
     State(Option<PluginData>),
+    Params(Vec<PluginParamInfo>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

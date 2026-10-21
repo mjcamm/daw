@@ -7,6 +7,7 @@ use crate::layout::PIXELS_PER_BEAT;
 use crate::live::{LiveLayer, PaneKind};
 use crate::menu::OpenMenu;
 use crate::pane::Pane;
+use crate::param_picker::{ParamPicker, PickerEvent};
 use crate::parameters::{BaseDrag, BlockDrag, DEFAULT_ZOOM, MixDrag};
 use crate::session::Session;
 use crate::text_input::{TextInput, TextInputEvent};
@@ -222,6 +223,8 @@ pub struct ProjectView {
     pub(crate) rename: Option<Rename>,
     /// The device browser, while open.
     pub(crate) browser: Option<(Entity<DeviceBrowser>, Subscription)>,
+    /// A plugin's parameter list, while its add-parameter menu is open.
+    pub(crate) param_picker: Option<(Entity<ParamPicker>, Subscription)>,
     /// The browser's side the user chose last; it opens there.
     browser_side: Side,
     /// The plugins the browser offers (handed over by the app).
@@ -364,6 +367,7 @@ impl ProjectView {
             frame_drag: None,
             rename: None,
             browser: None,
+            param_picker: None,
             browser_side: Side::default(),
             plugins: PluginShelf::default(),
             save_error: None,
@@ -1029,6 +1033,72 @@ impl ProjectView {
             },
         );
         self.browser = Some((browser, subscription));
+        self.invalidate_all(cx);
+        cx.notify();
+    }
+
+    /// Opens a plugin's add-parameter menu: its parameters, searchable,
+    /// minus those that have layers. Choosing one goes on to its first
+    /// layer's type, as for built-in devices.
+    pub(crate) fn open_param_picker(
+        &mut self,
+        device: &daw_engine::DeviceSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let menu = OpenMenu::AddParam(device.device);
+        self.toggle_menu(menu);
+        if self.open_menu != Some(menu) {
+            self.param_picker = None;
+            window.focus(&self.focus);
+            return;
+        }
+        let params = device
+            .plugin
+            .as_ref()
+            .map(|p| p.params.clone())
+            .unwrap_or_default();
+        let taken = device
+            .params
+            .iter()
+            .filter(|p| !p.layers.is_empty())
+            .map(|p| p.id.index)
+            .collect();
+        let device_ref = device.device;
+        // Effect ids are project-wide, so the device names its node.
+        let Some(node) = self
+            .session
+            .snapshot()
+            .nodes
+            .iter()
+            .find(|n| n.devices.iter().any(|d| d.device == device_ref))
+            .map(|n| n.id)
+        else {
+            return;
+        };
+        let picker = cx.new(|cx| ParamPicker::new(device_ref, params, taken, window, cx));
+        let subscription = cx.subscribe_in(
+            &picker,
+            window,
+            move |this, _, event: &PickerEvent, window, cx| {
+                match *event {
+                    PickerEvent::Chose(id) => {
+                        this.pending_param = Some(daw_engine::ParamId {
+                            node,
+                            device: device_ref,
+                            index: id,
+                        });
+                        this.layer_menu = crate::parameters::LayerMenu::Kind;
+                    }
+                    PickerEvent::Close => this.open_menu = None,
+                }
+                this.param_picker = None;
+                window.focus(&this.focus);
+                this.invalidate_all(cx);
+                cx.notify();
+            },
+        );
+        self.param_picker = Some((picker, subscription));
         self.invalidate_all(cx);
         cx.notify();
     }

@@ -18,7 +18,7 @@
 - **Tempo** (2026-10-21): typed in a box beside the transport.
 - **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
-The project file is at **version 17** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
+The project file is at **version 18** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
 ## In progress: Phase 8, VST3 hosting
 
@@ -31,12 +31,12 @@ Decisions: `docs/design/vst3-hosting.md`. VST3 API facts and gotchas: `docs/vst3
 - **Step 3, first part, VST3 effects run** (`vst3_host.rs`, `PluginSpec::Vst3 { bundle, cid, name, vendor }`): Steinberg's call order, host interfaces, buses, process from shared memory without allocating. `daw-test-plugin` is a real VST3 ("Test Gain": processor + controller, parameter 0, state). Seven of the user's commercial effects pass `tests/installed_plugins.rs` (opt-in).
 - **The device browser** (`daw-ui/src/browser.rs`, `mixer.md`): "+ Instrument" and "+ Effect" open one modal (Built-in | Plugins, search, vendor headings, arrows + Enter, Escape or click outside closes, opens on the side used last, scan progress). Plugin effects add as `PluginSpec::Vst3`; plugin instruments show greyed until step 4. UI tests `ui_tests/browser.rs`, speed scene `perf_browser`. Test sessions run no plugin host.
 - **Plugin state in the song** (file version 17): each plugin effect's `state` (`PluginData`: component and controller bytes, base64) sits beside its effect in the file. Control protocol 2: `Create` carries state, `GetState` answers `Reply::State`. The host reads state through a `Vst3State` handle on its main thread while the instance processes. The engine (`plugins.rs`, `saved`) keeps each effect's last known state: from the file, asked of running plugins by `Engine::to_file` (now `&mut self`; hung ones keep theirs), and taken when an effect goes so undo brings it back as it was; plugins that can't run keep theirs in the file. Loading a song detaches the old song's plugins (`AudioMsg::DetachPlugin`) and starts the new ones from their state.
+- **Plugin parameters** (file version 18, control protocol 3; `vst3-hosting.md`, Parameters): a plugin parameter is `ParamId { device: Effect(id), index: <VST3 id> }`; those with layers live in `Effect::plugin_params` (`Edit::AddPluginParam` / `RemovePluginParam`, at most 128). The host lists automatable parameters with their unit groups (`GetParams`, `Vst3State::params`); the engine asks once a plugin starts and puts the list in `PluginSnapshot::params`. Each chunk sends a parameter's first value, then its changes on the 32-frame grid (`audio.rs`, `plugin_changes`). "+ Add Parameter" on a plugin opens a searchable, grouped dropdown (`daw-ui/src/param_picker.rs`; layout agreed with the user); the parameter joins the song with its first layer in one undo, resting at the plugin's value. Values show as percentages for now. UI tests `ui_tests/plugin_params.rs` (the engine's `show_plugin_params` stands in for a host there), speed scene `perf_param_picker` (0.35 / 1 ms). The test plugin gained "Tilt" (group "Tone") and a read-only "Meter".
 
 **Next, in order:**
 
-1. **Parameters from a plugin** ("+ Add Parameter" lists a plugin's automatable parameters; the engine's `ParamId` currently indexes built-in device params; plugin params need their VST3 id).
-2. **Step 4, instruments** (note events into `IEventList`; the shared block has no event area yet).
-3. **Step 5, editor windows** (floating, owned by the host process, kept above the DAW without linking windows; knob moves as resting values; learn), **6, delay compensation**, **7, restart flags, bypass, presets.**
+1. **Step 4, instruments** (note events into `IEventList`; the shared block has no event area yet). Plugin instruments stay listed greyed in the browser until then (the user's call, 2026-10-21).
+2. **Step 5, editor windows** (floating, owned by the host process, kept above the DAW without linking windows; knob moves as resting values; learn), **6, delay compensation**, **7, restart flags, bypass, presets.**
 
 **Gotchas from this session:**
 
@@ -71,7 +71,8 @@ Decisions: `docs/design/vst3-hosting.md`. VST3 API facts and gotchas: `docs/vst3
 
 ## Waiting on the user (try it)
 
-- **Device browser and plugin effects** (2026-10-21): "+ Effect" on a strip, Plugins, search, add one of your effects (OTT, ValhallaRoom…), play, save, reopen the song: the plugin should come back with its settings (no editor windows yet, so settings only change through presets loaded at startup; the state round trip is tested with the test plugin). Plugin instruments are listed greyed: should they be, or hidden until instrument hosting lands?
+- **Device browser and plugin effects** (2026-10-21): "+ Effect" on a strip, Plugins, search, add one of your effects (OTT, ValhallaRoom…), play, save, reopen the song: the plugin should come back with its settings (no editor windows yet; the state round trip is tested with the test plugin).
+- **Plugin parameters** (2026-10-21): on Parameters, select the node, "+ Add Parameter" under the plugin, search (e.g. OTT's "Depth"), Enter, Manual drawn, draw a block, play: the plugin should follow it. Not yet seen running in the app by Claude with a real plugin (tested with the test plugin in a song, and the real plugins' lists).
 
 - **Preferences → Plugins** (2026-10-21): the folder list, Rescan, and that 148 plugins show. `cargo run -p daw-player -- plugins` lists them by vendor.
 - **Tempo** (2026-10-21): the field beside the transport, and changing it while audio clips play.
@@ -107,6 +108,7 @@ Decisions: `docs/design/vst3-hosting.md`. VST3 API facts and gotchas: `docs/vst3
 
 - **TODO (user, 2026-10-19): audio file types beyond WAV** (MP3, FLAC, AIFF; `symphonia` is the likely crate) for samples and audio clips. Reading files in the background, too.
 - No node colour picker yet (the engine has `SetNodeColor`).
+- Plugin parameters show as percentages (the plugin's own value text comes with editor windows); one the plugin no longer has isn't marked missing yet; duplicating a node with a plugin starts the copy without the plugin's state.
 - Plugin hosting: starting the host process and creating instances happens on the control (UI) thread, so the first plugin in a song pauses the UI briefly; Windows only (macOS and Linux report "unsupported"); no delay compensation yet; plugins always run in realtime mode (offline exports should set up `kOffline`).
 - One built-in effect (Filter) and two instruments (Synth, SingleSampler). Effects are added on the mixer; their settings show only on Parameters for now.
 - Recording, MIDI keyboard input, MIDI file import and more instruments are Phase 9.

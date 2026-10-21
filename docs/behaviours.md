@@ -81,6 +81,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Behaviour | Test |
 |---|---|
 | + Add Parameter; + Add Layer menu: Manual drawn or Listen to signal › | – |
+| + Add Parameter on a plugin lists its parameters in its groups; search and Enter pick one, then its first layer's type (one undo) | `plugin_params::a_plugin_parameter_is_found_by_search_and_gets_a_layer_in_one_undo` |
+| A plugin's parameter list: arrows move; Escape or a click outside closes; parameters with layers aren't offered | `plugin_params::the_plugin_parameter_list_works_from_the_keys_and_closes` |
 | Double-click empty layer lane: a one-bar flat block | – |
 | Drag a block to move; edges resize as a window; top of the right edge loops | – |
 | Drag a point; double-click adds a point; right-click removes one | – |

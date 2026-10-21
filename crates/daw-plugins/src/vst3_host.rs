@@ -12,8 +12,8 @@
 )]
 
 use crate::block::{HostBlock, MAX_CHANNELS, MAX_PARAM_CHANGES, ParamChange};
-use crate::vst3::{Module, parse_cid};
-use daw_protocol::PluginData;
+use crate::vst3::{Module, parse_cid, wide};
+use daw_protocol::{PluginData, PluginParamInfo};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
@@ -905,6 +905,47 @@ impl Vst3State {
         }
     }
 
+    /// The parameters a host may automate (`kCanAutomate`, not hidden or
+    /// read-only), in the plugin's order, each with its group's name.
+    pub fn params(&self) -> Vec<PluginParamInfo> {
+        let Some(controller) = &self.controller else {
+            return Vec::new();
+        };
+        let groups = controller
+            .cast::<IUnitInfo>()
+            .map(|units| {
+                let count = unsafe { units.getUnitCount() };
+                let found: Vec<(UnitID, UnitID, String)> = (0..count)
+                    .filter_map(|i| {
+                        let mut info: UnitInfo = unsafe { std::mem::zeroed() };
+                        (unsafe { units.getUnitInfo(i, &mut info) } == kResultOk)
+                            .then(|| (info.id, info.parentUnitId, wide(&info.name)))
+                    })
+                    .collect();
+                group_names(&found)
+            })
+            .unwrap_or_default();
+        let count = unsafe { controller.getParameterCount() };
+        (0..count)
+            .filter_map(|i| {
+                let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
+                if unsafe { controller.getParameterInfo(i, &mut info) } != kResultOk
+                    || !automatable(info.flags)
+                {
+                    return None;
+                }
+                Some(PluginParamInfo {
+                    id: info.id,
+                    name: wide(&info.title),
+                    group: groups.get(&info.unitId).cloned().unwrap_or_default(),
+                    unit: wide(&info.units),
+                    steps: info.stepCount.max(0) as u32,
+                    value: unsafe { controller.getParamNormalized(info.id) }.clamp(0.0, 1.0),
+                })
+            })
+            .collect()
+    }
+
     /// Restores saved state: the processor's, then the controller's view of
     /// it, then the controller's own. Before activation.
     pub fn set(&self, state: &PluginData) {
@@ -943,5 +984,70 @@ impl Drop for Vst3Instance {
             unsafe { controller.terminate() };
         }
         unsafe { self.component.terminate() };
+    }
+}
+
+/// Whether a host may move a parameter: automatable, and neither hidden
+/// nor read-only.
+fn automatable(flags: int32) -> bool {
+    use ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsHidden, kIsReadOnly};
+    let flags = flags as u32;
+    flags & kCanAutomate as u32 != 0 && flags & (kIsHidden as u32 | kIsReadOnly as u32) == 0
+}
+
+/// Each unit's name for showing its parameters: its own name after its
+/// parents' (the root unit, 0, has none), joined with " / ".
+fn group_names(units: &[(UnitID, UnitID, String)]) -> HashMap<UnitID, String> {
+    let parent_of: HashMap<UnitID, (UnitID, &str)> = units
+        .iter()
+        .map(|(id, parent, name)| (*id, (*parent, name.as_str())))
+        .collect();
+    units
+        .iter()
+        .map(|(id, _, _)| {
+            let mut parts = Vec::new();
+            let mut at = *id;
+            // Bounded, in case a plugin's units loop.
+            while at != kRootUnitId && parts.len() < units.len() {
+                let Some((parent, name)) = parent_of.get(&at) else {
+                    break;
+                };
+                parts.push(*name);
+                at = *parent;
+            }
+            parts.reverse();
+            (*id, parts.join(" / "))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsBypass, kIsHidden, kIsReadOnly};
+
+    #[test]
+    fn only_automatable_visible_writable_parameters_are_offered() {
+        let can = kCanAutomate as int32;
+        assert!(automatable(can));
+        assert!(automatable(can | kIsBypass as int32));
+        assert!(!automatable(0));
+        assert!(!automatable(can | kIsHidden as int32));
+        assert!(!automatable(can | kIsReadOnly as int32));
+    }
+
+    #[test]
+    fn groups_are_named_by_their_path_below_the_root() {
+        let units = [
+            (0, kNoParentUnitId, "Root".to_owned()),
+            (1, 0, "Osc A".to_owned()),
+            (2, 1, "Unison".to_owned()),
+            (3, 7, "Orphan".to_owned()),
+        ];
+        let names = group_names(&units);
+        assert_eq!(names[&0], "");
+        assert_eq!(names[&1], "Osc A");
+        assert_eq!(names[&2], "Osc A / Unison");
+        assert_eq!(names[&3], "Orphan");
     }
 }

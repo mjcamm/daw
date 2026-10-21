@@ -199,6 +199,34 @@ impl PluginSpec {
     }
 }
 
+/// One of a plugin's automatable parameters, as the plugin describes it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PluginParamInfo {
+    /// The plugin's id for it, stable across plugin versions.
+    pub id: u32,
+    pub name: String,
+    /// The plugin's group for it ("Osc A", nested groups joined with
+    /// " / "); empty for none.
+    pub group: String,
+    /// The plugin's unit label, e.g. "dB"; empty for none.
+    pub unit: String,
+    /// Steps for a stepped parameter (1 is a switch); 0 is continuous.
+    pub steps: u32,
+    /// The value the plugin holds now (normalized).
+    pub value: f64,
+}
+
+/// A plugin parameter added to the song: the plugin's id for it, its name
+/// (kept to show if the plugin goes missing), and its resting value and
+/// layers.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PluginParam {
+    pub id: u32,
+    pub name: String,
+    #[serde(flatten)]
+    pub state: ParamState,
+}
+
 /// A plugin instance's saved state: the processor's and the controller's
 /// own data (each opaque to the DAW), written as base64 in files and
 /// messages.
@@ -256,6 +284,10 @@ pub struct Effect {
     /// The plugin, for a plugin effect (and only then).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugin: Option<PluginSpec>,
+    /// A plugin effect's parameters added to the song, each named by the
+    /// plugin's parameter id (`ParamId::index`), in the order added.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin_params: Vec<PluginParam>,
 }
 
 fn on() -> bool {
@@ -270,6 +302,7 @@ impl Effect {
             enabled: true,
             params: Vec::new(),
             plugin: None,
+            plugin_params: Vec::new(),
         }
     }
 

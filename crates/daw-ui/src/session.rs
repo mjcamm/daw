@@ -341,6 +341,17 @@ impl Session {
         }
     }
 
+    /// What a plugin effect lists, as if it ran (tests run no plugin host).
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub fn show_plugin_params(
+        &mut self,
+        effect: daw_engine::DeviceId,
+        params: Vec<daw_engine::PluginParamInfo>,
+    ) {
+        self.engine.show_plugin_params(effect, params);
+        self.tick();
+    }
+
     /// Sends a command. Rejected commands change nothing, so the UI just
     /// reports them.
     pub fn apply(&mut self, command: Command) {

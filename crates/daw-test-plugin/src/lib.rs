@@ -1,8 +1,10 @@
 //! A tiny VST3 plugin for this repo's tests, built from source so they
 //! never depend on what is installed. "Test Gain" is a real effect: a
 //! processor and a separate controller (as most plugins are built), one
-//! parameter (id 0, gain = 2 × value, so the default 0.5 is unity) that
-//! is saved in its state. "Test Synth" is listed but not yet creatable.
+//! parameter that does something (id 0, gain = 2 × value, so the default
+//! 0.5 is unity) and is saved in its state, "Tilt" (id 7, in the "Tone"
+//! group, does nothing) and a read-only "Meter" (id 9) a host must not
+//! offer. "Test Synth" is listed but not yet creatable.
 //! Adapted from the `vst3` crate's gain example (MIT OR Apache-2.0).
 //!
 //! `DAW_TEST_PLUGIN_SCAN=crash` or `hang` makes loading it crash or hang,
@@ -35,6 +37,10 @@ const INSTRUMENT_CID: TUID = uid(0x4441_5754, 0x5359_4E54, 0x0000_0000, 0x0000_0
 /// The gain parameter's id and default (normalized).
 const GAIN: ParamID = 0;
 const DEFAULT_GAIN: f64 = 0.5;
+/// A parameter in a group, and a read-only one.
+const TILT: ParamID = 7;
+const METER: ParamID = 9;
+const TONE_UNIT: UnitID = 1;
 
 /// (cid, category, name, subcategories) for each class.
 const CLASSES: [(TUID, &str, &str, &str); 3] = [
@@ -286,7 +292,98 @@ struct Controller {
 }
 
 impl Class for Controller {
-    type Interfaces = (IEditController,);
+    type Interfaces = (IEditController, IUnitInfo);
+}
+
+impl IUnitInfoTrait for Controller {
+    unsafe fn getUnitCount(&self) -> int32 {
+        2
+    }
+
+    unsafe fn getUnitInfo(&self, index: int32, info: *mut UnitInfo) -> tresult {
+        let Some(info) = (unsafe { info.as_mut() }) else {
+            return kInvalidArgument;
+        };
+        let (id, parent, name) = match index {
+            0 => (kRootUnitId, kNoParentUnitId, "Root"),
+            1 => (TONE_UNIT, kRootUnitId, "Tone"),
+            _ => return kInvalidArgument,
+        };
+        info.id = id;
+        info.parentUnitId = parent;
+        copy_wide(name, &mut info.name);
+        info.programListId = kNoProgramListId;
+        kResultOk
+    }
+
+    unsafe fn getProgramListCount(&self) -> int32 {
+        0
+    }
+
+    unsafe fn getProgramListInfo(&self, _index: int32, _info: *mut ProgramListInfo) -> tresult {
+        kInvalidArgument
+    }
+
+    unsafe fn getProgramName(
+        &self,
+        _list: ProgramListID,
+        _index: int32,
+        _name: *mut String128,
+    ) -> tresult {
+        kInvalidArgument
+    }
+
+    unsafe fn getProgramInfo(
+        &self,
+        _list: ProgramListID,
+        _index: int32,
+        _attribute: *const std::ffi::c_char,
+        _value: *mut String128,
+    ) -> tresult {
+        kInvalidArgument
+    }
+
+    unsafe fn hasProgramPitchNames(&self, _list: ProgramListID, _index: int32) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn getProgramPitchName(
+        &self,
+        _list: ProgramListID,
+        _index: int32,
+        _pitch: int16,
+        _name: *mut String128,
+    ) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn getSelectedUnit(&self) -> UnitID {
+        kRootUnitId
+    }
+
+    unsafe fn selectUnit(&self, _unit: UnitID) -> tresult {
+        kResultOk
+    }
+
+    unsafe fn getUnitByBus(
+        &self,
+        _kind: MediaType,
+        _dir: BusDirection,
+        _bus: int32,
+        _channel: int32,
+        _unit: *mut UnitID,
+    ) -> tresult {
+        kResultFalse
+    }
+
+    unsafe fn setUnitProgramData(
+        &self,
+        _list_or_unit: int32,
+        _index: int32,
+        _data: *mut IBStream,
+    ) -> tresult {
+        kNotImplemented
+    }
 }
 
 impl IPluginBaseTrait for Controller {
@@ -319,24 +416,28 @@ impl IEditControllerTrait for Controller {
     }
 
     unsafe fn getParameterCount(&self) -> int32 {
-        1
+        3
     }
 
     unsafe fn getParameterInfo(&self, index: int32, info: *mut ParameterInfo) -> tresult {
         let Some(info) = (unsafe { info.as_mut() }) else {
             return kInvalidArgument;
         };
-        if index != 0 {
-            return kInvalidArgument;
-        }
-        info.id = GAIN;
-        copy_wide("Gain", &mut info.title);
-        copy_wide("Gain", &mut info.shortTitle);
-        copy_wide("x", &mut info.units);
+        use ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsReadOnly};
+        let (id, name, units, unit, flags) = match index {
+            0 => (GAIN, "Gain", "x", kRootUnitId, kCanAutomate),
+            1 => (TILT, "Tilt", "dB", TONE_UNIT, kCanAutomate),
+            2 => (METER, "Meter", "", kRootUnitId, kIsReadOnly),
+            _ => return kInvalidArgument,
+        };
+        info.id = id;
+        copy_wide(name, &mut info.title);
+        copy_wide(name, &mut info.shortTitle);
+        copy_wide(units, &mut info.units);
         info.stepCount = 0;
-        info.defaultNormalizedValue = DEFAULT_GAIN;
-        info.unitId = 0;
-        info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as int32;
+        info.defaultNormalizedValue = if id == GAIN { DEFAULT_GAIN } else { 0.0 };
+        info.unitId = unit;
+        info.flags = flags as int32;
         kResultOk
     }
 

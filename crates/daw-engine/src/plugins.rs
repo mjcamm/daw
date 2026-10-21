@@ -10,7 +10,7 @@ use crate::audio::{AudioMsg, CHUNK_FRAMES};
 use crate::project::Project;
 use daw_plugins::block::{BlockStats, DawBlock, Layout};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
-use daw_protocol::{DeviceId, EffectKind, PluginData, PluginSpec, PluginState};
+use daw_protocol::{DeviceId, EffectKind, PluginData, PluginParamInfo, PluginSpec, PluginState};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -39,6 +39,9 @@ pub(crate) struct Plugins {
     /// or when its effect went (so undo brings it back as it was). Kept for
     /// plugins that cannot run, so saving never loses theirs.
     saved: BTreeMap<DeviceId, PluginData>,
+    /// Parameter lists shown for plugins that are not running, for front
+    /// ends' tests (which run no host).
+    shown_params: BTreeMap<DeviceId, Arc<Vec<PluginParamInfo>>>,
 }
 
 #[derive(Debug)]
@@ -46,6 +49,8 @@ struct Instance {
     id: u64,
     spec: PluginSpec,
     stats: Arc<BlockStats>,
+    /// Its automatable parameters, asked once it starts.
+    params: Arc<Vec<PluginParamInfo>>,
 }
 
 impl Plugins {
@@ -120,6 +125,8 @@ impl Plugins {
         let id = next_instance();
         host.create(id, spec.clone(), state)
             .map_err(|e| e.to_string())?;
+        // A plugin that cannot list its parameters still plays.
+        let params = host.params(id).unwrap_or_default();
         let block = host
             .activate(id, LAYOUT, f64::from(sample_rate))
             .map_err(|e| e.to_string())?;
@@ -127,6 +134,7 @@ impl Plugins {
             id,
             spec: spec.clone(),
             stats: block.stats(),
+            params: Arc::new(params),
         };
         Ok((instance, Box::new(block)))
     }
@@ -226,6 +234,19 @@ impl Plugins {
             }
         }
         self.sync(project, sample_rate, outbox);
+    }
+
+    /// A running plugin's automatable parameters; none for anything else.
+    pub(crate) fn params(&self, effect: DeviceId) -> Arc<Vec<PluginParamInfo>> {
+        self.running
+            .get(&effect)
+            .map(|i| i.params.clone())
+            .or_else(|| self.shown_params.get(&effect).cloned())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn show_params(&mut self, effect: DeviceId, params: Vec<PluginParamInfo>) {
+        self.shown_params.insert(effect, Arc::new(params));
     }
 
     /// How a plugin effect is doing; `None` for anything else.

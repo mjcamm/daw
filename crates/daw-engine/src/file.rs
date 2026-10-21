@@ -33,7 +33,8 @@ pub const FORMAT: &str = "daw-project";
 /// older files loop over any region they have).
 /// Version 16 added plugin effects (`EffectKind::Plugin` with `plugin`).
 /// Version 17 saves each plugin's state with its effect (`state`).
-pub const VERSION: u32 = 17;
+/// Version 18 adds plugin parameters moved by layers (`plugin_params`).
+pub const VERSION: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -657,6 +658,41 @@ mod tests {
             },
         ];
         for edit in edits {
+            project.apply(edit).unwrap();
+        }
+        // A plugin with one of its parameters moved by a layer.
+        let plugin_param = ParamId {
+            node: FIRST_NODE,
+            device: DeviceRef::Effect(DeviceId(30)),
+            index: 4097,
+        };
+        for edit in [
+            Edit::AddEffect {
+                node: FIRST_NODE,
+                id: DeviceId(30),
+                index: 1,
+                effect: Effect::plugin(daw_protocol::PluginSpec::Test(
+                    daw_protocol::TestPlugin::Gain,
+                )),
+            },
+            Edit::AddPluginParam {
+                effect: DeviceId(30),
+                param: daw_protocol::PluginParam {
+                    id: 4097,
+                    name: "Drive".to_owned(),
+                    state: ParamState {
+                        base: 0.3,
+                        layers: Vec::new(),
+                    },
+                },
+            },
+            Edit::AddLayer {
+                param: plugin_param,
+                id: LayerId(31),
+                index: 0,
+                layer: Layer::new(BlendMode::Multiply),
+            },
+        ] {
             project.apply(edit).unwrap();
         }
         project.node_mut(FIRST_NODE).unwrap().color = 3;

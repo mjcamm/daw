@@ -8,6 +8,7 @@ mod browser;
 mod loop_strip;
 mod menus;
 mod perf;
+mod plugin_params;
 mod transport;
 
 use crate::project::ProjectView;
