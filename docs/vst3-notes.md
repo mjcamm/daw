@@ -12,7 +12,11 @@ Working knowledge of the VST3 API for hosting, kept because the official docs ar
 ## Loading
 
 - Windows: `InitDll` after `LoadLibrary` and `ExitDll` before `FreeLibrary`, both **optional**. macOS `bundleEntry` / `bundleExit` and Linux `ModuleEntry` / `ModuleExit` are **required**; refuse plugins without them.
-- Then `GetPluginFactory`. Audio plugins are category `"Audio Module Class"`; `IPluginFactory2/3` add vendor, version and subcategories (`Fx`, `Instrument`, … *unverified spellings*). Linux hosts must call `IPluginFactory3::setHostContext` (the run loop below).
+- Then `GetPluginFactory`; the returned factory carries a reference for the caller (`ComPtr::from_raw`, no extra `addRef`). Audio plugins are category `"Audio Module Class"`; `IPluginFactory2/3` add vendor, version and `|`-separated subcategories (`Fx|Delay`, `Instrument|Synth`, `Instrument|Drum`; seen on real plugins). Linux hosts must call `IPluginFactory3::setHostContext` (the run loop below).
+- Load with `LoadLibraryExW(.., LOAD_WITH_ALTERED_SEARCH_PATH)` so a plugin's own DLLs beside it are found, and `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX)` first so a failed load never shows a dialog no one will click.
+- **Class ids as text** (`moduleinfo.json`, `INLINE_UID`) are four 32-bit numbers in hex. On Windows the `TUID` bytes are in COM order (first number little-endian, the second's halves swapped), elsewhere big-endian; `vst3::uid(a, b, c, d)` builds the bytes and `vst3.rs::cid_string` is its inverse. Verified: Serum 2 loaded gives the same id its `moduleinfo.json` lists.
+- `moduleinfo.json` belongs in `Contents/Resources/`; some older bundles have it elsewhere (Serum 1: `Contents/`) or not at all: those are loaded. It may be JSON5 (comments): if it does not parse as JSON, load instead.
+- Measured 2026-10-21 on the user's machine: 143 bundles, 148 plugins, none failed, 21.7 s with 4 scanner processes at once (most without `moduleinfo.json`); an unchanged rescan takes no time.
 
 ## Call sequence (UI thread unless noted)
 

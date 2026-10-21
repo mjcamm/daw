@@ -1,0 +1,18 @@
+[package]
+name = "daw-test-plugin"
+description = "A tiny VST3 plugin for this repo's tests (scanning now, audio later)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vst3 = "0.3.0"
+
+[lints]
+workspace = true

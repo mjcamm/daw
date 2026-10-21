@@ -14,6 +14,7 @@ cargo fmt --all
 DAW_BLESS=1 cargo test -p <crate> --test <t> # write/update reference audio
 cargo run -p daw-player -- play --compare    # hear the demo live; verifies live == offline
 cargo run -p daw-player -- render out.wav    # render the demo to a file
+cargo run -p daw-player -- plugins           # scan the VST3 folders and list what is found
 cargo run -p daw-ui                          # the app
 ```
 
@@ -32,6 +33,7 @@ A manual GitHub workflow (`.github/workflows/cross-platform.yml`) runs the same 
 - `daw-dsp`: standalone, portable DSP modules (synth, oscillator, sampler, filter, filter effect, envelope, gain, smoothing, pan). No engine knowledge.
 - `daw-stretch`: the real-time time-stretcher (`StemStream`) that plays audio clips; brought over from the user's `audioperformerv2`. Read `docs/design/stretcher.md`.
 - `daw-plugins`: plugins in their own processes: the shared-memory audio channel with deadlines (`block`), control messages, the DAW side (`client`) and the host side (`host`). Windows only for now. **Read `docs/design/vst3-hosting.md` and `docs/vst3-notes.md` before plugin work.**
+- `daw-test-plugin`: a tiny VST3 plugin (cdylib) for tests, built from source by `daw-plugins`' tests into `target/test-plugin`. `DAW_TEST_PLUGIN_SCAN=crash|hang` makes loading it misbehave.
 - `daw-host`: runs the engine on a real audio device (drivers, device choices, `OutputDevice`, callback timing and load), project folders (sample import), preferences (including audio settings), and the demo song. Shared by the app and the player.
 - `daw-player`: command-line host. Live playback, `--compare` (live == offline), offline render to WAV.
 - `daw-ui`: the desktop app (binary `daw`), built with GPUI. Views read snapshots and send commands through `Session`; they never touch engine state. **Read `docs/gpui-notes.md` and `docs/design/ui-speed.md` before UI work** and add to them when you learn something. Icons are Lucide SVGs in `crates/daw-ui/assets/icons/`. Ask the user about layout before building each new UI element.
