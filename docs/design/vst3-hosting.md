@@ -89,8 +89,12 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 
 ## State
 
+*Built (2026-10-21): file version 17, control protocol 2; tests in `daw-plugins/tests/vst3_effect.rs`.*
+
 - Saved inside the project file (the user's call): the component's and the controller's `getState`, two binary blobs per plugin instance (base64), so a save stays one file write. The plugin's class id and version are saved with them.
-- On load: `setState` on the component, `setComponentState` and `setState` on the controller.
+- On load: `setState` on the component, `setComponentState` and `setState` on the controller, before activation (the state goes with `Create`).
+- Saving asks each running instance (`GetState`); the host process answers from its main thread while the instance keeps processing on its audio thread. A hung or crashed plugin, or one that could not load (missing on this machine), keeps the state it was loaded with, so a save never loses it.
+- The engine remembers each plugin effect's last known state, also when the effect is deleted, so undo brings it back as it was.
 - `.vstpreset` import and export later (format is documented: header "VST3", class id, chunk list).
 
 ## Editor windows
@@ -126,7 +130,7 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 
 1. **IPC and host process with built-in test devices** (no VST3 yet), **built**: the hand-off, deadlines, crash and hang detection (`daw-plugins`, tested with real processes); the engine's plugin effect, live deadlines (70% of each block) and offline waiting, Reload, states in the snapshot (`daw-plugins/tests/engine.rs`); the app and player as their own host (`daw_host::plugins`). Process groups other than Together come with the Preferences page.
 2. **Scanner** and Preferences → Plugins (built). The browser modal comes with step 3, so plugins can be added the moment they show.
-3. **Effects:** load, buses, process (**built**: `vst3_host.rs`, `PluginSpec::Vst3`; tested with the test plugin alone and in a song, and with seven installed commercial effects), then state, the modal browser, parameters (pick from list).
+3. **Effects:** load, buses, process (**built**: `vst3_host.rs`, `PluginSpec::Vst3`; tested with the test plugin alone and in a song, and with seven installed commercial effects), state (**built**), then the modal browser, parameters (pick from list).
 4. **Instruments:** note events, multiple outputs later.
 5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn.
 6. **Delay compensation.**

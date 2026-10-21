@@ -189,6 +189,38 @@ pub enum PluginSpec {
     },
 }
 
+/// A plugin instance's saved state: the processor's and the controller's
+/// own data (each opaque to the DAW), written as base64 in files and
+/// messages.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PluginData {
+    #[serde(with = "base64_bytes")]
+    pub component: Vec<u8>,
+    #[serde(with = "base64_bytes", default, skip_serializing_if = "Vec::is_empty")]
+    pub controller: Vec<u8>,
+}
+
+impl PluginData {
+    pub fn is_empty(&self) -> bool {
+        self.component.is_empty() && self.controller.is_empty()
+    }
+}
+
+mod base64_bytes {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(d)?;
+        STANDARD.decode(text).map_err(D::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TestPlugin {
     /// Output = input x 2 x parameter 0 (unity until it is set).
@@ -554,6 +586,19 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used, reason = "tests fail on error")]
+    fn plugin_data_is_base64_and_round_trips() {
+        let data = PluginData {
+            component: vec![0, 1, 2, 250, 255],
+            controller: Vec::new(),
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        assert_eq!(json, r#"{"component":"AAEC+v8="}"#);
+        assert_eq!(serde_json::from_str::<PluginData>(&json).unwrap(), data);
+        assert!(serde_json::from_str::<PluginData>(r#"{"component":"%%"}"#).is_err());
     }
 
     #[test]

@@ -20,7 +20,8 @@ fn the_player_runs_as_a_plugin_host() {
     })
     .unwrap();
     let id = next_instance();
-    host.create(id, PluginSpec::Test(TestPlugin::Gain)).unwrap();
+    host.create(id, PluginSpec::Test(TestPlugin::Gain), None)
+        .unwrap();
     let layout = Layout {
         max_frames: 256,
         inputs: 2,

@@ -10,7 +10,7 @@ use crate::audio::{AudioMsg, CHUNK_FRAMES};
 use crate::project::Project;
 use daw_plugins::block::{BlockStats, DawBlock, Layout};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
-use daw_protocol::{DeviceId, EffectKind, PluginSpec, PluginState};
+use daw_protocol::{DeviceId, EffectKind, PluginData, PluginSpec, PluginState};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -35,6 +35,10 @@ pub(crate) struct Plugins {
     /// Instances whose effects are gone, ended once the audio side hands
     /// back their channel (until then it may still be processing them).
     ending: BTreeSet<u64>,
+    /// Each plugin effect's last known state: from the file, the last save,
+    /// or when its effect went (so undo brings it back as it was). Kept for
+    /// plugins that cannot run, so saving never loses theirs.
+    saved: BTreeMap<DeviceId, PluginData>,
 }
 
 #[derive(Debug)]
@@ -58,13 +62,7 @@ impl Plugins {
         sample_rate: u32,
         outbox: &mut VecDeque<AudioMsg>,
     ) {
-        let wanted: BTreeMap<DeviceId, PluginSpec> = project
-            .nodes()
-            .into_iter()
-            .flat_map(|entry| entry.node.effects.iter())
-            .filter(|(_, effect)| effect.kind == EffectKind::Plugin)
-            .filter_map(|(id, effect)| Some((*id, effect.plugin.clone()?)))
-            .collect();
+        let wanted = plugin_effects(project);
 
         let gone: Vec<DeviceId> = self
             .running
@@ -74,6 +72,10 @@ impl Plugins {
             .collect();
         for id in gone {
             if let Some(instance) = self.running.remove(&id) {
+                self.keep_state(id, instance.id);
+                // An effect that now runs another plugin plays nothing until
+                // its new instance attaches (or forever, if that fails).
+                outbox.push_back(AudioMsg::DetachPlugin(id));
                 self.ending.insert(instance.id);
             }
         }
@@ -83,7 +85,8 @@ impl Plugins {
             if self.running.contains_key(&id) || self.failed.contains_key(&id) {
                 continue;
             }
-            match self.start(&spec, sample_rate) {
+            let state = self.saved.get(&id).cloned();
+            match self.start(&spec, state, sample_rate) {
                 Ok((instance, block)) => {
                     outbox.push_back(AudioMsg::AttachPlugin { effect: id, block });
                     self.running.insert(id, instance);
@@ -110,11 +113,13 @@ impl Plugins {
     fn start(
         &mut self,
         spec: &PluginSpec,
+        state: Option<PluginData>,
         sample_rate: u32,
     ) -> Result<(Instance, Box<DawBlock>), String> {
         let host = self.host()?;
         let id = next_instance();
-        host.create(id, spec.clone()).map_err(|e| e.to_string())?;
+        host.create(id, spec.clone(), state)
+            .map_err(|e| e.to_string())?;
         let block = host
             .activate(id, LAYOUT, f64::from(sample_rate))
             .map_err(|e| e.to_string())?;
@@ -124,6 +129,53 @@ impl Plugins {
             stats: block.stats(),
         };
         Ok((instance, Box::new(block)))
+    }
+
+    /// Asks a running instance for its state and remembers it. A host that
+    /// is gone or hung keeps the last known state.
+    fn keep_state(&mut self, effect: DeviceId, instance: u64) {
+        if let Some(host) = self.host.as_mut().filter(|h| h.is_alive())
+            && let Ok(Some(state)) = host.state(instance)
+        {
+            self.saved.insert(effect, state);
+        }
+    }
+
+    /// Every plugin effect's state, to save with the song: asked of those
+    /// running, the last known state of the rest.
+    pub(crate) fn states(&mut self, project: &Project) -> BTreeMap<DeviceId, PluginData> {
+        // A hung plugin may not answer: it keeps its last known state.
+        let running: Vec<(DeviceId, u64)> = self
+            .running
+            .iter()
+            .filter(|(_, i)| i.stats.missed_in_a_row() < HUNG_AFTER)
+            .map(|(id, i)| (*id, i.id))
+            .collect();
+        for (effect, instance) in running {
+            self.keep_state(effect, instance);
+        }
+        let wanted = plugin_effects(project);
+        self.saved
+            .iter()
+            .filter(|(id, state)| wanted.contains_key(id) && !state.is_empty())
+            .map(|(id, state)| (*id, state.clone()))
+            .collect()
+    }
+
+    /// A new song is coming: every instance ends (once its channel is
+    /// back), and its plugins start from `states` (read from its file) at
+    /// the next [`Plugins::sync`].
+    pub(crate) fn replace_song(
+        &mut self,
+        states: BTreeMap<DeviceId, PluginData>,
+        outbox: &mut VecDeque<AudioMsg>,
+    ) {
+        for (effect, instance) in std::mem::take(&mut self.running) {
+            outbox.push_back(AudioMsg::DetachPlugin(effect));
+            self.ending.insert(instance.id);
+        }
+        self.failed.clear();
+        self.saved = states;
     }
 
     /// The host process, started if there is none yet. A host that died
@@ -191,4 +243,15 @@ impl Plugins {
             PluginState::Running
         })
     }
+}
+
+/// The project's plugin effects and which plugin each runs.
+fn plugin_effects(project: &Project) -> BTreeMap<DeviceId, PluginSpec> {
+    project
+        .nodes()
+        .into_iter()
+        .flat_map(|entry| entry.node.effects.iter())
+        .filter(|(_, effect)| effect.kind == EffectKind::Plugin)
+        .filter_map(|(id, effect)| Some((*id, effect.plugin.clone()?)))
+        .collect()
 }

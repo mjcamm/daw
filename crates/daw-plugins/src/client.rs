@@ -8,7 +8,7 @@
 
 use crate::block::{DawBlock, Layout, Names};
 use crate::control::{
-    FromHost, PROTOCOL, PluginSpec, Request, ToHost, read_message, write_message,
+    FromHost, PROTOCOL, PluginData, PluginSpec, Reply, Request, ToHost, read_message, write_message,
 };
 use crate::sys::Job;
 use std::fmt;
@@ -141,8 +141,28 @@ impl HostProcess {
         self.alive.load(Ordering::Acquire)
     }
 
-    pub fn create(&mut self, instance: u64, device: PluginSpec) -> Result<(), HostError> {
-        self.call(Request::Create { instance, device })
+    /// Starts an instance, from saved state if there is some.
+    pub fn create(
+        &mut self,
+        instance: u64,
+        device: PluginSpec,
+        state: Option<PluginData>,
+    ) -> Result<(), HostError> {
+        self.call(Request::Create {
+            instance,
+            device,
+            state,
+        })
+        .map(drop)
+    }
+
+    /// The instance's state, to save with the song; `None` for a device
+    /// without any.
+    pub fn state(&mut self, instance: u64) -> Result<Option<PluginData>, HostError> {
+        match self.call(Request::GetState { instance })? {
+            Reply::State(state) => Ok(state),
+            Reply::Done => Ok(None),
+        }
     }
 
     /// Makes the instance's audio channel and starts its audio thread in
@@ -166,11 +186,11 @@ impl HostProcess {
     }
 
     pub fn deactivate(&mut self, instance: u64) -> Result<(), HostError> {
-        self.call(Request::Deactivate { instance })
+        self.call(Request::Deactivate { instance }).map(drop)
     }
 
     pub fn destroy(&mut self, instance: u64) -> Result<(), HostError> {
-        self.call(Request::Destroy { instance })
+        self.call(Request::Destroy { instance }).map(drop)
     }
 
     /// Ends the process at once (a hung host, or Reload).
@@ -187,7 +207,7 @@ impl HostProcess {
         write_message(&mut self.stdin, message).map_err(|_| HostError::Gone)
     }
 
-    fn call(&mut self, request: Request) -> Result<(), HostError> {
+    fn call(&mut self, request: Request) -> Result<Reply, HostError> {
         self.next_call += 1;
         let id = self.next_call;
         self.send(&ToHost::Call { id, request })?;

@@ -66,7 +66,7 @@ fn installed_effects_process_audio_in_a_host_process() {
             name: plugin.name.clone(),
             vendor: plugin.vendor.clone(),
         };
-        if let Err(e) = host.create(id, spec) {
+        if let Err(e) = host.create(id, spec, None) {
             failures.push(format!("{name}: create: {e}"));
             continue;
         }

@@ -13,6 +13,7 @@
 
 use crate::block::{HostBlock, MAX_CHANNELS, MAX_PARAM_CHANGES, ParamChange};
 use crate::vst3::{Module, parse_cid};
+use daw_protocol::PluginData;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
@@ -849,9 +850,41 @@ impl Vst3Instance {
         }
     }
 
+    /// A handle for reading and restoring this instance's state from the
+    /// main thread, kept while the instance processes on its audio thread.
+    pub fn state_handle(&self) -> Vst3State {
+        Vst3State {
+            component: self.component.clone(),
+            controller: self.controller.clone(),
+            _module: self._module.clone(),
+        }
+    }
+}
+
+/// An instance's state, reached from the host's main thread. Hosts save
+/// while playing: `getState` runs on the UI thread while `process` runs on
+/// the audio thread, as the API intends.
+pub struct Vst3State {
+    component: ComPtr<IComponent>,
+    controller: Option<ComPtr<IEditController>>,
+    /// Dropped last: the plugin's code lives in it.
+    _module: Arc<Module>,
+}
+
+impl std::fmt::Debug for Vst3State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst3State").finish_non_exhaustive()
+    }
+}
+
+// Used only on the host's main thread, where the instance was made.
+unsafe impl Send for Vst3State {}
+
+impl Vst3State {
     /// The processor's and the controller's state, to save with the song.
-    pub fn state(&self) -> (Vec<u8>, Vec<u8>) {
-        let get = |f: &dyn Fn(*mut IBStream) -> tresult| {
+    /// Either is empty if the plugin gave none.
+    pub fn get(&self) -> PluginData {
+        let read = |f: &dyn Fn(*mut IBStream) -> tresult| {
             let stream = ComWrapper::new(MemoryStream::default());
             let ok = stream
                 .to_com_ptr::<IBStream>()
@@ -862,25 +895,26 @@ impl Vst3Instance {
                 Vec::new()
             }
         };
-        let component = get(&|s| unsafe { self.component.getState(s) });
-        let controller = self
-            .controller
-            .as_ref()
-            .map(|c| get(&|s| unsafe { c.getState(s) }))
-            .unwrap_or_default();
-        (component, controller)
+        PluginData {
+            component: read(&|s| unsafe { self.component.getState(s) }),
+            controller: self
+                .controller
+                .as_ref()
+                .map(|c| read(&|s| unsafe { c.getState(s) }))
+                .unwrap_or_default(),
+        }
     }
 
     /// Restores saved state: the processor's, then the controller's view of
-    /// it, then the controller's own.
-    pub fn set_state(&mut self, component: &[u8], controller: &[u8]) {
+    /// it, then the controller's own. Before activation.
+    pub fn set(&self, state: &PluginData) {
         let stream = |bytes: &[u8]| {
             let wrapper = ComWrapper::new(MemoryStream::with(bytes.to_vec()));
             let pointer = wrapper.to_com_ptr::<IBStream>();
             (wrapper, pointer)
         };
-        if !component.is_empty()
-            && let (w, Some(s)) = stream(component)
+        if !state.component.is_empty()
+            && let (w, Some(s)) = stream(&state.component)
         {
             unsafe { self.component.setState(s.as_ptr()) };
             if let Some(c) = &self.controller {
@@ -888,8 +922,8 @@ impl Vst3Instance {
                 unsafe { c.setComponentState(s.as_ptr()) };
             }
         }
-        if !controller.is_empty()
-            && let (Some(c), (_w, Some(s))) = (&self.controller, stream(controller))
+        if !state.controller.is_empty()
+            && let (Some(c), (_w, Some(s))) = (&self.controller, stream(&state.controller))
         {
             unsafe { c.setState(s.as_ptr()) };
         }

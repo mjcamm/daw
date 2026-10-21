@@ -84,6 +84,9 @@ pub(crate) enum AudioMsg {
         effect: DeviceId,
         block: Box<DawBlock>,
     },
+    /// Takes a plugin effect's channel away (its instance is ending), so it
+    /// is silent until a new one attaches.
+    DetachPlugin(DeviceId),
     /// A short tone over the output, to check the device.
     TestTone,
     /// A note heard straight away while editing.
@@ -425,6 +428,7 @@ impl AudioProcessor {
                     }
                 }
                 AudioMsg::AttachPlugin { effect, block } => self.attach_plugin(effect, block),
+                AudioMsg::DetachPlugin(effect) => self.detach_plugin(effect),
                 AudioMsg::SwapState(state) => {
                     self.transport.set_tempo(state.tempo_bpm);
                     let old = std::mem::replace(&mut self.state, state);
@@ -452,6 +456,17 @@ impl AudioProcessor {
             }
         }
         retire(&mut self.retired, block);
+    }
+
+    fn detach_plugin(&mut self, effect: DeviceId) {
+        for player in self.players.iter_mut() {
+            if let Some((_, EffectInstance::Plugin(slot))) =
+                player.effects.iter_mut().find(|(id, _)| *id == effect)
+                && let Some(old) = slot.take()
+            {
+                retire(&mut self.retired, old);
+            }
+        }
     }
 
     /// Gives every node in the state a player: its own if it had one, else

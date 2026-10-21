@@ -56,6 +56,7 @@ Working knowledge of the VST3 API for hosting, kept because the official docs ar
 
 - `vst3_host.rs` implements what plugins call back into: `IHostApplication` (its `createInstance` makes `IMessage` and `IAttributeList` objects, which SDK-based plugins ask for when connecting processor and controller), `IComponentHandler`, a memory `IBStream`, and preallocated `IParameterChanges` / `IParamValueQueue` (128 parameters × 64 points a block).
 - Buses: the main input and output are asked for stereo; other buses keep the plugin's arrangement and get silent scratch buffers (every bus gets buffers, active or not). A mono main output is copied to both sides.
+- State: `Vst3State` (component and controller pointers, and the module) stays with the host's main thread for `getState` while the instance processes on its audio thread; `setState` happens at `Create`, before activation.
 - Threading: create, connect, buses, `setupProcessing`, `setActive` on the host process's main thread (with COM initialised); the instance then moves to its audio thread (`setProcessing` and `process`) and comes back to be deactivated.
 - Measured 2026-10-21 (`tests/installed_plugins.rs`, opt-in): OTT, ValhallaRoom, ValhallaDelay, Serum 2 FX, Filtron, smartEQ3, Cassette all load (45–709 ms) and run 2 s of noise with no late block; slowest block 0.8–11 ms (smartEQ3's first).
 

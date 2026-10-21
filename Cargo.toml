@@ -21,6 +21,7 @@ daw-rt = { path = "crates/daw-rt" }
 daw-stretch = { path = "crates/daw-stretch" }
 daw-testkit = { path = "crates/daw-testkit" }
 
+base64 = "0.22.1"
 audio_thread_priority = { version = "0.35.1", default-features = false }
 cpal = { version = "0.18.2", features = ["realtime"] }
 dirs = "7.0.0"

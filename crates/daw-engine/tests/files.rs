@@ -113,7 +113,7 @@ fn a_reopened_project_sounds_identical() {
 
 #[test]
 fn opening_a_project_resets_undo_and_stops() {
-    let (source, _) = busy_engine();
+    let (mut source, _) = busy_engine();
     let file = source.to_file();
 
     let (mut engine, mut processor) = Engine::new(EngineConfig::default());

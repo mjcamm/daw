@@ -14,8 +14,8 @@ pub use audio_clip::{AudioClip, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MI
 pub use automation::{
     BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect, EffectKind,
     Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId, ParamState,
-    PluginSpec, SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSource,
-    TestPlugin,
+    PluginData, PluginSpec, SampleId, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
+    SignalSource, TestPlugin,
 };
 pub use clip_loop::{ClipLoop, Piece, SEAM_FADE};
 pub use peaks::{FINEST_SPAN, MinMax, PeakLevel, Peaks};

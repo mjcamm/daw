@@ -4,11 +4,11 @@
 
 use crate::block::{HostBlock, HostEnd, Served};
 use crate::control::{
-    FromHost, PROTOCOL, PluginSpec, Request, TestPlugin, ToHost, read_message, write_message,
+    FromHost, PROTOCOL, PluginSpec, Reply, Request, TestPlugin, ToHost, read_message, write_message,
 };
 use crate::sys::Event;
 use crate::vst3::Module;
-use crate::vst3_host::Vst3Instance;
+use crate::vst3_host::{Vst3Instance, Vst3State};
 use std::collections::HashMap;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -75,21 +75,40 @@ struct Host {
 }
 
 impl Host {
-    fn handle(&mut self, request: Request) -> Result<(), String> {
+    fn handle(&mut self, request: Request) -> Result<Reply, String> {
         match request {
-            Request::Create { instance, device } => {
+            Request::Create {
+                instance,
+                device,
+                state,
+            } => {
                 if self.instances.contains_key(&instance) {
                     return Err(format!("instance {instance} exists"));
                 }
                 let processor = self.processor(&device)?;
+                let handle = match &processor {
+                    Processor::Vst3(plugin) => Some(plugin.state_handle()),
+                    Processor::Test(_) => None,
+                };
+                if let (Some(handle), Some(state)) = (&handle, &state) {
+                    handle.set(state);
+                }
                 self.instances.insert(
                     instance,
                     Instance {
+                        state: handle,
                         processor: Some(processor),
                         running: None,
                     },
                 );
-                Ok(())
+                Ok(Reply::Done)
+            }
+            Request::GetState { instance } => {
+                let entry = self
+                    .instances
+                    .get(&instance)
+                    .ok_or_else(|| format!("no instance {instance}"))?;
+                Ok(Reply::State(entry.state.as_ref().map(Vst3State::get)))
             }
             Request::Activate {
                 instance,
@@ -141,14 +160,14 @@ impl Host {
                     waker,
                     thread,
                 });
-                Ok(())
+                Ok(Reply::Done)
             }
             Request::Deactivate { instance } => {
                 self.instances
                     .get_mut(&instance)
                     .ok_or_else(|| format!("no instance {instance}"))?
                     .stop();
-                Ok(())
+                Ok(Reply::Done)
             }
             Request::Destroy { instance } => {
                 let mut entry = self
@@ -160,7 +179,7 @@ impl Host {
                 // Unload modules no instance uses any more.
                 self.modules
                     .retain(|_, module| Arc::strong_count(module) > 1);
-                Ok(())
+                Ok(Reply::Done)
             }
         }
     }
@@ -187,6 +206,8 @@ impl Host {
 
 #[derive(Debug)]
 struct Instance {
+    /// Reads the plugin's state while it processes (none for test devices).
+    state: Option<Vst3State>,
     /// Here while not processing; with the audio thread while it is.
     processor: Option<Processor>,
     running: Option<Running>,

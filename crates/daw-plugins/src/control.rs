@@ -8,18 +8,20 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 /// Bump when messages change; the host refuses a different one.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// Largest message accepted, so a garbled length can't allocate gigabytes.
 const MAX_MESSAGE: u32 = 64 << 20;
 
-pub use daw_protocol::{PluginSpec, TestPlugin};
+pub use daw_protocol::{PluginData, PluginSpec, TestPlugin};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Request {
+    /// Starts an instance, from saved state if there is some.
     Create {
         instance: u64,
         device: PluginSpec,
+        state: Option<PluginData>,
     },
     /// Opens the instance's audio channel (made by the DAW) and starts its
     /// audio thread.
@@ -35,6 +37,18 @@ pub enum Request {
     Destroy {
         instance: u64,
     },
+    /// The instance's state, to save with the song ([`Reply::State`]).
+    GetState {
+        instance: u64,
+    },
+}
+
+/// What a call answers with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Reply {
+    Done,
+    /// `None` for a device without state.
+    State(Option<PluginData>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,8 +66,14 @@ pub enum ToHost {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FromHost {
-    Ready { protocol: u32, pid: u32 },
-    Reply { id: u64, result: Result<(), String> },
+    Ready {
+        protocol: u32,
+        pid: u32,
+    },
+    Reply {
+        id: u64,
+        result: Result<Reply, String>,
+    },
 }
 
 pub fn write_message(to: &mut impl Write, message: &impl Serialize) -> io::Result<()> {
@@ -101,6 +121,10 @@ mod tests {
             request: Request::Create {
                 instance: 9,
                 device: PluginSpec::Test(TestPlugin::Slow { millis: 2 }),
+                state: Some(PluginData {
+                    component: vec![1, 2, 3],
+                    controller: Vec::new(),
+                }),
             },
         };
         write_message(&mut wire, &sent).unwrap();

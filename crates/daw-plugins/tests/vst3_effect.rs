@@ -7,13 +7,14 @@
 mod common;
 
 use common::{GAIN_CID, install};
+use daw_engine::AudioProcessor;
 use daw_engine::{
     ClipId, Command, DeviceId, Edit, Effect, Engine, EngineConfig, FIRST_NODE, MidiClip, MidiNote,
-    PluginSpec, Ticks,
+    PluginData, PluginSpec, ProjectFile, Ticks,
 };
 use daw_plugins::block::{Context, Layout, Outcome, ParamChange};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
-use daw_testkit::render;
+use daw_testkit::{Rendered, render};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -40,7 +41,7 @@ fn a_vst3_effect_processes_audio_and_parameters_in_a_host_process() {
     let (_, bundle) = install("vst3-alone");
     let mut host = HostProcess::spawn(&host_command()).unwrap();
     let id = next_instance();
-    host.create(id, gain(&bundle)).unwrap();
+    host.create(id, gain(&bundle), None).unwrap();
     let layout = Layout {
         max_frames: 512,
         inputs: 2,
@@ -71,47 +72,156 @@ fn a_vst3_effect_processes_audio_and_parameters_in_a_host_process() {
     host.destroy(id).unwrap();
 }
 
+/// The test plugin's state: its gain parameter, 8 bytes little-endian.
+fn gain_state(value: f64) -> PluginData {
+    PluginData {
+        component: value.to_le_bytes().to_vec(),
+        controller: Vec::new(),
+    }
+}
+
+#[test]
+fn a_vst3_effect_starts_from_saved_state_and_reports_it_while_running() {
+    let (_, bundle) = install("vst3-state");
+    let mut host = HostProcess::spawn(&host_command()).unwrap();
+    let id = next_instance();
+    host.create(id, gain(&bundle), Some(gain_state(0.25)))
+        .unwrap();
+    let layout = Layout {
+        max_frames: 512,
+        inputs: 2,
+        outputs: 2,
+    };
+    let mut block = host.activate(id, layout, 48_000.).unwrap();
+    let input = vec![0.5; 64];
+    let mut run = |params: &[ParamChange]| {
+        let (mut l, mut r) = (vec![0.; 64], vec![0.; 64]);
+        block.process(
+            &[&input, &input],
+            params,
+            Context::default(),
+            &mut [&mut l, &mut r],
+            Some(Instant::now() + Duration::from_secs(2)),
+        );
+        l[10]
+    };
+    assert_eq!(run(&[]), 0.25, "gain 0.5 from the saved state");
+    assert_eq!(host.state(id).unwrap(), Some(gain_state(0.25)));
+    let change = [ParamChange {
+        id: 0,
+        offset: 0,
+        value: 0.375,
+    }];
+    run(&change);
+    assert_eq!(
+        host.state(id).unwrap(),
+        Some(gain_state(0.375)),
+        "read while its audio thread runs"
+    );
+    drop(block);
+    host.destroy(id).unwrap();
+}
+
+/// A song of two notes, through `effect` (as effect 900) if given.
+fn song(effect: Option<PluginSpec>) -> (Engine, AudioProcessor) {
+    let (mut engine, processor) = Engine::new(EngineConfig::default());
+    engine.set_plugin_host(host_command());
+    let notes = [60, 67]
+        .map(|pitch| MidiNote {
+            start: Ticks::ZERO,
+            length: Ticks::from_bars(2),
+            pitch,
+            velocity: 100,
+        })
+        .to_vec();
+    engine
+        .apply(Command::Edit(Edit::AddClip {
+            node: FIRST_NODE,
+            id: ClipId(1),
+            clip: MidiClip {
+                start: Ticks::ZERO,
+                length: Ticks::from_bars(2),
+                notes,
+                looping: None,
+            },
+        }))
+        .unwrap();
+    if let Some(spec) = effect {
+        engine
+            .apply(Command::Edit(Edit::AddEffect {
+                node: FIRST_NODE,
+                id: EFFECT,
+                index: 0,
+                effect: Effect::plugin(spec),
+            }))
+            .unwrap();
+    }
+    (engine, processor)
+}
+
+const EFFECT: DeviceId = DeviceId(900);
+
+/// The song from the start.
+fn play(engine: &mut Engine, processor: &mut AudioProcessor) -> Rendered {
+    engine
+        .apply(Command::Locate {
+            position: Ticks::ZERO,
+        })
+        .unwrap();
+    engine.apply(Command::Play).unwrap();
+    render(engine, processor, 24_000, &[480])
+}
+
 #[test]
 fn a_song_through_a_vst3_effect_sounds_exactly_as_without() {
     let (_, bundle) = install("vst3-song");
-    let song = |effect: Option<PluginSpec>| {
-        let (mut engine, mut processor) = Engine::new(EngineConfig::default());
-        engine.set_plugin_host(host_command());
-        let notes = [60, 67]
-            .map(|pitch| MidiNote {
-                start: Ticks::ZERO,
-                length: Ticks::from_bars(2),
-                pitch,
-                velocity: 100,
-            })
-            .to_vec();
-        engine
-            .apply(Command::Edit(Edit::AddClip {
-                node: FIRST_NODE,
-                id: ClipId(1),
-                clip: MidiClip {
-                    start: Ticks::ZERO,
-                    length: Ticks::from_bars(2),
-                    notes,
-                    looping: None,
-                },
-            }))
-            .unwrap();
-        if let Some(spec) = effect {
-            engine
-                .apply(Command::Edit(Edit::AddEffect {
-                    node: FIRST_NODE,
-                    id: DeviceId(900),
-                    index: 0,
-                    effect: Effect::plugin(spec),
-                }))
-                .unwrap();
-        }
-        engine.apply(Command::Play).unwrap();
-        render(&mut engine, &mut processor, 24_000, &[480])
-    };
-    let plain = song(None);
-    let through = song(Some(gain(&bundle)));
+    let (mut engine, mut processor) = song(None);
+    let plain = play(&mut engine, &mut processor);
+    let (mut engine, mut processor) = song(Some(gain(&bundle)));
+    let through = play(&mut engine, &mut processor);
     assert!(!plain.is_silent());
     assert!(through == plain, "a unity VST3 gain changes nothing");
+}
+
+#[test]
+fn a_plugins_state_is_saved_in_the_song_and_survives_undo() {
+    let (_, bundle) = install("vst3-song-state");
+    let (mut engine, mut processor) = song(None);
+    let plain = play(&mut engine, &mut processor);
+    // Played again, the first notes' tails carry over.
+    let plain_again = play(&mut engine, &mut processor);
+    let half = |r: &Rendered| r.samples.iter().map(|s| s * 0.5).collect::<Vec<_>>();
+
+    let (mut engine, _) = song(Some(gain(&bundle)));
+    let mut file = engine.to_file();
+    assert_eq!(
+        file.plugin_states().get(&EFFECT),
+        Some(&gain_state(0.5)),
+        "asked of the running plugin"
+    );
+    file.set_plugin_states(&[(EFFECT, gain_state(0.25))].into());
+    let json = file.to_json();
+
+    let (mut loaded, mut processor) = Engine::new(EngineConfig::default());
+    loaded.set_plugin_host(host_command());
+    loaded.load(ProjectFile::from_json(&json).unwrap()).unwrap();
+    assert_eq!(
+        play(&mut loaded, &mut processor).samples,
+        half(&plain),
+        "the plugin starts from its saved state"
+    );
+    assert_eq!(
+        loaded.to_file().plugin_states().get(&EFFECT),
+        Some(&gain_state(0.25))
+    );
+
+    loaded
+        .apply(Command::Edit(Edit::RemoveEffect { id: EFFECT }))
+        .unwrap();
+    loaded.apply(Command::Undo).unwrap();
+    assert_eq!(
+        play(&mut loaded, &mut processor).samples,
+        half(&plain_again),
+        "an effect brought back by undo keeps its state"
+    );
 }

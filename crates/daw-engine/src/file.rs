@@ -9,9 +9,11 @@ use crate::devices::CHANNEL_PARAMS;
 use crate::project::{Project, song};
 use daw_protocol::{
     AudioClip, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, Instrument, LoopRange,
-    MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, SampleId, SampleRef, Signal, SignalId,
+    MidiClip, Node, NodeId, NodeKind, ParamId, ParamState, PluginData, SampleId, SampleRef, Signal,
+    SignalId,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Identifies the file type, so other JSON files are rejected clearly.
@@ -30,7 +32,8 @@ pub const FORMAT: &str = "daw-project";
 /// Version 15 keeps the loop region while looping is off (`loop_enabled`;
 /// older files loop over any region they have).
 /// Version 16 added plugin effects (`EffectKind::Plugin` with `plugin`).
-pub const VERSION: u32 = 16;
+/// Version 17 saves each plugin's state with its effect (`state`).
+pub const VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -110,6 +113,9 @@ pub struct EffectFile {
     pub id: DeviceId,
     #[serde(flatten)]
     pub effect: Effect,
+    /// A plugin effect's state, if it has any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<PluginData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -192,6 +198,7 @@ fn node_file(id: NodeId, node: &Node) -> NodeFile {
             .map(|(id, effect)| EffectFile {
                 id: *id,
                 effect: effect.clone(),
+                state: None,
             })
             .collect(),
         channel: node.channel.clone(),
@@ -291,6 +298,36 @@ impl ProjectFile {
                 })
                 .collect(),
         }
+    }
+
+    /// Fills in plugin effects' state.
+    pub fn set_plugin_states(&mut self, states: &BTreeMap<DeviceId, PluginData>) {
+        fn walk(node: &mut NodeFile, states: &BTreeMap<DeviceId, PluginData>) {
+            for effect in &mut node.effects {
+                effect.state = states.get(&effect.id).cloned();
+            }
+            for child in &mut node.children {
+                walk(child, states);
+            }
+        }
+        walk(&mut self.root, states);
+    }
+
+    /// The plugin effects' saved state, by effect.
+    pub fn plugin_states(&self) -> BTreeMap<DeviceId, PluginData> {
+        fn walk(node: &NodeFile, states: &mut BTreeMap<DeviceId, PluginData>) {
+            for effect in &node.effects {
+                if let Some(state) = &effect.state {
+                    states.insert(effect.id, state.clone());
+                }
+            }
+            for child in &node.children {
+                walk(child, states);
+            }
+        }
+        let mut states = BTreeMap::new();
+        walk(&self.root, &mut states);
+        states
     }
 
     pub fn to_json(&self) -> String {
@@ -661,6 +698,29 @@ mod tests {
         assert_eq!(loaded_loop, loop_range());
         // Saving again produces the identical file.
         assert_eq!(ProjectFile::new(&loaded, loaded_loop).to_json(), json);
+    }
+
+    #[test]
+    fn plugin_states_are_saved_with_their_effects_anywhere_in_the_tree() {
+        let mut file = ProjectFile::new(&rich_project(), None);
+        let state = PluginData {
+            component: vec![1, 2, 3],
+            controller: vec![4],
+        };
+        let states = BTreeMap::from([(DeviceId(3), state.clone()), (DeviceId(12), state)]);
+        file.set_plugin_states(&states);
+        let json = file.to_json();
+        assert!(json.contains("\"state\": {"));
+        assert!(json.contains("\"component\": \"AQID\""));
+        assert_eq!(
+            ProjectFile::from_json(&json).unwrap().plugin_states(),
+            states
+        );
+        assert!(
+            ProjectFile::new(&rich_project(), None)
+                .plugin_states()
+                .is_empty()
+        );
     }
 
     #[test]

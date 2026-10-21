@@ -31,9 +31,10 @@ pub use daw_protocol::{
     Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId,
     LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip,
     MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId,
-    ParamSnapshot, ParamState, Peaks, Piece, PluginSnapshot, PluginSpec, PluginState, SEAM_FADE,
-    SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal,
-    SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
+    ParamSnapshot, ParamState, Peaks, Piece, PluginData, PluginSnapshot, PluginSpec, PluginState,
+    SEAM_FADE, SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale, Segment, Shape,
+    ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse, Snapshot,
+    TICKS_PER_BEAT, TestPlugin, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -451,10 +452,12 @@ impl Engine {
         self.revision += 1;
     }
 
-    /// The project as a file, ready to save.
-    pub fn to_file(&self) -> ProjectFile {
+    /// The project as a file, ready to save. Running plugins are asked for
+    /// their state (a call to their host process each).
+    pub fn to_file(&mut self) -> ProjectFile {
         let mut file = ProjectFile::new(&self.project, self.loop_range);
         file.loop_enabled = self.loop_enabled;
+        file.set_plugin_states(&self.plugins.states(&self.project));
         file
     }
 
@@ -463,8 +466,11 @@ impl Engine {
     /// changes nothing.
     pub fn load(&mut self, file: ProjectFile) -> Result<(), LoadError> {
         let loop_enabled = file.loop_enabled;
+        let states = file.plugin_states();
         let (project, loop_range) = file.into_project()?;
         self.project = project;
+        // Before the new state, so the old song's plugins go quiet first.
+        self.plugins.replace_song(states, &mut self.outbox);
         self.history = History::default();
         self.playing = false;
         self.outbox.push_back(AudioMsg::SetPlaying(false));
