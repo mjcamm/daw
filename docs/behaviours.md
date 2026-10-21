@@ -123,6 +123,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 |---|---|
 | Menus open on press (like native menus); pressing an open menu's trigger closes it | `menus::a_menu_opens_on_press_and_its_trigger_closes_it` |
 | Space plays and stops | – |
+| Tempo beside the transport: click to type, Enter applies (one undo step) | `transport::typing_a_tempo_sets_the_song_tempo` |
+| Escape, or a tempo outside 20 to 999, leaves it | `transport::escape_or_an_impossible_tempo_leaves_the_tempo` |
 | Ctrl+S saves; Ctrl+Z / Ctrl+Shift+Z undo and redo | – |
 | Snap control: Snap or Slide, grid; Alt flips while dragging | – |
 | Page tabs switch pages | – |

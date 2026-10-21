@@ -142,6 +142,8 @@ pub struct ProjectView {
     pub(crate) audio_editor: Option<crate::audio_panel::AudioEditor>,
     /// Typing a clip's BPM in the audio panel.
     pub(crate) bpm_input: Option<crate::audio_panel::BpmInput>,
+    /// Typing the song tempo beside the transport.
+    pub(crate) tempo_input: Option<crate::header::TempoInput>,
     /// A note being heard from the editor, and since when.
     pub(crate) note_preview: Option<(NodeId, u8, std::time::Instant)>,
     /// Notes copied in the editor.
@@ -323,6 +325,7 @@ impl ProjectView {
             note_editor: None,
             audio_editor: None,
             bpm_input: None,
+            tempo_input: None,
             note_preview: None,
             note_clipboard: Vec::new(),
             clip_drag: None,

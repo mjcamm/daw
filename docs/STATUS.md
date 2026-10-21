@@ -22,7 +22,7 @@ The project file is at **version 14** (`crates/daw-engine/src/file.rs`); `upgrad
 
 - **Menu bar:** File → Preferences… (Ctrl+,: Audio and Appearance) and Quit (Ctrl+Q, saves first); Track → Import Audio….
 - **Launch page:** new project (`Documents/DAW Projects/<name>/project.json`), Open…, recent projects. New songs start with one Synth node and one clip of demo notes.
-- **Header:** song name menu (Save, Rename, Back to projects) with the tempo shown (read-only), page tabs (Arrange, Parameters, Signals, Mixer), the pointer / scissors tool and snap control, transport, CPU meter.
+- **Header:** song name menu (Save, Rename, Back to projects) with "4/4 · Saved" under it, page tabs (Arrange, Parameters, Signals, Mixer), the pointer / scissors tool and snap control, transport (back, play/stop, loop, position) and **tempo** (click to type, Enter applies, Escape cancels; 20 to 999 BPM, two decimals), CPU meter.
 - **Arrange:** the node list (colour, name, meter, signal button, M/S) with the nesting map and toolbar, and clips on the timeline. Click the ruler to locate; click a node to select it (this enables Parameters and points the bottom panel at it). Double-click a clip, or an empty lane, to open the bottom panel: the piano roll for MIDI, the audio panel for audio.
 - **Parameters:** per device, "+ Add Parameter" makes a result row with its layers. Layers: drag to reorder, rename, blend mode (Add or Multiply, both centred), mix, show/hide, delete. Block editing on the lanes, settings bar, resting-value slider.
 - **Signals:** "+ Add Signal" makes a drawn signal; draw on its lane like a layer. Colour bar picks a colour, double-click renames, × deletes, the uses chip lists listening layers with go-to icons. Click a row to select it; a notes signal's settings are in the inspector.
@@ -43,9 +43,10 @@ The project file is at **version 14** (`crates/daw-engine/src/file.rs`); `upgrad
 
 ## Waiting on the user (try it)
 
+- **Tempo** (2026-10-21): the field beside the transport, and changing it while audio clips play.
 - **UI speed:** does it feel instant?
 - **Looping clips:** looping MIDI and audio clips, and hearing the seams (looped audio not yet seen running by Claude either).
-- **Audio clips:** importing, dropping files from Explorer (Claude could not test that), clip BPM and stretching by ear. Note: the song tempo cannot be changed in the UI yet (below), so stretching can only be heard by changing a clip's BPM.
+- **Audio clips:** importing, dropping files from Explorer (Claude could not test that), clip BPM and stretching by ear. The song tempo is now typed beside the transport (2026-10-21), so stretching can be heard by changing either the song's or a clip's BPM.
 - **Signals page and listening layers:** driven by Claude, not yet tried by the user.
 
 ## Next up
@@ -71,7 +72,6 @@ The project file is at **version 14** (`crates/daw-engine/src/file.rs`); `upgrad
 
 ## Known gaps
 
-- **No song tempo control in the UI.** The engine has `Command::SetTempo` and the header shows the BPM, but nothing in the app changes it.
 - **TODO (user, 2026-10-19): audio file types beyond WAV** (MP3, FLAC, AIFF; `symphonia` is the likely crate) for samples and audio clips. Reading files in the background, too.
 - No node colour picker yet (the engine has `SetNodeColor`).
 - One built-in effect (Filter) and two instruments (Synth, SingleSampler). Effects are added on the mixer; their settings show only on Parameters for now.

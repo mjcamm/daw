@@ -1,21 +1,48 @@
-//! The header bar: song details, page tabs, then the transport.
+//! The header bar: song details, page tabs, then the transport and tempo.
 
 use crate::block_edit::{Grid, Snap};
+use crate::clip_drag::format_bpm;
 use crate::icons::{Icon, icon};
 use crate::layout::format_position;
 use crate::menu::{self, OpenMenu};
 use crate::project::{Page, ProjectView, RenameTarget};
+use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::{MONO_FONT, Theme};
 use crate::tooltip;
-use daw_engine::{Command, Ticks};
+use daw_engine::{Command, Edit, MAX_TEMPO_BPM, MIN_TEMPO_BPM, Ticks};
 use gpui::{
-    Context, FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString, div, prelude::*, px,
+    Context, Entity, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString,
+    Subscription, Window, div, prelude::*, px,
 };
+
+/// The tempo value's width, shown or typed.
+const TEMPO_WIDTH: f32 = 56.;
+
+/// Typing the song tempo.
+pub struct TempoInput {
+    input: Entity<TextInput>,
+    _subscription: Subscription,
+}
+
+impl std::fmt::Debug for TempoInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TempoInput").finish()
+    }
+}
+
+/// A typed song tempo, rounded to hundredths (what the field shows), if the
+/// engine takes it.
+pub fn parse_tempo(text: &str) -> Option<f64> {
+    let bpm: f64 = text.trim().parse().ok()?;
+    let bpm = (bpm * 100.).round() / 100.;
+    (MIN_TEMPO_BPM..=MAX_TEMPO_BPM)
+        .contains(&bpm)
+        .then_some(bpm)
+}
 
 impl ProjectView {
     pub(crate) fn render_header(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.session.snapshot();
-        let details = format!("{:.0} BPM · 4/4", snapshot.tempo_bpm);
 
         let status = if self.session.is_edited() {
             "Edited"
@@ -58,7 +85,7 @@ impl ProjectView {
                 div()
                     .text_size(px(11.))
                     .text_color(theme.text_secondary)
-                    .child(format!("{details} · {status}")),
+                    .child(format!("4/4 · {status}")),
             )
             .when(self.open_menu == Some(OpenMenu::Song), |d| {
                 d.child(self.render_song_menu(theme, cx))
@@ -211,6 +238,81 @@ impl ProjectView {
                     .child(loop_button),
             )
             .child(position)
+            .child(self.render_tempo(theme, cx))
+    }
+
+    /// The song tempo: click to type it, Enter applies, Escape cancels.
+    fn render_tempo(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let bpm = self.session.snapshot().tempo_bpm;
+        let value: gpui::AnyElement = match &self.tempo_input {
+            Some(typing) => div()
+                .w_full()
+                .child(typing.input.clone())
+                .into_any_element(),
+            None => div().child(format_bpm(bpm)).into_any_element(),
+        };
+        let hover = theme.hover;
+        div()
+            .id("transport-tempo")
+            .debug_selector(|| "transport-tempo".into())
+            .h(px(26.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .bg(theme.control)
+            .when(self.tempo_input.is_none(), |d| {
+                d.hover(move |s| s.bg(hover))
+                    .cursor_text()
+                    .tooltip(tooltip::text("Song tempo: click to type it"))
+            })
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .child(
+                // As wide typing as showing ("999.99"), so nothing shifts.
+                div()
+                    .w(px(TEMPO_WIDTH))
+                    .flex()
+                    .justify_end()
+                    .font_family(MONO_FONT)
+                    .text_size(px(13.))
+                    .child(value),
+            )
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(theme.text_tertiary)
+                    .child("BPM"),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.tempo_input.is_none() {
+                    this.edit_tempo(bpm, window, cx);
+                }
+            }))
+    }
+
+    /// Starts typing the song tempo. Enter applies a tempo the engine takes
+    /// (one undo step); Escape, or anything else, leaves it.
+    fn edit_tempo(&mut self, current: f64, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| TextInput::new(&format_bpm(current), "BPM", cx));
+        window.focus(&input.read(cx).focus_handle(cx));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &TextInputEvent, window, _| {
+                if let TextInputEvent::Confirm(text) = event
+                    && let Some(bpm) = parse_tempo(text)
+                    && bpm != this.session.snapshot().tempo_bpm
+                {
+                    this.session.apply(Command::Edit(Edit::SetTempo { bpm }));
+                }
+                this.tempo_input = None;
+                window.focus(&this.focus);
+            },
+        );
+        self.tempo_input = Some(TempoInput {
+            input,
+            _subscription: subscription,
+        });
     }
 }
 
@@ -432,4 +534,22 @@ fn render_frame_time(theme: &Theme) -> impl IntoElement {
                 .child(text),
         )
         .tooltip(tooltip::text(hint))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_tempo;
+
+    #[test]
+    fn a_typed_tempo_is_rounded_and_kept_in_range() {
+        assert_eq!(parse_tempo(" 128 "), Some(128.0));
+        assert_eq!(parse_tempo("127.5"), Some(127.5));
+        assert_eq!(parse_tempo("128.333"), Some(128.33));
+        assert_eq!(parse_tempo("20"), Some(20.0));
+        assert_eq!(parse_tempo("999"), Some(999.0));
+        assert_eq!(parse_tempo("19.99"), None);
+        assert_eq!(parse_tempo("1000"), None);
+        assert_eq!(parse_tempo("fast"), None);
+        assert_eq!(parse_tempo(""), None);
+    }
 }

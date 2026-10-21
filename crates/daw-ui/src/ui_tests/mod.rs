@@ -6,6 +6,7 @@
 mod arrange;
 mod menus;
 mod perf;
+mod transport;
 
 use crate::project::ProjectView;
 use crate::session::Session;
@@ -42,7 +43,12 @@ impl Harness {
         let session = Session::headless(folder.clone()).expect("headless session");
         // Leaked so the window context can live as long as the test.
         let app = Box::leak(Box::new(TestAppContext::single()));
-        app.update(|cx| cx.set_global(Theme::for_appearance(WindowAppearance::Dark)));
+        app.update(|cx| {
+            cx.set_global(Theme::for_appearance(WindowAppearance::Dark));
+            // The app's own shortcuts, so tests press the keys a user would.
+            cx.bind_keys(crate::text_input::key_bindings());
+            cx.bind_keys(crate::key_bindings());
+        });
         let (view, cx) = app.add_window_view(|window, cx| ProjectView::new(session, window, cx));
         cx.simulate_resize(size(gpui::px(1280.), gpui::px(800.)));
         let mut harness = Self {
@@ -159,6 +165,18 @@ impl Harness {
                 click_count: count,
             });
         }
+        self.redraw();
+    }
+
+    /// Types `text` into the focused text field.
+    pub fn type_text(&mut self, text: &str) {
+        self.cx.simulate_input(text);
+        self.redraw();
+    }
+
+    /// Presses keys, written as in key bindings ("enter", "ctrl-z").
+    pub fn keys(&mut self, keys: &str) {
+        self.cx.simulate_keystrokes(keys);
         self.redraw();
     }
 }
