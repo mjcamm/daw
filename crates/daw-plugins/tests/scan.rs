@@ -4,11 +4,10 @@
 #![cfg(windows)]
 #![allow(clippy::unwrap_used, reason = "tests fail on error")]
 
-use daw_plugins::scan::{Catalog, ScanCommand, scan_bundle};
+use daw_plugins::scan::{Catalog, Progress, ScanCommand, scan_bundle};
 use daw_plugins::sys::Job;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 #[global_allocator]
@@ -109,10 +108,11 @@ fn a_plugin_that_hangs_while_loading_times_out() {
 fn a_catalog_scans_new_bundles_once() {
     let (root, _) = install("catalog");
     let mut catalog = Catalog::default();
-    let done = AtomicUsize::new(0);
-    catalog.update(std::slice::from_ref(&root), &scanner(), &done);
+    let progress = Progress::default();
+    catalog.update(std::slice::from_ref(&root), &scanner(), &progress);
     assert_eq!(catalog.plugins().len(), 2);
-    assert_eq!(done.into_inner(), 1, "one bundle scanned");
+    assert_eq!(progress.done.into_inner(), 1, "one bundle scanned");
+    assert_eq!(progress.total.into_inner(), 1);
     assert!(
         catalog.stale(std::slice::from_ref(&root)).is_empty(),
         "nothing left to scan"

@@ -11,12 +11,10 @@ publish.workspace = true
 [dependencies]
 daw-engine.workspace = true
 daw-host.workspace = true
+daw-plugins.workspace = true
 daw-rt.workspace = true
 hound.workspace = true
 rtrb.workspace = true
-
-[dev-dependencies]
-daw-plugins.workspace = true
 
 [lints]
 workspace = true

@@ -102,7 +102,9 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 
 ## Scanning
 
-*Built (2026-10-21), without UI: `daw-plugins/src/scan.rs` and `vst3.rs`; `daw_host::plugins::update_catalog`; `daw-player plugins` scans and lists. The catalog is `%APPDATA%\daw\plugins.json`. Tested against `daw-test-plugin` (a real VST3 built from this repo) including one that crashes or hangs while loading.*
+*Built (2026-10-21): `daw-plugins/src/scan.rs` and `vst3.rs`; `daw_host::plugins::update_catalog`; `daw-player plugins` scans and lists. The catalog is `%APPDATA%\daw\plugins.json`. Tested against `daw-test-plugin` (a real VST3 built from this repo) including one that crashes or hangs while loading. The app scans in the background from startup (`plugin_settings.rs`, `AppView::start_scan`); **Preferences → Plugins** (agreed with the user) lists the folders (standard ones read-only; added ones, saved in the preferences, removable), Rescan with the count or "Scanning n of N…", and Couldn't load with the reason in plain words and Retry.*
+
+**The browser** (agreed 2026-10-21, built with step 3): adding an instrument or an effect opens one modal browser, with Built-in and Plugins as the top-level split; searchable, plugins grouped by vendor; "Scanning n of N…" while a scan runs.
 
 - The scanner is the plugin host binary in scan mode, one process per bundle with a timeout, so a plugin that crashes or hangs while being scanned never affects the DAW. Results (classes, vendor, version, instrument or effect, parameter count) are cached by path, size and modified time; only new or changed bundles are rescanned.
 - Folders: the standard ones per platform (Windows: `%LOCALAPPDATA%\Programs\Common\VST3`, `C:\Program Files\Common Files\VST3`), searched recursively; extra folders can be added in Preferences.
@@ -123,7 +125,7 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 ## Build order (each step usable and tested before the next)
 
 1. **IPC and host process with built-in test devices** (no VST3 yet), **built**: the hand-off, deadlines, crash and hang detection (`daw-plugins`, tested with real processes); the engine's plugin effect, live deadlines (70% of each block) and offline waiting, Reload, states in the snapshot (`daw-plugins/tests/engine.rs`); the app and player as their own host (`daw_host::plugins`). Process groups other than Together come with the Preferences page.
-2. **Scanner** (built) and the plugin list in the browsers (layout being agreed).
+2. **Scanner** and Preferences → Plugins (built). The browser modal comes with step 3, so plugins can be added the moment they show.
 3. **Effects:** load, buses, process, parameters (pick from list), state.
 4. **Instruments:** note events, multiple outputs later.
 5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn.

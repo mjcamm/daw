@@ -33,6 +33,8 @@ impl Appearance {
 pub struct Preferences {
     pub appearance: Appearance,
     pub audio: AudioSettings,
+    /// Plugin folders searched besides the standard ones.
+    pub plugin_folders: Vec<PathBuf>,
 }
 
 /// The audio setup the user chose. Each `None` leaves it to the system (or

@@ -16,6 +16,7 @@ path = "src/main.rs"
 daw-automation.workspace = true
 daw-engine.workspace = true
 daw-host.workspace = true
+daw-plugins.workspace = true
 daw-rt.workspace = true
 gpui = "0.2.2"
 unicode-segmentation.workspace = true

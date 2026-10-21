@@ -135,6 +135,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Page tabs switch pages | – |
 | Song name menu: Save, Rename, Back to projects | – |
 | File → Preferences (Ctrl+,): Appearance; Audio settings applied live; test tone | – |
+| Plugins scan in the background from startup (only new or changed ones) | – (the harness does not reach the app root) |
+| Preferences → Plugins: the standard folders, Add Folder and × for added ones (each rescans), Rescan, the count or "Scanning n of N…", Couldn't load with why and Retry | – (as above) |
 | Launch page: new project, Open…, recent projects | – |
 | Ctrl+Q saves and quits; autosave every 30 s | – |
 | With `DAW_FRAME_LOG` set: "UI n ms" beside the CPU meter (median work per frame over 2 s; frames a second in its tooltip) | – |

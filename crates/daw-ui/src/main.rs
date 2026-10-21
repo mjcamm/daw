@@ -28,6 +28,7 @@ mod paint;
 mod pane;
 mod parameters;
 mod piano_roll;
+mod plugin_settings;
 mod project;
 mod scroll;
 mod session;

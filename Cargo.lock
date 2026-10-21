@@ -1532,6 +1532,7 @@ dependencies = [
  "daw-automation",
  "daw-engine",
  "daw-host",
+ "daw-plugins",
  "daw-rt",
  "gpui",
  "unicode-segmentation",

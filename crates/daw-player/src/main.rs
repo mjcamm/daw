@@ -72,9 +72,9 @@ fn run(args: Vec<String>) -> Result<()> {
 /// Scans the plugin folders (only new or changed plugins) and lists what
 /// was found, by vendor, then what failed.
 fn list_plugins() -> Result<()> {
-    let done = std::sync::atomic::AtomicUsize::new(0);
+    let progress = daw_plugins::scan::Progress::default();
     let started = std::time::Instant::now();
-    let catalog = daw_host::plugins::update_catalog(&[], &done)?;
+    let catalog = daw_host::plugins::update_catalog(&[], &progress)?;
     let plugins = catalog.plugins();
     let mut vendor = "";
     for plugin in &plugins {
@@ -104,7 +104,7 @@ fn list_plugins() -> Result<()> {
         "\n{} plugins, {} failed; scanned {} bundles in {:.1} s ({})",
         plugins.len(),
         failures.len(),
-        done.into_inner(),
+        progress.done.into_inner(),
         started.elapsed().as_secs_f64(),
         daw_host::plugins::catalog_path().display()
     );

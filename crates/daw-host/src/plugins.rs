@@ -5,10 +5,9 @@
 
 use crate::projects::app_config_dir;
 use daw_plugins::client::HostCommand;
-use daw_plugins::scan::{Catalog, ScanCommand};
-use std::path::PathBuf;
+use daw_plugins::scan::{Catalog, Progress, ScanCommand};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::AtomicUsize;
 
 /// The first argument that starts this executable as a plugin host.
 pub const HOST_FLAG: &str = "--plugin-host";
@@ -51,14 +50,22 @@ pub fn catalog_path() -> PathBuf {
 }
 
 /// The saved catalog brought up to date with the standard folders and
-/// `extra` ones, then saved. `done` counts bundles scanned so far.
-pub fn update_catalog(extra: &[PathBuf], done: &AtomicUsize) -> Result<Catalog, String> {
+/// `extra` ones, then saved, counting in `progress`.
+pub fn update_catalog(extra: &[PathBuf], progress: &Progress) -> Result<Catalog, String> {
     let scanner = scan_command().ok_or("could not find this program to scan with")?;
     let mut folders = daw_plugins::scan::standard_folders();
     folders.extend_from_slice(extra);
     let path = catalog_path();
     let mut catalog = Catalog::load(&path);
-    catalog.update(&folders, &scanner, done);
+    catalog.update(&folders, &scanner, progress);
     catalog.save(&path).map_err(|e| e.to_string())?;
     Ok(catalog)
+}
+
+/// Forgets a bundle's saved result, so the next update scans it again.
+pub fn forget_bundle(bundle: &Path) -> std::io::Result<()> {
+    let path = catalog_path();
+    let mut catalog = Catalog::load(&path);
+    catalog.retry(bundle);
+    catalog.save(&path)
 }

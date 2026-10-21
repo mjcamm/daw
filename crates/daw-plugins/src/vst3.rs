@@ -212,10 +212,7 @@ mod sys {
                 )
             };
             if module.is_null() {
-                return Err(format!(
-                    "could not load it: {}",
-                    std::io::Error::last_os_error()
-                ));
+                return Err(load_error(&std::io::Error::last_os_error()));
             }
             Ok(Self(module))
         }
@@ -256,6 +253,17 @@ mod sys {
 
     pub fn quiet_errors() {
         unsafe { SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX) };
+    }
+
+    /// Why a plugin would not load, in words a person can act on.
+    fn load_error(error: &std::io::Error) -> String {
+        match error.raw_os_error() {
+            // ERROR_BAD_EXE_FORMAT
+            Some(193) => "not a 64-bit Windows plugin".into(),
+            // ERROR_MOD_NOT_FOUND
+            Some(126) => "a file it needs is missing (reinstalling it may help)".into(),
+            _ => format!("could not load it: {error}"),
+        }
     }
 }
 

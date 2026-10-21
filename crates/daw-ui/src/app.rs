@@ -1,6 +1,6 @@
 //! The root view: the menu bar over the launch page or an open project, and
-//! the preferences modal (Audio and Appearance; see
-//! `docs/design/audio-settings.md`).
+//! the preferences modal (Audio, Appearance and Plugins; see
+//! `docs/design/audio-settings.md` and `plugin_settings.rs`).
 
 use crate::icons::{Icon, icon};
 use crate::launch::{LaunchEvent, LaunchView};
@@ -43,9 +43,10 @@ enum TopMenu {
 
 /// A section of the preferences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Section {
+pub(crate) enum Section {
     Audio,
     Appearance,
+    Plugins,
 }
 
 /// A drop-down list in the audio settings.
@@ -66,14 +67,16 @@ enum Screen {
 pub struct AppView {
     screen: Screen,
     recent: RecentProjects,
-    preferences: StoredPreferences,
+    pub(crate) preferences: StoredPreferences,
     /// The menu bar's open menu, if any.
     open_menu: Option<TopMenu>,
     /// The menu the current press closed by landing outside it (see
     /// `ProjectView::toggle_menu`).
     menu_dismissed: Option<TopMenu>,
-    preferences_open: bool,
-    section: Section,
+    pub(crate) preferences_open: bool,
+    pub(crate) section: Section,
+    /// The plugin catalog, kept current in the background.
+    pub(crate) scan: crate::plugin_settings::PluginScan,
     /// The audio drop-down that is open, if any.
     open_choice: Option<Choice>,
     /// What the audio settings can choose; read when the preferences open
@@ -96,7 +99,7 @@ impl AppView {
             window.appearance(),
         ));
         let (screen, events) = launch_screen(&recent, window, cx);
-        Self {
+        let mut view = Self {
             screen,
             recent,
             preferences,
@@ -107,9 +110,23 @@ impl AppView {
             open_choice: None,
             choices: DeviceChoices::default(),
             drivers: Vec::new(),
+            scan: Default::default(),
             _screen_events: events,
             _appearance: appearance,
+        };
+        view.start_scan(cx);
+        view
+    }
+
+    pub(crate) fn save_preferences(&self) {
+        if let Err(e) = self.preferences.save() {
+            eprintln!("could not save preferences: {e}");
         }
+    }
+
+    /// Whether the Plugins page is on screen.
+    pub(crate) fn showing_plugins(&self) -> bool {
+        self.preferences_open && self.section == Section::Plugins
     }
 
     fn show_launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -411,10 +428,12 @@ impl AppView {
                     .child("Preferences"),
             )
             .child(nav(Section::Audio, "Audio"))
-            .child(nav(Section::Appearance, "Appearance"));
+            .child(nav(Section::Appearance, "Appearance"))
+            .child(nav(Section::Plugins, "Plugins"));
         let body = match self.section {
             Section::Audio => self.render_audio_settings(theme, cx).into_any_element(),
             Section::Appearance => self.render_appearance(theme, cx).into_any_element(),
+            Section::Plugins => self.render_plugin_settings(theme, cx).into_any_element(),
         };
         let close = div()
             .id("preferences-close")

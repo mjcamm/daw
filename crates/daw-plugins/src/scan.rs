@@ -308,6 +308,15 @@ pub fn scan_bundle(
     serde_json::from_str(out.trim()).map_err(|e| format!("the scanner's report did not read: {e}"))
 }
 
+/// How far an update has got, readable from another thread.
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// Bundles finished so far.
+    pub done: AtomicUsize,
+    /// Bundles this update scans (new or changed ones).
+    pub total: AtomicUsize,
+}
+
 /// What identifies a bundle's version on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fingerprint {
@@ -413,14 +422,15 @@ impl Catalog {
 
     /// Brings the catalog up to date with `folders`: drops bundles that are
     /// gone, scans new and changed ones (`moduleinfo.json` first, else a
-    /// scanner process each, a few at a time). `done` counts finished
-    /// bundles out of [`Catalog::stale`]'s, for progress.
-    pub fn update(&mut self, folders: &[PathBuf], scanner: &ScanCommand, done: &AtomicUsize) {
+    /// scanner process each, a few at a time), counting in `progress`.
+    pub fn update(&mut self, folders: &[PathBuf], scanner: &ScanCommand, progress: &Progress) {
         self.version = CATALOG_VERSION;
         let present = find_bundles(folders);
         self.bundles
             .retain(|path, _| present.binary_search(path).is_ok());
         let stale = self.stale(folders);
+        progress.done.store(0, Ordering::Relaxed);
+        progress.total.store(stale.len(), Ordering::Relaxed);
         let job = Job::new().ok();
         let next = AtomicUsize::new(0);
         let results: Vec<(PathBuf, Entry)> = std::thread::scope(|scope| {
@@ -447,7 +457,7 @@ impl Catalog {
                                     result,
                                 },
                             ));
-                            done.fetch_add(1, Ordering::Relaxed);
+                            progress.done.fetch_add(1, Ordering::Relaxed);
                         }
                         out
                     })
