@@ -4,7 +4,8 @@
 //! parameter that does something (id 0, gain = 2 × value, so the default
 //! 0.5 is unity) and is saved in its state, "Tilt" (id 7, in the "Tone"
 //! group, does nothing) and a read-only "Meter" (id 9) a host must not
-//! offer. "Test Synth" is listed but not yet creatable.
+//! offer. It has a window (`view.rs`) that tests drive. "Test Synth" is
+//! listed but not yet creatable.
 //! Adapted from the `vst3` crate's gain example (MIT OR Apache-2.0).
 //!
 //! `DAW_TEST_PLUGIN_SCAN=crash` or `hang` makes loading it crash or hang,
@@ -21,6 +22,9 @@
 )]
 
 use std::cell::Cell;
+
+#[cfg(windows)]
+mod view;
 use std::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
 use vst3::Steinberg::Vst::*;
@@ -289,6 +293,7 @@ impl IProcessContextRequirementsTrait for Processor {
 
 struct Controller {
     gain: Cell<f64>,
+    handler: std::cell::RefCell<Option<vst3::ComPtr<IComponentHandler>>>,
 }
 
 impl Class for Controller {
@@ -486,10 +491,20 @@ impl IEditControllerTrait for Controller {
         kResultOk
     }
 
-    unsafe fn setComponentHandler(&self, _handler: *mut IComponentHandler) -> tresult {
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        *self.handler.borrow_mut() = unsafe { ComRef::from_raw(handler) }.map(|h| h.to_com_ptr());
         kResultOk
     }
 
+    #[cfg(windows)]
+    unsafe fn createView(&self, name: FIDString) -> *mut IPlugView {
+        if name.is_null() || unsafe { std::ffi::CStr::from_ptr(name) } != c"editor" {
+            return std::ptr::null_mut();
+        }
+        view::View::create(self.handler.borrow().clone())
+    }
+
+    #[cfg(not(windows))]
     unsafe fn createView(&self, _name: FIDString) -> *mut IPlugView {
         std::ptr::null_mut()
     }
@@ -547,6 +562,7 @@ impl IPluginFactoryTrait for Factory {
             .to_com_ptr::<FUnknown>(),
             CONTROLLER_CID => ComWrapper::new(Controller {
                 gain: Cell::new(DEFAULT_GAIN),
+                handler: std::cell::RefCell::new(None),
             })
             .to_com_ptr::<FUnknown>(),
             _ => return kNotImplemented,

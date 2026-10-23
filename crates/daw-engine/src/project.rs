@@ -536,6 +536,18 @@ impl Project {
     }
 
     /// Every id in use anywhere in the project.
+    /// A layer id no layer uses yet.
+    pub fn next_layer_id(&self) -> LayerId {
+        LayerId(
+            self.used_ids()
+                .layers
+                .iter()
+                .map(|l| l.0 + 1)
+                .max()
+                .unwrap_or(1),
+        )
+    }
+
     fn used_ids(&self) -> UsedIds {
         let mut used = UsedIds::default();
         for entry in self.nodes() {

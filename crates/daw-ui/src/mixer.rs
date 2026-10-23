@@ -445,6 +445,18 @@ impl ProjectView {
             device.name.clone()
         };
         let panel_open = self.open_menu == Some(OpenMenu::Sampler(id));
+        // A plugin's slot says how to open its window, or why it can't.
+        let plugin_tip_open = device.plugin.is_some();
+        let plugin_tip = device.plugin.as_ref().map(|p| match (&p.state, &p.window) {
+            (daw_engine::PluginState::Failed(why), _) => {
+                format!("{} can't run: {why}", device.name)
+            }
+            (daw_engine::PluginState::Crashed, _) => format!("{} crashed", device.name),
+            (_, daw_engine::PluginWindow::Failed(why)) => {
+                format!("Couldn't open {}'s window: {why}", device.name)
+            }
+            _ => format!("Double-click to open {}", device.name),
+        });
         let mut selected_bg = theme.accent;
         selected_bg.a = 0.18;
         let dot = div()
@@ -484,6 +496,7 @@ impl ProjectView {
         Some(
             div()
                 .id(("slot", id.0))
+                .debug_selector(move || format!("slot-{}", id.0))
                 .h(px(SLOT_HEIGHT - 2.))
                 .mx(px(4.))
                 .px(px(2.))
@@ -512,6 +525,16 @@ impl ProjectView {
                 .children(remove)
                 .when(sampler && !panel_open, |d| {
                     d.tooltip(tooltip::text("SingleSampler: click to choose its sample"))
+                })
+                .when_some(plugin_tip, |d, tip| d.tooltip(tooltip::text(tip)))
+                // A plugin's window opens with a double-click.
+                .when(plugin_tip_open, |d| {
+                    d.on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        if event.click_count() >= 2 {
+                            this.session.apply(Command::OpenPluginWindow { effect: id });
+                            this.invalidate_all(cx);
+                        }
+                    }))
                 })
                 .on_mouse_down(
                     MouseButton::Left,

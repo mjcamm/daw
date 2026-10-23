@@ -47,7 +47,9 @@ Working knowledge of the VST3 API for hosting, kept because the official docs ar
 
 ## Editor
 
-- `createView("editor")`, `isPlatformTypeSupported("HWND" | "NSView" | "X11EmbedWindowID")`, `setFrame(plugFrame)`, `attached(parent, type)`, size from `getSize`; `removed()` before closing, then release (*sequence unverified: the portal page is missing*).
+- `createView("editor")`, `isPlatformTypeSupported("HWND" | "NSView" | "X11EmbedWindowID")`, `canResize`, `setFrame(plugFrame)`, `setContentScaleFactor`, `attached(parent, type)`, then size the window from `getSize`; to close, `removed()`, `setFrame(null)`, release, then destroy the window. Works with all seven of the user's tried effects (`editor.rs`).
+- Some editors take a while to open (Serum 2 FX and Cassette 1.5 s): never wait for one on the DAW's UI thread.
+- The controller never talks to the processor itself: `performEdit` from the window must reach the processor as an input parameter change, or the sound won't follow the knob. Plugins may call `performEdit` without `beginEdit` / `endEdit` (mouse wheel).
 - Plugin resizes: `IPlugFrame::resizeView(size)` → host resizes its window → `onSize`. User resizes (only if `canResize`): `checkSizeConstraint` → resize → `onSize`.
 - `IPlugViewContentScaleSupport::setContentScaleFactor`: call just before or after `attached`, and again when the window moves to a screen with another scale.
 - Linux: the host provides `Linux::IRunLoop` through the `IPlugFrame` and the host context (plugins use it for timers and file descriptors).
@@ -68,7 +70,7 @@ Working knowledge of the VST3 API for hosting, kept because the official docs ar
 - Some products share state between instances in one process (analysers across EQ instances): such instances must share a host process.
 - Editor and resize calls only on the plugin process's UI thread; pump its messages.
 - **Never link windows across processes** (owner via `GWLP_HWNDPARENT`, or parent/child): Windows joins the two processes' input queues, so a hung plugin freezes the DAW's UI. Measured 2026-10-21 (Windows 11): a test window owned by a window in another process, hanging for 8 s inside a click; a click on the owner then took ~7.5 s to arrive, against 15–53 ms with no link (three runs each).
-- Keeping plugin windows above the DAW without a link: the plugin process raises its own windows (or sets them topmost) while the DAW is the active app and drops that when it isn't, told over the control channel. If the DAW ever moves a plugin window itself, use `SetWindowPos` with `SWP_ASYNCWINDOWPOS` so a hung plugin can't block it. Unowned top-level windows get taskbar buttons unless made tool windows (`WS_EX_TOOLWINDOW`).
+- Keeping plugin windows above the DAW without a link (built): the host process watches foreground changes itself (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)`, delivered through its own message loop) and makes its windows topmost while the DAW's process is in front, else places them just behind the new foreground window (`HWND_NOTOPMOST` alone would lift them above it). If the DAW ever moves a plugin window itself, use `SetWindowPos` with `SWP_ASYNCWINDOWPOS` so a hung plugin can't block it. Unowned top-level windows get taskbar buttons unless made tool windows (`WS_EX_TOOLWINDOW`).
 - MMCSS: `AvSetMmThreadCharacteristicsW("Pro Audio")` for the host's audio thread; `AvRevertMmThreadCharacteristics` when done. `audio_thread_priority` (already used by the engine) does this.
 - **Wait timeouts round to the system tick** (up to ~15.6 ms): `WaitForSingleObject(event, 5)` may wait 15 ms. Audio deadlines wait on the event *and* a high-resolution waitable timer (`CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`) with `WaitForMultipleObjects`: measured ~5 ms for a 5 ms deadline.
 - A host process's death shows at once as EOF on its stdout; no polling needed.

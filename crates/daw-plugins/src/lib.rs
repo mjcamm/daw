@@ -4,6 +4,7 @@
 //! - [`control`]: the control channel's messages (stdin and stdout, JSON).
 //! - [`client`]: the DAW side: starting a host process and calling it.
 //! - [`host`]: the host process side.
+//! - [`editor`]: plugin windows in the host process (Windows).
 //! - [`scan`]: finding VST3 plugins and caching what they offer.
 //! - [`vst3`]: loading a VST3 module (scanner and host processes only).
 //! - [`sys`]: the operating system pieces (Windows only for now).
@@ -14,6 +15,7 @@
 pub mod block;
 pub mod client;
 pub mod control;
+pub mod editor;
 pub mod host;
 pub mod scan;
 pub mod sys;

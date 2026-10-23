@@ -1483,6 +1483,7 @@ dependencies = [
  "daw-protocol",
  "daw-rt",
  "daw-testkit",
+ "rtrb",
  "serde",
  "serde_json",
  "vst3",
@@ -1516,6 +1517,7 @@ name = "daw-test-plugin"
 version = "0.1.0"
 dependencies = [
  "vst3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

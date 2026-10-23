@@ -4,6 +4,9 @@
 #![allow(dead_code, reason = "each test binary uses some of these")]
 #![allow(clippy::unwrap_used, reason = "tests fail on error")]
 
+#[cfg(windows)]
+pub mod windows;
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 

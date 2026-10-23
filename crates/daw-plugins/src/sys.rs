@@ -154,6 +154,11 @@ mod windows {
             Handle::checked(unsafe { CreateEventW(null(), 0, 0, wide(name).as_ptr()) }).map(Self)
         }
 
+        /// An event only this process uses.
+        pub fn local() -> io::Result<Self> {
+            Handle::checked(unsafe { CreateEventW(null(), 0, 0, null()) }).map(Self)
+        }
+
         pub fn open(name: &str) -> io::Result<Self> {
             Handle::checked(unsafe {
                 OpenEventW(
@@ -190,6 +195,40 @@ mod windows {
                 _ => Wake::TimedOut,
             }
         }
+    }
+
+    /// Runs this thread's windows (plugin editors) until `wake` is set or
+    /// `timeout` passes: waits for either, then handles every waiting
+    /// window message.
+    pub fn pump_until(wake: &Event, timeout: Duration) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+            PeekMessageW, QS_ALLINPUT, TranslateMessage,
+        };
+        let ms = timeout.as_millis().min(u128::from(INFINITE - 1)) as u32;
+        unsafe {
+            MsgWaitForMultipleObjectsEx(1, &wake.0.0, ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    /// Lets process `pid` bring its windows in front of ours (we are the
+    /// active app and it is about to open one for the user).
+    pub fn allow_foreground(pid: u32) {
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid) };
+    }
+
+    /// Windows in this process get real pixels on every screen and are told
+    /// when a screen's scale changes (plugin editors scale themselves).
+    pub fn dpi_aware() {
+        use windows_sys::Win32::UI::HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+        };
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     }
 
     /// A high-resolution one-shot timer (sub-millisecond, unlike wait
@@ -288,6 +327,9 @@ mod unsupported {
         pub fn open(_: &str) -> io::Result<Self> {
             unsupported()
         }
+        pub fn local() -> io::Result<Self> {
+            unsupported()
+        }
         pub fn set(&self) {}
         pub fn wait(&self, _: Option<Duration>) -> Wake {
             Wake::TimedOut
@@ -296,6 +338,18 @@ mod unsupported {
             Wake::TimedOut
         }
     }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the host's main thread, never an audio thread"
+    )]
+    pub fn pump_until(_: &Event, timeout: Duration) {
+        std::thread::sleep(timeout);
+    }
+
+    pub fn allow_foreground(_: u32) {}
+
+    pub fn dpi_aware() {}
 
     #[derive(Debug)]
     pub struct Timer(());

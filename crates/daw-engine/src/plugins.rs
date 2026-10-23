@@ -10,7 +10,10 @@ use crate::audio::{AudioMsg, CHUNK_FRAMES};
 use crate::project::Project;
 use daw_plugins::block::{BlockStats, DawBlock, Layout};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
-use daw_protocol::{DeviceId, EffectKind, PluginData, PluginParamInfo, PluginSpec, PluginState};
+use daw_plugins::control::HostEvent;
+use daw_protocol::{
+    DeviceId, EffectKind, PluginData, PluginParamInfo, PluginSpec, PluginState, PluginWindow,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -42,6 +45,18 @@ pub(crate) struct Plugins {
     /// Parameter lists shown for plugins that are not running, for front
     /// ends' tests (which run no host).
     shown_params: BTreeMap<DeviceId, Arc<Vec<PluginParamInfo>>>,
+    /// Plugin windows open, or why one couldn't open (absent: closed).
+    windows: BTreeMap<DeviceId, PluginWindow>,
+    /// Windows asked for and not answered yet, by call.
+    opening: BTreeMap<u64, DeviceId>,
+}
+
+/// Something the user did in a plugin's window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum WindowEdit {
+    Begin(u32),
+    Value(u32, f64),
+    End(u32),
 }
 
 #[derive(Debug)]
@@ -76,6 +91,7 @@ impl Plugins {
             .map(|(id, _)| *id)
             .collect();
         for id in gone {
+            self.windows.remove(&id);
             if let Some(instance) = self.running.remove(&id) {
                 self.keep_state(id, instance.id);
                 // An effect that now runs another plugin plays nothing until
@@ -85,6 +101,7 @@ impl Plugins {
             }
         }
         self.failed.retain(|id, _| wanted.contains_key(id));
+        self.windows.retain(|id, _| wanted.contains_key(id));
 
         for (id, spec) in wanted {
             if self.running.contains_key(&id) || self.failed.contains_key(&id) {
@@ -183,6 +200,7 @@ impl Plugins {
             self.ending.insert(instance.id);
         }
         self.failed.clear();
+        self.windows.clear();
         self.saved = states;
     }
 
@@ -211,6 +229,8 @@ impl Plugins {
         self.running.clear();
         self.failed.clear();
         self.ending.clear();
+        self.windows.clear();
+        self.opening.clear();
         self.sync(project, sample_rate, outbox);
     }
 
@@ -234,6 +254,86 @@ impl Plugins {
             }
         }
         self.sync(project, sample_rate, outbox);
+    }
+
+    /// Asks for a plugin effect's window titled `title` (or for it to come
+    /// to the front) without waiting: some plugins take a second or two.
+    /// The answer arrives in [`Plugins::window_edits`]; why it can't open
+    /// shows in [`Plugins::window`].
+    pub(crate) fn open_window(&mut self, effect: DeviceId, title: &str) {
+        let started = match self.running.get(&effect) {
+            Some(instance) => {
+                let id = instance.id;
+                self.host()
+                    .and_then(|host| host.start_open_editor(id, title).map_err(|e| e.to_string()))
+            }
+            None => Err(self
+                .failed
+                .get(&effect)
+                .cloned()
+                .unwrap_or_else(|| "the plugin isn't running".into())),
+        };
+        match started {
+            Ok(call) => {
+                self.opening.insert(call, effect);
+            }
+            Err(why) => {
+                self.windows.insert(effect, PluginWindow::Failed(why));
+            }
+        }
+    }
+
+    pub(crate) fn window(&self, effect: DeviceId) -> PluginWindow {
+        self.windows.get(&effect).cloned().unwrap_or_default()
+    }
+
+    /// What the user did in plugin windows since last asked, by effect,
+    /// and whether any window opened, failed to or closed.
+    pub(crate) fn window_edits(&mut self) -> (Vec<(DeviceId, WindowEdit)>, bool) {
+        let Some(host) = self.host.as_mut().filter(|h| h.is_alive()) else {
+            return (Vec::new(), false);
+        };
+        let events = host.take_events();
+        let mut changed = false;
+        for (call, result) in host.take_replies() {
+            if let Some(effect) = self.opening.remove(&call) {
+                let window = match result {
+                    Ok(_) => PluginWindow::Open,
+                    Err(why) => PluginWindow::Failed(why),
+                };
+                self.windows.insert(effect, window);
+                changed = true;
+            }
+        }
+        let effect_of = |instance: u64| {
+            self.running
+                .iter()
+                .find(|(_, i)| i.id == instance)
+                .map(|(effect, _)| *effect)
+        };
+        let mut edits = Vec::new();
+        let mut closed = Vec::new();
+        for event in events {
+            match event {
+                HostEvent::EditBegin { instance, id } => {
+                    edits.extend(effect_of(instance).map(|e| (e, WindowEdit::Begin(id))));
+                }
+                HostEvent::EditValue {
+                    instance,
+                    id,
+                    value,
+                } => edits.extend(effect_of(instance).map(|e| (e, WindowEdit::Value(id, value)))),
+                HostEvent::EditEnd { instance, id } => {
+                    edits.extend(effect_of(instance).map(|e| (e, WindowEdit::End(id))));
+                }
+                HostEvent::EditorClosed { instance } => closed.extend(effect_of(instance)),
+            }
+        }
+        changed |= !closed.is_empty();
+        for effect in closed {
+            self.windows.remove(&effect);
+        }
+        (edits, changed)
     }
 
     /// A running plugin's automatable parameters; none for anything else.

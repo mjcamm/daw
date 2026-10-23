@@ -12,12 +12,15 @@
 )]
 
 use crate::block::{HostBlock, MAX_CHANNELS, MAX_PARAM_CHANGES, ParamChange};
+use crate::control::HostEvent;
 use crate::vst3::{Module, parse_cid, wide};
 use daw_protocol::{PluginData, PluginParamInfo};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, c_void};
+use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{Class, ComPtr, ComWrapper, Interface};
@@ -263,22 +266,57 @@ impl IAttributeListTrait for AttributeList {
 
 /// Receives edits from the plugin's own controls. Accepted for now;
 /// knob moves and learn come with plugin windows (`vst3-hosting.md`).
-struct ComponentHandler;
+/// What plugins report from their windows, gathered on the host's main
+/// thread for the DAW.
+pub type Events = Rc<RefCell<Vec<HostEvent>>>;
+
+/// Knob moves the processor has yet to hear (main thread to audio thread).
+const PENDING_EDITS: usize = 256;
+
+/// Hears the plugin's window: a moved knob goes to the processor (the
+/// controller never talks to it directly) and to the DAW.
+struct ComponentHandler {
+    instance: u64,
+    events: Events,
+    to_audio: RefCell<rtrb::Producer<(ParamID, f64)>>,
+    /// Parameters the user is holding, so the window isn't moved under
+    /// their hand (`Vst3State::follow`).
+    touching: Rc<RefCell<HashSet<ParamID>>>,
+}
 
 impl Class for ComponentHandler {
     type Interfaces = (IComponentHandler,);
 }
 
 impl IComponentHandlerTrait for ComponentHandler {
-    unsafe fn beginEdit(&self, _id: ParamID) -> tresult {
+    unsafe fn beginEdit(&self, id: ParamID) -> tresult {
+        self.touching.borrow_mut().insert(id);
+        self.events.borrow_mut().push(HostEvent::EditBegin {
+            instance: self.instance,
+            id,
+        });
         kResultOk
     }
 
-    unsafe fn performEdit(&self, _id: ParamID, _value: ParamValue) -> tresult {
+    unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
+        let value = value.clamp(0.0, 1.0);
+        // Full only if the audio thread has stopped; then the DAW's value
+        // reaches it anyway.
+        let _ = self.to_audio.borrow_mut().push((id, value));
+        self.events.borrow_mut().push(HostEvent::EditValue {
+            instance: self.instance,
+            id,
+            value,
+        });
         kResultOk
     }
 
-    unsafe fn endEdit(&self, _id: ParamID) -> tresult {
+    unsafe fn endEdit(&self, id: ParamID) -> tresult {
+        self.touching.borrow_mut().remove(&id);
+        self.events.borrow_mut().push(HostEvent::EditEnd {
+            instance: self.instance,
+            id,
+        });
         kResultOk
     }
 
@@ -375,6 +413,61 @@ impl IBStreamTrait for MemoryStream {
                 kResultOk
             }
             None => kInvalidArgument,
+        }
+    }
+}
+
+/// Parameters whose latest value the window can be shown.
+const MIRRORED: usize = 128;
+
+/// The latest value of each parameter the DAW sends, from the audio
+/// thread to the main thread, so the plugin's window follows the song.
+/// Lock-free: only the audio thread writes ids and values.
+#[derive(Debug)]
+pub struct ParamMirror {
+    slots: [MirrorSlot; MIRRORED],
+}
+
+#[derive(Debug)]
+struct MirrorSlot {
+    /// `u32::MAX` while unused.
+    id: AtomicU32,
+    value: AtomicU64,
+    fresh: AtomicBool,
+}
+
+impl ParamMirror {
+    fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| MirrorSlot {
+                id: AtomicU32::new(u32::MAX),
+                value: AtomicU64::new(0),
+                fresh: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    /// Audio thread. Allocation-free; a parameter past the room is not
+    /// shown moving.
+    fn record(&self, id: ParamID, value: f64) {
+        let slot = self.slots.iter().find(|s| {
+            let at = s.id.load(Ordering::Relaxed);
+            at == id || at == u32::MAX
+        });
+        if let Some(slot) = slot {
+            slot.id.store(id, Ordering::Relaxed);
+            slot.value.store(value.to_bits(), Ordering::Relaxed);
+            slot.fresh.store(true, Ordering::Release);
+        }
+    }
+
+    /// Main thread: each value that changed since last asked.
+    fn take(&self, mut f: impl FnMut(ParamID, f64)) {
+        for slot in &self.slots {
+            if slot.fresh.swap(false, Ordering::Acquire) {
+                let id = slot.id.load(Ordering::Relaxed);
+                f(id, f64::from_bits(slot.value.load(Ordering::Relaxed)));
+            }
         }
     }
 }
@@ -483,10 +576,17 @@ impl ParameterChanges {
         }
     }
 
-    /// Takes a block's changes (in offset order per id). Allocation-free.
-    fn fill(&self, changes: &[ParamChange]) {
+    /// Takes a block's changes: knob moves from the window first (at the
+    /// block's start), then the DAW's (in offset order per id).
+    /// Allocation-free.
+    fn fill(&self, edits: &[(ParamID, f64)], changes: &[ParamChange]) {
         self.count.set(0);
-        for change in changes {
+        let edits = edits.iter().map(|&(id, value)| ParamChange {
+            id,
+            offset: 0,
+            value,
+        });
+        for change in edits.chain(changes.iter().copied()) {
             let used = self.count.get();
             let found = self.queues[..used]
                 .iter()
@@ -543,7 +643,9 @@ pub struct Vst3Instance {
     sample_rate: f64,
     active: bool,
     processing: bool,
-    _handler: ComWrapper<ComponentHandler>,
+    /// Knob moves from the window, for the processor.
+    edits: rtrb::Consumer<(ParamID, f64)>,
+    mirror: Arc<ParamMirror>,
     _host: ComWrapper<HostApplication>,
     /// Dropped last: the plugin's code lives in it.
     _module: Arc<Module>,
@@ -565,8 +667,15 @@ unsafe impl Send for Vst3Instance {}
 
 impl Vst3Instance {
     /// Creates the processor and its controller, connects them and gives
-    /// the controller the processor's state (Steinberg's order).
-    pub fn create(module: Arc<Module>, cid: &str) -> Result<Self, String> {
+    /// the controller the processor's state (Steinberg's order). The
+    /// instance goes to the audio thread; its [`Vst3State`] stays on the
+    /// main thread, where the plugin's window reports to `events`.
+    pub fn create(
+        module: Arc<Module>,
+        cid: &str,
+        instance: u64,
+        events: Events,
+    ) -> Result<(Self, Vst3State), String> {
         let cid = parse_cid(cid).ok_or("bad class id")?;
         let host = ComWrapper::new(HostApplication);
         let host_ptr = host.to_com_ptr::<FUnknown>().ok_or("no host context")?;
@@ -590,7 +699,14 @@ impl Vst3Instance {
                 (controller, true)
             }
         };
-        let handler = ComWrapper::new(ComponentHandler);
+        let (to_audio, edits) = rtrb::RingBuffer::new(PENDING_EDITS);
+        let touching = Rc::new(RefCell::new(HashSet::new()));
+        let handler = ComWrapper::new(ComponentHandler {
+            instance,
+            events,
+            to_audio: RefCell::new(to_audio),
+            touching: touching.clone(),
+        });
         let mut connection = None;
         if let Some(controller) = &controller {
             if let Some(h) = handler.to_com_ptr::<IComponentHandler>() {
@@ -621,7 +737,16 @@ impl Vst3Instance {
         let changes_ptr = changes
             .to_com_ptr::<IParameterChanges>()
             .ok_or("no parameter changes")?;
-        Ok(Self {
+        let mirror = Arc::new(ParamMirror::new());
+        let state = Vst3State {
+            component: component.clone(),
+            controller: controller.clone(),
+            _handler: handler,
+            touching,
+            mirror: mirror.clone(),
+            _module: module.clone(),
+        };
+        let instance = Self {
             component,
             processor,
             controller,
@@ -636,10 +761,12 @@ impl Vst3Instance {
             sample_rate: 48_000.,
             active: false,
             processing: false,
-            _handler: handler,
+            edits,
+            mirror,
             _host: host,
             _module: module,
-        })
+        };
+        Ok((instance, state))
     }
 
     /// Buses (main ones stereo), processing setup, then active. Main thread.
@@ -757,7 +884,18 @@ impl Vst3Instance {
             self.processing = true;
         }
         let frames = block.frames();
-        self.changes.fill(block.params());
+        let mut edits = [(0, 0.0); 64];
+        let mut count = 0;
+        while count < edits.len()
+            && let Ok(edit) = self.edits.pop()
+        {
+            edits[count] = edit;
+            count += 1;
+        }
+        self.changes.fill(&edits[..count], block.params());
+        for change in block.params() {
+            self.mirror.record(change.id, change.value);
+        }
 
         // The main buses read and write the shared block; others scratch.
         let (shared_in, shared_out) = block.channel_pointers();
@@ -849,24 +987,18 @@ impl Vst3Instance {
             self.active = false;
         }
     }
-
-    /// A handle for reading and restoring this instance's state from the
-    /// main thread, kept while the instance processes on its audio thread.
-    pub fn state_handle(&self) -> Vst3State {
-        Vst3State {
-            component: self.component.clone(),
-            controller: self.controller.clone(),
-            _module: self._module.clone(),
-        }
-    }
 }
 
-/// An instance's state, reached from the host's main thread. Hosts save
+/// An instance's main-thread side: its state, parameters and window,
+/// reached while the instance processes on its audio thread. Hosts save
 /// while playing: `getState` runs on the UI thread while `process` runs on
 /// the audio thread, as the API intends.
 pub struct Vst3State {
     component: ComPtr<IComponent>,
     controller: Option<ComPtr<IEditController>>,
+    _handler: ComWrapper<ComponentHandler>,
+    touching: Rc<RefCell<HashSet<ParamID>>>,
+    mirror: Arc<ParamMirror>,
     /// Dropped last: the plugin's code lives in it.
     _module: Arc<Module>,
 }
@@ -877,10 +1009,25 @@ impl std::fmt::Debug for Vst3State {
     }
 }
 
-// Used only on the host's main thread, where the instance was made.
-unsafe impl Send for Vst3State {}
-
 impl Vst3State {
+    pub fn controller(&self) -> Option<&ComPtr<IEditController>> {
+        self.controller.as_ref()
+    }
+
+    /// Shows the song's latest values in the plugin's window (and keeps
+    /// its controller in step), except for knobs the user is holding.
+    pub fn follow(&self) {
+        let Some(controller) = &self.controller else {
+            return;
+        };
+        let touching = self.touching.borrow();
+        self.mirror.take(|id, value| {
+            if !touching.contains(&id) {
+                unsafe { controller.setParamNormalized(id, value) };
+            }
+        });
+    }
+
     /// The processor's and the controller's state, to save with the song.
     /// Either is empty if the plugin gave none.
     pub fn get(&self) -> PluginData {

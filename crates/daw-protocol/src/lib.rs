@@ -47,6 +47,12 @@ pub enum Command {
     /// End every plugin host process and start the plugins again, as after
     /// a crash or a hang. Not part of the song or undo.
     ReloadPlugins,
+    /// Open a plugin effect's window, or bring it to the front. Not part of
+    /// the song or undo; why it failed shows in its [`PluginSnapshot`].
+    OpenPluginWindow { effect: DeviceId },
+    /// Learn on a plugin effect: the next parameter the user moves in its
+    /// window joins the song with a drawn layer. `None` stops learning.
+    LearnPluginParam { effect: Option<DeviceId> },
     /// Play a short 440 Hz tone (A4) at -12 dB through the output, over
     /// whatever is playing, to check the audio device.
     TestTone,
@@ -538,6 +544,19 @@ pub struct PluginSnapshot {
     /// The plugin's automatable parameters, in its own order; empty until
     /// it runs.
     pub params: std::sync::Arc<Vec<PluginParamInfo>>,
+    pub window: PluginWindow,
+    /// Learning: the next parameter moved in its window joins the song.
+    pub learning: bool,
+}
+
+/// A plugin's window.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum PluginWindow {
+    #[default]
+    Closed,
+    Open,
+    /// The last try to open it failed, and why.
+    Failed(String),
 }
 
 /// A plugin effect's state, for the UI.

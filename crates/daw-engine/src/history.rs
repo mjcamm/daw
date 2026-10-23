@@ -21,6 +21,13 @@ impl History {
         Ok(())
     }
 
+    /// Records an edit already made to the project (a knob turned in a
+    /// plugin's window, applied as it moved) by its inverse.
+    pub fn record(&mut self, inverse: Edit) {
+        self.undo.push(inverse);
+        self.redo.clear();
+    }
+
     pub fn undo(&mut self, project: &mut Project) -> Result<(), CommandError> {
         let inverse = self.undo.pop().ok_or(CommandError::NothingToUndo)?;
         let redo = Self::reapply(project, inverse);

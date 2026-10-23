@@ -32,9 +32,9 @@ pub use daw_protocol::{
     LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip,
     MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId,
     ParamSnapshot, ParamState, Peaks, Piece, PluginData, PluginParam, PluginParamInfo,
-    PluginSnapshot, PluginSpec, PluginState, SEAM_FADE, SampleId, SampleRef, SampleSnapshot,
-    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
-    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
+    PluginSnapshot, PluginSpec, PluginState, PluginWindow, SEAM_FADE, SampleId, SampleRef,
+    SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
+    SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -111,7 +111,29 @@ pub struct Engine {
     plugins: plugins::Plugins,
     /// Plugin channels the audio side let go of, to free here.
     retired: rtrb::Consumer<Box<daw_plugins::block::DawBlock>>,
+    /// The plugin effect learning: the next parameter moved in its window
+    /// joins the song.
+    learning: Option<DeviceId>,
+    /// Knobs being turned in plugin windows.
+    turning: BTreeMap<(DeviceId, u32), Turn>,
 }
+
+/// A knob being turned in a plugin's window. A turn of a parameter in the
+/// song moves its resting value as it goes and is one undo step; a turn of
+/// another while learning adds it when the turn ends.
+#[derive(Debug, Clone, Copy)]
+struct Turn {
+    /// The resting value before, for a parameter in the song.
+    before: Option<f64>,
+    value: f64,
+    /// Between begin and end; moves without them (a mouse wheel) end once
+    /// they stop for [`TURN_PAUSE`].
+    held: bool,
+    last: std::time::Instant,
+}
+
+/// How long moves without a begin and end must pause to count as one turn.
+const TURN_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Engine {
     /// Creates an engine with an empty project, and the processor that renders it.
@@ -155,6 +177,8 @@ impl Engine {
             samples: SamplePool::default(),
             plugins: plugins::Plugins::default(),
             retired,
+            learning: None,
+            turning: BTreeMap::new(),
         };
         (engine, processor)
     }
@@ -225,6 +249,11 @@ impl Engine {
 
     /// Applies a command. A rejected command changes nothing.
     pub fn apply(&mut self, command: Command) -> Result<(), CommandError> {
+        // A knob still turning in a plugin window is one step of its own,
+        // before whatever changes the song or its history next.
+        if matches!(command, Command::Edit(_) | Command::Undo | Command::Redo) {
+            self.end_turns();
+        }
         match command {
             Command::Play => {
                 self.playing = true;
@@ -257,6 +286,35 @@ impl Engine {
                 });
             }
             Command::TestTone => self.outbox.push_back(AudioMsg::TestTone),
+            Command::OpenPluginWindow { effect } => {
+                let node = self
+                    .project
+                    .effect_node(effect)
+                    .and_then(|n| self.project.node(n))
+                    .ok_or(CommandError::UnknownDevice { id: effect })?;
+                let (_, plugin) = node
+                    .effect(effect)
+                    .ok_or(CommandError::UnknownDevice { id: effect })?;
+                let spec = plugin
+                    .plugin
+                    .as_ref()
+                    .ok_or(CommandError::NotAPlugin { id: effect })?;
+                let title = format!("{} — {}", spec.name(), node.name);
+                self.plugins.open_window(effect, &title);
+            }
+            Command::LearnPluginParam { effect } => {
+                if let Some(effect) = effect {
+                    let node = self
+                        .project
+                        .effect_node(effect)
+                        .and_then(|n| self.project.node(n))
+                        .ok_or(CommandError::UnknownDevice { id: effect })?;
+                    if node.effect(effect).is_none_or(|(_, e)| e.plugin.is_none()) {
+                        return Err(CommandError::NotAPlugin { id: effect });
+                    }
+                }
+                self.learning = effect;
+            }
             Command::ReloadPlugins => {
                 self.plugins
                     .reload(&self.project, self.config.sample_rate, &mut self.outbox);
@@ -395,6 +453,8 @@ impl Engine {
                             .state(id)
                             .unwrap_or_else(|| PluginState::Failed("not started".into())),
                         params: self.plugins.params(id),
+                        window: self.plugins.window(id),
+                        learning: self.learning == Some(id),
                     });
                 }
             }
@@ -446,11 +506,158 @@ impl Engine {
         while let Ok(block) = self.retired.pop() {
             self.plugins.retired(block);
         }
+        self.window_edits();
         while let Some(msg) = self.outbox.pop_front() {
             if let Err(rtrb::PushError::Full(msg)) = self.to_audio.push(msg) {
                 self.outbox.push_front(msg);
                 break;
             }
+        }
+    }
+
+    /// Takes what the user did in plugin windows: a turned knob of a
+    /// parameter in the song moves its resting value as it goes (one undo
+    /// step per turn); while learning, the first parameter turned joins
+    /// the song with a drawn layer.
+    fn window_edits(&mut self) {
+        let (edits, closed) = self.plugins.window_edits();
+        let mut changed = closed;
+        let now = std::time::Instant::now();
+        for (effect, edit) in edits {
+            let (id, value, held) = match edit {
+                plugins::WindowEdit::Begin(id) => (id, None, true),
+                plugins::WindowEdit::Value(id, value) => (id, Some(value), false),
+                plugins::WindowEdit::End(id) => {
+                    changed |= self.end_turn(effect, id);
+                    continue;
+                }
+            };
+            let param = self.plugin_param(effect, id);
+            let before = param.and_then(|p| self.project.param(p)).map(|s| s.base);
+            // Only parameters in the song, or any while learning.
+            if before.is_none() && self.learning != Some(effect) {
+                continue;
+            }
+            let turn = self.turning.entry((effect, id)).or_insert(Turn {
+                before,
+                value: before.unwrap_or(0.0),
+                held,
+                last: now,
+            });
+            turn.last = now;
+            turn.held |= held;
+            if let Some(value) = value {
+                turn.value = value;
+                if let Some(param) = param.filter(|_| turn.before.is_some())
+                    && self.project.apply(Edit::SetParam { param, value }).is_ok()
+                {
+                    changed = true;
+                }
+            }
+        }
+        let paused: Vec<(DeviceId, u32)> = self
+            .turning
+            .iter()
+            .filter(|(_, t)| !t.held && now.duration_since(t.last) >= TURN_PAUSE)
+            .map(|(key, _)| *key)
+            .collect();
+        for (effect, id) in paused {
+            changed |= self.end_turn(effect, id);
+        }
+        if changed {
+            self.publish_state();
+            self.revision += 1;
+            self.content_revision += 1;
+        }
+    }
+
+    /// Ends every turn in progress, as if the knobs were let go.
+    fn end_turns(&mut self) {
+        let turning: Vec<(DeviceId, u32)> = self.turning.keys().copied().collect();
+        let mut changed = false;
+        for (effect, id) in turning {
+            changed |= self.end_turn(effect, id);
+        }
+        if changed {
+            self.publish_state();
+            self.revision += 1;
+            self.content_revision += 1;
+        }
+    }
+
+    /// A plugin parameter as the song names it, if its effect exists.
+    fn plugin_param(&self, effect: DeviceId, id: u32) -> Option<ParamId> {
+        Some(ParamId {
+            node: self.project.effect_node(effect)?,
+            device: DeviceRef::Effect(effect),
+            index: id,
+        })
+    }
+
+    /// A turn ended: recorded for undo, or learned. True if the song
+    /// changed.
+    fn end_turn(&mut self, effect: DeviceId, id: u32) -> bool {
+        let Some(turn) = self.turning.remove(&(effect, id)) else {
+            return false;
+        };
+        let Some(param) = self.plugin_param(effect, id) else {
+            return false;
+        };
+        let mut changed = false;
+        if let Some(before) = turn.before
+            && before != turn.value
+        {
+            self.history.record(Edit::SetParam {
+                param,
+                value: before,
+            });
+            changed = true;
+        }
+        // Learning takes a parameter that doesn't show on Parameters yet.
+        let shown = self
+            .project
+            .param(param)
+            .is_some_and(|s| !s.layers.is_empty());
+        if self.learning == Some(effect) && !shown {
+            self.learning = None;
+            self.learn(effect, param, turn.value);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Gives a plugin's parameter a drawn layer so it shows on Parameters,
+    /// adding it to the song first (resting at `value`) if it isn't there.
+    fn learn(&mut self, effect: DeviceId, param: ParamId, value: f64) {
+        let name = self
+            .plugins
+            .params(effect)
+            .iter()
+            .find(|p| p.id == param.index)
+            .map_or_else(|| format!("Parameter {}", param.index), |p| p.name.clone());
+        let mut edits = Vec::new();
+        if self.project.param(param).is_none() {
+            edits.push(Edit::AddPluginParam {
+                effect,
+                param: PluginParam {
+                    id: param.index,
+                    name,
+                    state: ParamState {
+                        base: value,
+                        layers: Vec::new(),
+                    },
+                },
+            });
+        }
+        edits.push(Edit::AddLayer {
+            param,
+            id: self.project.next_layer_id(),
+            index: 0,
+            layer: Layer::named("Layer 1", BlendMode::Add),
+        });
+        let edit = Edit::Batch(edits);
+        if let Err(e) = self.history.edit(&mut self.project, edit) {
+            eprintln!("learning a plugin parameter failed: {e}");
         }
     }
 

@@ -10,7 +10,7 @@ use common::{GAIN_CID, install};
 use daw_engine::AudioProcessor;
 use daw_engine::{
     ClipId, Command, DeviceId, DeviceRef, Edit, Effect, Engine, EngineConfig, FIRST_NODE, MidiClip,
-    MidiNote, PluginData, PluginSpec, ProjectFile, Ticks,
+    MidiNote, ParamId, PluginData, PluginSpec, PluginWindow, ProjectFile, Ticks,
 };
 use daw_plugins::block::{Context, Layout, Outcome, ParamChange};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
@@ -259,4 +259,115 @@ fn a_plugins_state_is_saved_in_the_song_and_survives_undo() {
         half(&plain_again),
         "an effect brought back by undo keeps its state"
     );
+}
+
+/// Gain and Tilt as the song has them: (id, resting value, layers).
+fn song_params(engine: &Engine) -> Vec<(u32, f64, usize)> {
+    let snapshot = engine.snapshot();
+    let device = snapshot
+        .node(FIRST_NODE)
+        .and_then(|n| {
+            n.devices
+                .iter()
+                .find(|d| d.device == DeviceRef::Effect(EFFECT))
+        })
+        .cloned()
+        .unwrap();
+    device
+        .params
+        .iter()
+        .map(|p| (p.id.index, p.base, p.layers.len()))
+        .collect()
+}
+
+fn plugin_of(engine: &Engine) -> daw_engine::PluginSnapshot {
+    engine
+        .snapshot()
+        .node(FIRST_NODE)
+        .and_then(|n| {
+            n.devices
+                .iter()
+                .find(|d| d.device == DeviceRef::Effect(EFFECT))
+        })
+        .and_then(|d| d.plugin.clone())
+        .unwrap()
+}
+
+#[test]
+fn learn_and_knob_turns_in_a_plugins_window_change_the_song() {
+    use common::windows::{click, plugin_windows, view_of, wait_for};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_CLOSE, WM_LBUTTONDOWN, WM_MBUTTONDOWN};
+    let (_, bundle) = install("vst3-learn");
+    let (mut engine, _processor) = song(Some(gain(&bundle)));
+    engine
+        .apply(Command::OpenPluginWindow { effect: EFFECT })
+        .unwrap();
+    // Asked without waiting: it says Open once the host has opened it.
+    wait_for("the window to open", || {
+        engine.maintain();
+        plugin_of(&engine).window == PluginWindow::Open
+    });
+    let node = engine.snapshot().node(FIRST_NODE).unwrap().name.clone();
+    let title = format!("Test Gain — {node}");
+    let found = plugin_windows()
+        .into_iter()
+        .filter(|(_, t)| *t == title)
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 1, "titled with the plugin, then its node");
+    let view = view_of(found[0].0);
+
+    // Learn: the first knob turned (a gesture) joins the song with a layer.
+    engine
+        .apply(Command::LearnPluginParam {
+            effect: Some(EFFECT),
+        })
+        .unwrap();
+    assert!(plugin_of(&engine).learning);
+    click(view, WM_LBUTTONDOWN);
+    wait_for("Gain to be learned", || {
+        engine.maintain();
+        song_params(&engine) == [(0, 0.75, 1)]
+    });
+    assert!(!plugin_of(&engine).learning, "learning stops");
+
+    // Turning it again moves its resting value: one undo.
+    let gain_param = ParamId {
+        node: FIRST_NODE,
+        device: DeviceRef::Effect(EFFECT),
+        index: 0,
+    };
+    engine
+        .apply(Command::Edit(Edit::SetParam {
+            param: gain_param,
+            value: 0.2,
+        }))
+        .unwrap();
+    click(view, WM_LBUTTONDOWN);
+    wait_for("the turn", || {
+        engine.maintain();
+        song_params(&engine) == [(0, 0.75, 1)]
+    });
+    engine.apply(Command::Undo).unwrap();
+    assert_eq!(song_params(&engine), [(0, 0.2, 1)], "one undo for the turn");
+
+    // A move without begin and end (a mouse wheel) is learned once it
+    // pauses.
+    engine
+        .apply(Command::LearnPluginParam {
+            effect: Some(EFFECT),
+        })
+        .unwrap();
+    click(view, WM_MBUTTONDOWN);
+    wait_for("Tilt to be learned", || {
+        engine.maintain();
+        song_params(&engine).len() == 2
+    });
+    assert_eq!(song_params(&engine)[1], (7, 0.3, 1));
+
+    // The user closes the window.
+    click(found[0].0, WM_CLOSE);
+    wait_for("the window to close", || {
+        engine.maintain();
+        plugin_of(&engine).window == PluginWindow::Closed
+    });
 }

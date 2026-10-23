@@ -96,6 +96,18 @@ fn installed_effects_process_audio_in_a_host_process() {
             }
         };
         let load = started.elapsed();
+        // Its window opens (briefly, on screen) and closes.
+        let opened = Instant::now();
+        match host.open_editor(id, &format!("{name} — test")) {
+            Ok((w, h)) => println!(
+                "{name}: window {w} x {h}, opened in {:.0} ms",
+                opened.elapsed().as_secs_f64() * 1000.
+            ),
+            Err(e) => failures.push(format!("{name}: window: {e}")),
+        }
+        if let Err(e) = host.close_editor(id) {
+            failures.push(format!("{name}: closing its window: {e}"));
+        }
         // Two seconds of noise in 512-frame blocks.
         let mut seed = 1u32;
         let mut noise = || {
