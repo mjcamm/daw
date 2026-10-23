@@ -286,21 +286,19 @@ impl Engine {
                 });
             }
             Command::TestTone => self.outbox.push_back(AudioMsg::TestTone),
-            Command::OpenPluginWindow { effect } => {
+            Command::OpenPluginWindow { device: effect } => {
                 let title = self
                     .window_title(effect)
                     .ok_or(CommandError::NotAPlugin { id: effect })?;
                 self.plugins.open_window(effect, &title);
             }
-            Command::LearnPluginParam { effect } => {
-                if let Some(effect) = effect {
-                    let node = self
-                        .project
-                        .effect_node(effect)
-                        .and_then(|n| self.project.node(n))
-                        .ok_or(CommandError::UnknownDevice { id: effect })?;
-                    if node.effect(effect).is_none_or(|(_, e)| e.plugin.is_none()) {
-                        return Err(CommandError::NotAPlugin { id: effect });
+            Command::LearnPluginParam { device: effect } => {
+                if let Some(device) = effect {
+                    if self.project.device_node(device).is_none() {
+                        return Err(CommandError::UnknownDevice { id: device });
+                    }
+                    if self.plugin_spec(device).is_none() {
+                        return Err(CommandError::NotAPlugin { id: device });
                     }
                 }
                 self.learning = effect;
@@ -438,10 +436,18 @@ impl Engine {
                 continue;
             };
             for device in &mut node.devices {
-                if let DeviceRef::Effect(id) = device.device
-                    && let Some((_, effect)) = project_node.effect(id)
-                    && let Some(spec) = &effect.plugin
-                {
+                let spec = match device.device {
+                    DeviceRef::Effect(id) => project_node
+                        .effect(id)
+                        .and_then(|(_, e)| e.plugin.as_ref())
+                        .map(|s| (id, s)),
+                    DeviceRef::Instrument(id) => project_node
+                        .instrument(id)
+                        .and_then(|(_, i)| i.plugin.as_ref())
+                        .map(|s| (id, s)),
+                    DeviceRef::Channel => None,
+                };
+                if let Some((id, spec)) = spec {
                     device.plugin = Some(PluginSnapshot {
                         spec: spec.clone(),
                         state: self
@@ -582,17 +588,33 @@ impl Engine {
     }
 
     /// A plugin effect's window title: the plugin, then its node.
-    fn window_title(&self, effect: DeviceId) -> Option<String> {
-        let node = self.project.node(self.project.effect_node(effect)?)?;
-        let spec = node.effect(effect)?.1.plugin.as_ref()?;
+    fn window_title(&self, device: DeviceId) -> Option<String> {
+        let (node, spec) = self.plugin_spec(device)?;
         Some(format!("{} — {}", spec.name(), node.name))
     }
 
-    /// A plugin parameter as the song names it, if its effect exists.
-    fn plugin_param(&self, effect: DeviceId, id: u32) -> Option<ParamId> {
+    /// A plugin effect's or instrument's node and plugin.
+    fn plugin_spec(&self, device: DeviceId) -> Option<(&Node, &PluginSpec)> {
+        let node = self.project.node(self.project.device_node(device)?)?;
+        let spec = match node.effect(device) {
+            Some((_, effect)) => effect.plugin.as_ref(),
+            None => node.instrument(device)?.1.plugin.as_ref(),
+        }?;
+        Some((node, spec))
+    }
+
+    /// A plugin parameter as the song names it, if its device exists.
+    fn plugin_param(&self, device: DeviceId, id: u32) -> Option<ParamId> {
+        let node = self.project.device_node(device)?;
+        let on = self.project.node(node)?;
+        let device = if on.effect(device).is_some() {
+            DeviceRef::Effect(device)
+        } else {
+            DeviceRef::Instrument(device)
+        };
         Some(ParamId {
-            node: self.project.effect_node(effect)?,
-            device: DeviceRef::Effect(effect),
+            node,
+            device,
             index: id,
         })
     }
@@ -641,7 +663,7 @@ impl Engine {
         let mut edits = Vec::new();
         if self.project.param(param).is_none() {
             edits.push(Edit::AddPluginParam {
-                effect,
+                device: effect,
                 param: PluginParam {
                     id: param.index,
                     name,
@@ -849,10 +871,16 @@ fn node_snapshot(
 /// A device's name; a plugin's own name for a plugin effect.
 fn device_name(node: &Node, device: DeviceRef) -> String {
     match device {
-        DeviceRef::Instrument(id) => node
-            .instrument(id)
-            .map_or("Instrument", |(_, i)| devices::instrument_name(i.kind))
-            .to_owned(),
+        DeviceRef::Instrument(id) => {
+            node.instrument(id)
+                .map_or(
+                    "Instrument".to_owned(),
+                    |(_, instrument)| match &instrument.plugin {
+                        Some(spec) => spec.name().to_owned(),
+                        None => devices::instrument_name(instrument.kind).to_owned(),
+                    },
+                )
+        }
         DeviceRef::Channel => "Channel".to_owned(),
         DeviceRef::Effect(id) => node.effects.iter().find(|(e, _)| *e == id).map_or(
             "Effect".to_owned(),

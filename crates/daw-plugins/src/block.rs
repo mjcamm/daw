@@ -26,9 +26,11 @@ use std::time::{Duration, Instant};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"DAWP");
 /// Bump when the layout changes; both sides check it.
-pub const LAYOUT_VERSION: u32 = 1;
+pub const LAYOUT_VERSION: u32 = 2;
 /// Parameter changes one block can carry.
 pub const MAX_PARAM_CHANGES: usize = 512;
+/// Note events one block can carry.
+pub const MAX_NOTE_EVENTS: usize = 512;
 /// Audio channels per direction.
 pub const MAX_CHANNELS: usize = 16;
 
@@ -72,6 +74,20 @@ pub struct ParamChange {
     pub value: f64,
 }
 
+/// A note starting or ending at a frame within the block, for an
+/// instrument. `note` pairs an end with its start.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct NoteEvent {
+    pub offset: u32,
+    pub note: i32,
+    pub pitch: u16,
+    /// 1 for a start, 0 for an end.
+    pub on: u16,
+    /// `0..=1`.
+    pub velocity: f32,
+}
+
 /// Song time and transport for the block.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Context {
@@ -95,6 +111,7 @@ struct Header {
     finished: AtomicU64,
     frames: AtomicU32,
     param_count: AtomicU32,
+    event_count: AtomicU32,
     flags: AtomicU32,
     tempo_bpm: AtomicU64,
     position_beats: AtomicU64,
@@ -108,8 +125,12 @@ impl Layout {
         size_of::<Header>().next_multiple_of(64)
     }
 
-    fn audio_offset() -> usize {
+    fn events_offset() -> usize {
         (Self::params_offset() + MAX_PARAM_CHANGES * size_of::<ParamChange>()).next_multiple_of(64)
+    }
+
+    fn audio_offset() -> usize {
+        (Self::events_offset() + MAX_NOTE_EVENTS * size_of::<NoteEvent>()).next_multiple_of(64)
     }
 
     fn channel_bytes(self) -> usize {
@@ -149,6 +170,10 @@ impl Shared {
 
     fn params(&self) -> *mut ParamChange {
         unsafe { self.memory.as_ptr().add(Layout::params_offset()).cast() }
+    }
+
+    fn events(&self) -> *mut NoteEvent {
+        unsafe { self.memory.as_ptr().add(Layout::events_offset()).cast() }
     }
 
     /// Input channels first, then outputs.
@@ -246,11 +271,26 @@ impl DawBlock {
         outputs: &mut [&mut [f32]],
         deadline: Option<Instant>,
     ) -> Outcome {
+        self.process_with_notes(inputs, params, &[], context, outputs, deadline)
+    }
+
+    /// As [`DawBlock::process`], with note events for an instrument (past
+    /// [`MAX_NOTE_EVENTS`] they are dropped).
+    pub fn process_with_notes(
+        &mut self,
+        inputs: &[&[f32]],
+        params: &[ParamChange],
+        notes: &[NoteEvent],
+        context: Context,
+        outputs: &mut [&mut [f32]],
+        deadline: Option<Instant>,
+    ) -> Outcome {
         let frames = outputs.first().map_or(0, |o| o.len());
         let outcome = self.exchange(
             frames,
             |ch| inputs.get(ch).copied(),
             params,
+            notes,
             context,
             deadline,
         );
@@ -274,6 +314,7 @@ impl DawBlock {
             frames,
             |ch| audio.get(ch).map(|a| &**a),
             params,
+            &[],
             context,
             deadline,
         );
@@ -289,6 +330,7 @@ impl DawBlock {
         frames: usize,
         input: impl Fn(usize) -> Option<&'a [f32]>,
         params: &[ParamChange],
+        notes: &[NoteEvent],
         context: Context,
         deadline: Option<Instant>,
     ) -> Outcome {
@@ -314,6 +356,10 @@ impl DawBlock {
         let dst = unsafe { std::slice::from_raw_parts_mut(self.shared.params(), count) };
         dst.copy_from_slice(&params[..count]);
         h.param_count.store(count as u32, Ordering::Relaxed);
+        let count = notes.len().min(MAX_NOTE_EVENTS);
+        let dst = unsafe { std::slice::from_raw_parts_mut(self.shared.events(), count) };
+        dst.copy_from_slice(&notes[..count]);
+        h.event_count.store(count as u32, Ordering::Relaxed);
         h.frames.store(frames as u32, Ordering::Relaxed);
         h.flags.store(
             (u32::from(context.playing) * PLAYING) | (u32::from(context.offline) * OFFLINE),
@@ -457,6 +503,11 @@ impl HostBlock<'_> {
     pub fn params(&self) -> &[ParamChange] {
         let count = self.shared.header().param_count.load(Ordering::Relaxed) as usize;
         unsafe { std::slice::from_raw_parts(self.shared.params(), count.min(MAX_PARAM_CHANGES)) }
+    }
+
+    pub fn notes(&self) -> &[NoteEvent] {
+        let count = self.shared.header().event_count.load(Ordering::Relaxed) as usize;
+        unsafe { std::slice::from_raw_parts(self.shared.events(), count.min(MAX_NOTE_EVENTS)) }
     }
 }
 
@@ -659,6 +710,42 @@ mod tests {
         };
         let (mut l, mut r) = (vec![0.; 64], vec![0.; 64]);
         let outcome = daw.process(&[], &params, context, &mut [&mut l, &mut r], soon(500));
+        assert_eq!(outcome, Outcome::Done);
+        assert_eq!(seen.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn note_events_reach_the_host() {
+        let notes = [
+            NoteEvent {
+                offset: 3,
+                note: 1,
+                pitch: 60,
+                on: 1,
+                velocity: 0.5,
+            },
+            NoteEvent {
+                offset: 40,
+                note: 1,
+                pitch: 60,
+                on: 0,
+                velocity: 0.0,
+            },
+        ];
+        let seen = Arc::new(AtomicU64::new(0));
+        let report = seen.clone();
+        let (mut daw, _, _host) = pair(move |block| {
+            report.store(u64::from(block.notes() == notes), Ordering::Relaxed);
+        });
+        let (mut l, mut r) = (vec![0.; 64], vec![0.; 64]);
+        let outcome = daw.process_with_notes(
+            &[],
+            &[],
+            &notes,
+            Context::default(),
+            &mut [&mut l, &mut r],
+            soon(500),
+        );
         assert_eq!(outcome, Outcome::Done);
         assert_eq!(seen.load(Ordering::Relaxed), 1);
     }

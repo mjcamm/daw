@@ -206,7 +206,7 @@ fn a_plugin_parameter_follows_its_resting_value_and_its_layers() {
     };
     for edit in [
         Edit::AddPluginParam {
-            effect: PLUGIN,
+            device: PLUGIN,
             param: PluginParam {
                 id: 0,
                 name: "Gain".into(),

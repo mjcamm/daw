@@ -531,7 +531,7 @@ impl ProjectView {
                 .when(plugin_tip_open, |d| {
                     d.on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                         if event.click_count() >= 2 {
-                            this.session.apply(Command::OpenPluginWindow { effect: id });
+                            this.session.apply(Command::OpenPluginWindow { device: id });
                             this.invalidate_all(cx);
                         }
                     }))
@@ -795,16 +795,29 @@ impl ProjectView {
 
     /// Adds an instrument as the node's last layer and selects it.
     pub(crate) fn add_instrument(&mut self, node: NodeId, kind: InstrumentKind) {
+        let mut instrument = Instrument::new(kind);
+        if kind == InstrumentKind::SingleSampler {
+            instrument.note = Some(crate::tree::next_trigger_note(
+                self.session.snapshot(),
+                node,
+            ));
+        }
+        self.add_instrument_layer(node, instrument);
+    }
+
+    /// Adds a plugin instrument, layered over the node's others.
+    pub(crate) fn add_plugin_instrument(&mut self, node: NodeId, spec: daw_engine::PluginSpec) {
+        self.add_instrument_layer(node, Instrument::plugin(spec));
+    }
+
+    /// Adds an instrument after the node's others and selects it.
+    fn add_instrument_layer(&mut self, node: NodeId, instrument: Instrument) {
         self.open_menu = None;
         let snapshot = self.session.snapshot();
         let id = crate::tree::next_device_id(snapshot);
         let index = snapshot.node(node).map_or(0, |n| {
             n.devices.iter().filter(|d| d.instrument.is_some()).count()
         });
-        let mut instrument = Instrument::new(kind);
-        if kind == InstrumentKind::SingleSampler {
-            instrument.note = Some(crate::tree::next_trigger_note(snapshot, node));
-        }
         self.session.apply(Command::Edit(Edit::AddInstrument {
             node,
             id,

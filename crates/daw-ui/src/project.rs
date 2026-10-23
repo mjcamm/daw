@@ -1134,7 +1134,15 @@ impl ProjectView {
                 };
                 self.add_effect(node, daw_engine::Effect::plugin(spec));
             }
-            // Plugin instruments can't be chosen yet.
+            (Target::Instrument(_), Choice::Plugin(info)) => {
+                let spec = daw_engine::PluginSpec::Vst3 {
+                    bundle: info.bundle,
+                    cid: info.cid,
+                    name: info.name,
+                    vendor: info.vendor,
+                };
+                self.add_plugin_instrument(node, spec);
+            }
             _ => {}
         }
     }

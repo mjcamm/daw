@@ -119,6 +119,8 @@ pub enum InstrumentKind {
     Synth,
     /// Plays one audio sample, from the top, for every note (one-shot).
     SingleSampler,
+    /// A plugin, run in its own process; `Instrument::plugin` says which.
+    Plugin,
 }
 
 /// An instrument and the state of its parameters. A MIDI node can hold
@@ -139,6 +141,13 @@ pub struct Instrument {
     /// [`DEFAULT_TRIGGER_NOTE`]. Other instruments ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<u8>,
+    /// The plugin, for a plugin instrument (and only then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginSpec>,
+    /// A plugin instrument's parameters added to the song, by the plugin's
+    /// ids, as for a plugin effect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin_params: Vec<PluginParam>,
 }
 
 impl Instrument {
@@ -150,6 +159,16 @@ impl Instrument {
             params: Vec::new(),
             sample: None,
             note: None,
+            plugin: None,
+            plugin_params: Vec::new(),
+        }
+    }
+
+    /// A plugin instrument, on.
+    pub fn plugin(spec: PluginSpec) -> Self {
+        Self {
+            plugin: Some(spec),
+            ..Self::new(InstrumentKind::Plugin)
         }
     }
 
@@ -157,7 +176,7 @@ impl Instrument {
     /// anything else every note.
     pub fn plays(&self) -> NoteSet {
         match self.kind {
-            InstrumentKind::Synth => NoteSet::ALL,
+            InstrumentKind::Synth | InstrumentKind::Plugin => NoteSet::ALL,
             InstrumentKind::SingleSampler => {
                 NoteSet::single(self.note.unwrap_or(DEFAULT_TRIGGER_NOTE).min(127))
             }

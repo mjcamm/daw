@@ -49,10 +49,10 @@ pub enum Command {
     ReloadPlugins,
     /// Open a plugin effect's window, or bring it to the front. Not part of
     /// the song or undo; why it failed shows in its [`PluginSnapshot`].
-    OpenPluginWindow { effect: DeviceId },
+    OpenPluginWindow { device: DeviceId },
     /// Learn on a plugin effect: the next parameter the user moves in its
     /// window joins the song with a drawn layer. `None` stops learning.
-    LearnPluginParam { effect: Option<DeviceId> },
+    LearnPluginParam { device: Option<DeviceId> },
     /// Play a short 440 Hz tone (A4) at -12 dB through the output, over
     /// whatever is playing, to check the audio device.
     TestTone,
@@ -183,13 +183,13 @@ pub enum Edit {
     /// value the plugin holds). The parameter is then
     /// `ParamId { device: Effect(effect), index: param.id }`.
     AddPluginParam {
-        effect: DeviceId,
+        device: DeviceId,
         param: PluginParam,
     },
     /// Take a plugin parameter out of the song again (only while it has no
     /// layers): the undo of [`Edit::AddPluginParam`].
     RemovePluginParam {
-        effect: DeviceId,
+        device: DeviceId,
         id: u32,
     },
     /// Insert a layer into a parameter's stack at `index` (0 is the bottom).
@@ -734,7 +734,7 @@ pub enum CommandError {
     },
     /// A plugin parameter is added to the song once.
     DuplicatePluginParam {
-        effect: DeviceId,
+        device: DeviceId,
         id: u32,
     },
     /// A plugin effect holds at most this many parameters in the song.
@@ -743,7 +743,7 @@ pub enum CommandError {
     },
     /// A plugin parameter leaves the song only once its layers are gone.
     PluginParamInUse {
-        effect: DeviceId,
+        device: DeviceId,
         id: u32,
     },
     /// Clips on a node never overlap (touching is fine): stacked MIDI
@@ -930,7 +930,7 @@ impl fmt::Display for CommandError {
                 id.0
             ),
             Self::NotAPlugin { id } => write!(f, "effect {} is not a plugin", id.0),
-            Self::DuplicatePluginParam { effect, id } => write!(
+            Self::DuplicatePluginParam { device: effect, id } => write!(
                 f,
                 "parameter {id} of effect {} is already in the song",
                 effect.0
@@ -938,7 +938,7 @@ impl fmt::Display for CommandError {
             Self::TooManyPluginParams { max } => {
                 write!(f, "a plugin holds at most {max} parameters in the song")
             }
-            Self::PluginParamInUse { effect, id } => {
+            Self::PluginParamInUse { device: effect, id } => {
                 write!(f, "parameter {id} of effect {} still has layers", effect.0)
             }
             Self::StackedClips { node, clip, over } => write!(

@@ -12,7 +12,8 @@ use daw_plugins::block::{BlockStats, DawBlock, Layout};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
 use daw_plugins::control::HostEvent;
 use daw_protocol::{
-    DeviceId, EffectKind, PluginData, PluginParamInfo, PluginSpec, PluginState, PluginWindow,
+    DeviceId, EffectKind, InstrumentKind, PluginData, PluginParamInfo, PluginSpec, PluginState,
+    PluginWindow,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -423,13 +424,19 @@ impl Plugins {
     }
 }
 
-/// The project's plugin effects and which plugin each runs.
+/// The project's plugin effects and instruments (device ids are
+/// project-wide) and which plugin each runs.
 fn plugin_effects(project: &Project) -> BTreeMap<DeviceId, PluginSpec> {
-    project
-        .nodes()
-        .into_iter()
+    let nodes = project.nodes();
+    let effects = nodes
+        .iter()
         .flat_map(|entry| entry.node.effects.iter())
         .filter(|(_, effect)| effect.kind == EffectKind::Plugin)
-        .filter_map(|(id, effect)| Some((*id, effect.plugin.clone()?)))
-        .collect()
+        .filter_map(|(id, effect)| Some((*id, effect.plugin.clone()?)));
+    let instruments = nodes
+        .iter()
+        .flat_map(|entry| entry.node.instruments.iter())
+        .filter(|(_, instrument)| instrument.kind == InstrumentKind::Plugin)
+        .filter_map(|(id, instrument)| Some((*id, instrument.plugin.clone()?)));
+    effects.chain(instruments).collect()
 }

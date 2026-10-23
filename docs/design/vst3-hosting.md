@@ -100,6 +100,14 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 - The engine remembers each plugin effect's last known state, also when the effect is deleted, so undo brings it back as it was.
 - `.vstpreset` import and export later (format is documented: header "VST3", class id, chunk list).
 
+## Instruments
+
+*Built (2026-10-23): file version 19, block layout 2; tests `daw-plugins/tests/vst3_instrument.rs` (Test Synth alone and in a song), `ui_tests/browser.rs`; the user's Serum 2 plays a chord with no late blocks (`installed_plugins.rs`, opt-in).*
+
+- An instrument can be a plugin: `InstrumentKind::Plugin` with `Instrument::plugin` (a `PluginSpec`) and `plugin_params`, exactly as for effects: chosen in the browser under "+ Instrument" → Plugins, layered with the node's other instruments, saved with its state and window place, its parameters picked from the list or learned, its window opened by double-clicking its slot. It plays every note (`plays` is all pitches). Device ids are project-wide, so `plugins.rs` keeps instruments and effects in one map; `Edit::AddPluginParam`, `Command::OpenPluginWindow` and `Command::LearnPluginParam` name a `device`.
+- **Notes:** the shared block has a fixed note-event area (`NoteEvent`: frame offset, note id, pitch, on or off, velocity `0..=1`; 512 a block). On the audio side a plugin instrument queues each start and end at its frame within the chunk (`ChunkNotes`, 256 per instrument a chunk; previews come at the chunk's start), keeps up to 64 sounding notes so an end or "end everything" (stop, locate, loop jump) can name its pitch, and plays the whole chunk after the built-in instruments (`NodePlayer::play_plugins`), its parameters on the control grid as for effects. The host fills a preallocated `IEventList` (`EventList`) from the block. Output joins the node's bus; it is silent while the plugin has no channel, is late or has crashed.
+- Instruments have no audio input; the block still has stereo inputs (unused), so effects and instruments share one layout.
+
 ## Editor windows
 
 *Built (2026-10-23; agreed with the user): `daw-plugins/src/editor.rs`, control protocol 5; tests `daw-plugins/tests/vst3_editor.rs`, `vst3_effect.rs` (learn and turns), `ui_tests/plugin_params.rs`. All seven of the user's tried effects open (OTT 310 × 440 in 22 ms … Serum 2 FX 1190 × 740 in 1.5 s), `tests/installed_plugins.rs`.*
@@ -139,7 +147,7 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 1. **IPC and host process with built-in test devices** (no VST3 yet), **built**: the hand-off, deadlines, crash and hang detection (`daw-plugins`, tested with real processes); the engine's plugin effect, live deadlines (70% of each block) and offline waiting, Reload, states in the snapshot (`daw-plugins/tests/engine.rs`); the app and player as their own host (`daw_host::plugins`). Process groups other than Together come with the Preferences page.
 2. **Scanner** and Preferences → Plugins (built). The browser modal comes with step 3, so plugins can be added the moment they show.
 3. **Effects:** load, buses, process (**built**: `vst3_host.rs`, `PluginSpec::Vst3`; tested with the test plugin alone and in a song, and with seven installed commercial effects), state and the modal browser (**built**), parameters picked from a list and moved by layers (**built**).
-4. **Instruments:** note events, multiple outputs later.
+4. **Instruments:** note events (**built**, 2026-10-23); multiple outputs later.
 5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn (**built**, done before step 4 at the user's call).
 6. **Delay compensation.**
 7. `restartComponent` handling, bypass, presets, diagnostics.

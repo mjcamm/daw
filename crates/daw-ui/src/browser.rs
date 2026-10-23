@@ -194,8 +194,7 @@ pub fn rows(target: Target, side: Side, query: &str, plugins: &[PluginInfo]) -> 
                     choice: Choice::Plugin(info.clone()),
                     name: info.name.clone().into(),
                     detail: kind.into(),
-                    // Plugin instruments come with Phase 8 step 4.
-                    enabled: !instruments,
+                    enabled: true,
                 });
             }
             rows
@@ -434,21 +433,16 @@ impl DeviceBrowser {
                 .into_any_element()
         };
         let mut notes = Vec::new();
-        if self.side == Side::Plugins {
-            if let Some(progress) = &self.shelf.scanning {
-                let done = progress.done.load(Ordering::Relaxed);
-                let total = progress.total.load(Ordering::Relaxed);
-                notes.push(note(if total == 0 {
-                    "Looking for plugins…".into()
-                } else {
-                    format!("Scanning {done} of {total}…")
-                }));
-            }
-            if matches!(self.target, Target::Instrument(_)) && !self.rows.is_empty() {
-                notes.push(note(
-                    "Plugin instruments can be added once instrument hosting lands.".into(),
-                ));
-            }
+        if self.side == Side::Plugins
+            && let Some(progress) = &self.shelf.scanning
+        {
+            let done = progress.done.load(Ordering::Relaxed);
+            let total = progress.total.load(Ordering::Relaxed);
+            notes.push(note(if total == 0 {
+                "Looking for plugins…".into()
+            } else {
+                format!("Scanning {done} of {total}…")
+            }));
         }
         if self.rows.is_empty() {
             let searching = !self.query.trim().is_empty();
@@ -642,10 +636,10 @@ mod tests {
     }
 
     #[test]
-    fn plugin_instruments_are_listed_for_instruments_but_not_yet_addable() {
+    fn plugin_instruments_are_listed_for_instruments() {
         let rows = rows(INSTRUMENT, Side::Plugins, "", &catalog());
         assert_eq!(names(&rows), ["# Xfer Records", "Serum 2 (Synth)"]);
-        assert!(!rows[1].enabled());
+        assert!(rows[1].enabled());
     }
 
     #[test]

@@ -58,6 +58,8 @@ pub struct InstrumentState {
     pub sample: Option<Arc<SampleData>>,
     /// The notes it plays; others pass it by.
     pub plays: daw_protocol::NoteSet,
+    /// A plugin's parameters in the song, by the plugin's ids.
+    pub plugin_params: Vec<(u32, Automation)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +242,11 @@ fn compile_node(
                     cx.samples.get(sample, file).cloned()
                 }),
                 plays: instrument.plays(),
+                plugin_params: instrument
+                    .plugin_params
+                    .iter()
+                    .map(|p| (p.id, Automation::compile_with(&p.state, signals)))
+                    .collect(),
             })
             .collect(),
         effects: node

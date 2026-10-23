@@ -11,7 +11,9 @@
     reason = "plugins are reached through COM; the method names are the SDK's"
 )]
 
-use crate::block::{HostBlock, MAX_CHANNELS, MAX_PARAM_CHANGES, ParamChange};
+use crate::block::{
+    HostBlock, MAX_CHANNELS, MAX_NOTE_EVENTS, MAX_PARAM_CHANGES, NoteEvent, ParamChange,
+};
 use crate::control::HostEvent;
 use crate::vst3::{Module, parse_cid, wide};
 use daw_protocol::{PluginData, PluginParamInfo};
@@ -613,6 +615,79 @@ impl ParameterChanges {
 
 const _: () = assert!(MAX_QUEUES * MAX_POINTS >= MAX_PARAM_CHANGES);
 
+/// A block's note events, read by an instrument. Filled on the audio
+/// thread within room made up front.
+struct EventList {
+    events: RefCell<Vec<Event>>,
+}
+
+impl Class for EventList {
+    type Interfaces = (IEventList,);
+}
+
+impl IEventListTrait for EventList {
+    unsafe fn getEventCount(&self) -> int32 {
+        self.events.borrow().len() as int32
+    }
+
+    unsafe fn getEvent(&self, index: int32, event: *mut Event) -> tresult {
+        let events = self.events.borrow();
+        match (
+            usize::try_from(index).ok().and_then(|i| events.get(i)),
+            unsafe { event.as_mut() },
+        ) {
+            (Some(found), Some(out)) => {
+                *out = *found;
+                kResultOk
+            }
+            _ => kInvalidArgument,
+        }
+    }
+
+    unsafe fn addEvent(&self, _event: *mut Event) -> tresult {
+        kResultFalse
+    }
+}
+
+impl EventList {
+    fn new() -> Self {
+        Self {
+            events: RefCell::new(Vec::with_capacity(MAX_NOTE_EVENTS)),
+        }
+    }
+
+    /// Takes a block's notes. Allocation-free.
+    fn fill(&self, notes: &[NoteEvent]) {
+        let mut events = self.events.borrow_mut();
+        events.clear();
+        for note in notes.iter().take(MAX_NOTE_EVENTS) {
+            let mut event: Event = unsafe { std::mem::zeroed() };
+            event.sampleOffset = note.offset as int32;
+            if note.on == 1 {
+                event.r#type = Event_::EventTypes_::kNoteOnEvent as uint16;
+                event.__field0.noteOn = NoteOnEvent {
+                    channel: 0,
+                    pitch: note.pitch as int16,
+                    tuning: 0.0,
+                    velocity: note.velocity,
+                    length: 0,
+                    noteId: note.note,
+                };
+            } else {
+                event.r#type = Event_::EventTypes_::kNoteOffEvent as uint16;
+                event.__field0.noteOff = NoteOffEvent {
+                    channel: 0,
+                    pitch: note.pitch as int16,
+                    velocity: note.velocity,
+                    noteId: note.note,
+                    tuning: 0.0,
+                };
+            }
+            events.push(event);
+        }
+    }
+}
+
 /// The speaker channels in an arrangement.
 fn channels(arrangement: SpeakerArrangement) -> usize {
     arrangement.count_ones() as usize
@@ -635,6 +710,8 @@ pub struct Vst3Instance {
     connection: Option<(ComPtr<IConnectionPoint>, ComPtr<IConnectionPoint>)>,
     changes: ComWrapper<ParameterChanges>,
     changes_ptr: ComPtr<IParameterChanges>,
+    notes: ComWrapper<EventList>,
+    notes_ptr: ComPtr<IEventList>,
     inputs: Vec<Bus>,
     outputs: Vec<Bus>,
     in_buses: Vec<AudioBusBuffers>,
@@ -737,6 +814,8 @@ impl Vst3Instance {
         let changes_ptr = changes
             .to_com_ptr::<IParameterChanges>()
             .ok_or("no parameter changes")?;
+        let notes = ComWrapper::new(EventList::new());
+        let notes_ptr = notes.to_com_ptr::<IEventList>().ok_or("no event list")?;
         let mirror = Arc::new(ParamMirror::new());
         let state = Vst3State {
             component: component.clone(),
@@ -753,6 +832,8 @@ impl Vst3Instance {
             connection,
             changes,
             changes_ptr,
+            notes,
+            notes_ptr,
             inputs: Vec::new(),
             outputs: Vec::new(),
             in_buses: Vec::new(),
@@ -896,6 +977,7 @@ impl Vst3Instance {
         for change in block.params() {
             self.mirror.record(change.id, change.value);
         }
+        self.notes.fill(block.notes());
 
         // The main buses read and write the shared block; others scratch.
         let (shared_in, shared_out) = block.channel_pointers();
@@ -952,7 +1034,7 @@ impl Vst3Instance {
             outputs: self.out_buses.as_mut_ptr(),
             inputParameterChanges: self.changes_ptr.as_ptr(),
             outputParameterChanges: std::ptr::null_mut(),
-            inputEvents: std::ptr::null_mut(),
+            inputEvents: self.notes_ptr.as_ptr(),
             outputEvents: std::ptr::null_mut(),
             processContext: &mut self.context,
         };

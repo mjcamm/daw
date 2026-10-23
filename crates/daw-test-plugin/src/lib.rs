@@ -4,8 +4,10 @@
 //! parameter that does something (id 0, gain = 2 × value, so the default
 //! 0.5 is unity) and is saved in its state, "Tilt" (id 7, in the "Tone"
 //! group, does nothing) and a read-only "Meter" (id 9) a host must not
-//! offer. It has a window (`view.rs`) that tests drive. "Test Synth" is
-//! listed but not yet creatable.
+//! offer. It has a window (`view.rs`) that tests drive. "Test Synth" is an
+//! instrument: each note plays a cosine at its pitch, `velocity × 0.2 ×
+//! 2 × Gain` loud, from its exact sample until its end (no envelope), so
+//! tests can check timing; it shares the controller.
 //! Adapted from the `vst3` crate's gain example (MIT OR Apache-2.0).
 //!
 //! `DAW_TEST_PLUGIN_SCAN=crash` or `hang` makes loading it crash or hang,
@@ -97,6 +99,104 @@ unsafe fn write_gain(stream: *mut IBStream, gain: f64) -> tresult {
 
 struct Processor {
     gain: AtomicU64,
+    /// "Test Synth": notes in, sound out.
+    synth: Option<Synth>,
+}
+
+/// A sounding note: its id, frequency, loudness and samples since it began.
+#[derive(Clone, Copy)]
+struct Voice {
+    note: i32,
+    hz: f64,
+    amp: f64,
+    age: u64,
+}
+
+struct Synth {
+    voices: std::cell::UnsafeCell<[Option<Voice>; 32]>,
+    rate: AtomicU64,
+}
+
+// The voices are touched only by `process`, on the host's audio thread.
+unsafe impl Sync for Synth {}
+
+impl Synth {
+    fn new() -> Self {
+        Self {
+            voices: std::cell::UnsafeCell::new([None; 32]),
+            rate: AtomicU64::new(48_000f64.to_bits()),
+        }
+    }
+
+    fn start(voices: &mut [Option<Voice>; 32], note: &NoteOnEvent) {
+        if let Some(free) = voices.iter_mut().find(|v| v.is_none()) {
+            *free = Some(Voice {
+                note: note.noteId,
+                hz: 440.0 * 2f64.powf((f64::from(note.pitch) - 69.0) / 12.0),
+                amp: f64::from(note.velocity) * 0.2,
+                age: 0,
+            });
+        }
+    }
+
+    fn stop(voices: &mut [Option<Voice>; 32], note: &NoteOffEvent) {
+        for voice in voices.iter_mut() {
+            if voice.is_some_and(|v| v.note == note.noteId) {
+                *voice = None;
+            }
+        }
+    }
+
+    unsafe fn process(&self, data: &ProcessData, gain: f64) {
+        let voices = unsafe { &mut *self.voices.get() };
+        let rate = f64::from_bits(self.rate.load(Ordering::Relaxed));
+        let frames = data.numSamples.max(0) as usize;
+        // Fixed room: a plugin never allocates while processing.
+        let mut room: [Event; 64] = unsafe { std::mem::zeroed() };
+        let mut count = 0;
+        if let Some(list) = unsafe { ComRef::from_raw(data.inputEvents) } {
+            for i in 0..unsafe { list.getEventCount() } {
+                if count < room.len() && unsafe { list.getEvent(i, &mut room[count]) } == kResultOk
+                {
+                    count += 1;
+                }
+            }
+        }
+        let events = &room[..count];
+        if data.numOutputs < 1 {
+            return;
+        }
+        let output = unsafe { &*data.outputs };
+        let channels = output.numChannels.max(0) as usize;
+        let mut next = 0;
+        for frame in 0..frames {
+            while let Some(event) = events.get(next) {
+                if event.sampleOffset as usize > frame {
+                    break;
+                }
+                match i32::from(event.r#type) {
+                    Event_::EventTypes_::kNoteOnEvent => {
+                        Self::start(voices, unsafe { &event.__field0.noteOn });
+                    }
+                    Event_::EventTypes_::kNoteOffEvent => {
+                        Self::stop(voices, unsafe { &event.__field0.noteOff });
+                    }
+                    _ => {}
+                }
+                next += 1;
+            }
+            let mut sum = 0.0;
+            for voice in voices.iter_mut().flatten() {
+                let t = voice.age as f64 / rate;
+                sum += voice.amp * (std::f64::consts::TAU * voice.hz * t).cos();
+                voice.age += 1;
+            }
+            let value = (sum * gain) as f32;
+            for ch in 0..channels {
+                unsafe { *(*output.__field0.channelBuffers32.add(ch)).add(frame) = value };
+            }
+        }
+    }
 }
 
 impl Class for Processor {
@@ -123,8 +223,14 @@ impl IComponentTrait for Processor {
         kResultOk
     }
 
-    unsafe fn getBusCount(&self, media: MediaType, _dir: BusDirection) -> int32 {
-        i32::from(media as MediaTypes == MediaTypes_::kAudio)
+    unsafe fn getBusCount(&self, media: MediaType, dir: BusDirection) -> int32 {
+        let audio = media as MediaTypes == MediaTypes_::kAudio;
+        if self.synth.is_none() {
+            return i32::from(audio);
+        }
+        // An instrument: notes in, sound out.
+        let input = dir == BusDirections_::kInput as BusDirection;
+        i32::from(if audio { !input } else { input })
     }
 
     unsafe fn getBusInfo(
@@ -137,8 +243,17 @@ impl IComponentTrait for Processor {
         let Some(bus) = (unsafe { bus.as_mut() }) else {
             return kInvalidArgument;
         };
-        if media as MediaTypes != MediaTypes_::kAudio || index != 0 {
+        if index != 0 || unsafe { self.getBusCount(media, dir) } == 0 {
             return kInvalidArgument;
+        }
+        if media as MediaTypes == MediaTypes_::kEvent {
+            bus.mediaType = media;
+            bus.direction = dir;
+            bus.channelCount = 1;
+            copy_wide("Notes", &mut bus.name);
+            bus.busType = BusTypes_::kMain as BusType;
+            bus.flags = BusInfo_::BusFlags_::kDefaultActive as uint32;
+            return kResultOk;
         }
         bus.mediaType = media;
         bus.direction = dir;
@@ -197,9 +312,14 @@ impl IAudioProcessorTrait for Processor {
         outputs: *mut SpeakerArrangement,
         num_outs: int32,
     ) -> tresult {
-        let stereo = num_ins == 1
-            && num_outs == 1
-            && unsafe { *inputs == SpeakerArr::kStereo && *outputs == SpeakerArr::kStereo };
+        let stereo = if self.synth.is_some() {
+            num_ins == 0 && num_outs == 1 && unsafe { *outputs == SpeakerArr::kStereo }
+        } else {
+            num_ins == 1
+                && num_outs == 1
+                && unsafe { *inputs == SpeakerArr::kStereo && *outputs == SpeakerArr::kStereo }
+        };
+        let _ = inputs;
         if stereo { kResultTrue } else { kResultFalse }
     }
 
@@ -228,7 +348,12 @@ impl IAudioProcessorTrait for Processor {
         0
     }
 
-    unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
+    unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
+        if let (Some(synth), Some(setup)) = (&self.synth, unsafe { setup.as_ref() }) {
+            synth
+                .rate
+                .store(setup.sampleRate.to_bits(), Ordering::Relaxed);
+        }
         kResultOk
     }
 
@@ -255,6 +380,11 @@ impl IAudioProcessorTrait for Processor {
                     }
                 }
             }
+        }
+        if let Some(synth) = &self.synth {
+            let gain = 2.0 * f64::from_bits(self.gain.load(Ordering::Relaxed));
+            unsafe { synth.process(data, gain) };
+            return kResultOk;
         }
         if data.numInputs < 1 || data.numOutputs < 1 {
             return kResultOk;
@@ -558,6 +688,12 @@ impl IPluginFactoryTrait for Factory {
         let instance = match unsafe { *cid.cast::<TUID>() } {
             EFFECT_CID => ComWrapper::new(Processor {
                 gain: AtomicU64::new(DEFAULT_GAIN.to_bits()),
+                synth: None,
+            })
+            .to_com_ptr::<FUnknown>(),
+            INSTRUMENT_CID => ComWrapper::new(Processor {
+                gain: AtomicU64::new(DEFAULT_GAIN.to_bits()),
+                synth: Some(Synth::new()),
             })
             .to_com_ptr::<FUnknown>(),
             CONTROLLER_CID => ComWrapper::new(Controller {

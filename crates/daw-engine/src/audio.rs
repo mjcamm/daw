@@ -28,7 +28,7 @@ use daw_dsp::sampler::Sampler;
 use daw_dsp::smoothing::Smoothed;
 use daw_dsp::synth::{MAX_VOICES, Synth};
 use daw_plugins::block::{
-    Context as PluginContext, DawBlock, MAX_PARAM_CHANGES, Outcome, ParamChange,
+    Context as PluginContext, DawBlock, MAX_PARAM_CHANGES, NoteEvent, Outcome, ParamChange,
 };
 use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId};
 use std::sync::Arc;
@@ -418,13 +418,18 @@ impl AudioProcessor {
                             .iter()
                             .find(|n| n.id == node)
                             .map_or(&[][..], |n| &n.instruments[..]);
-                        for ((_, instrument), state) in player.instruments.iter_mut().zip(states) {
+                        for (((_, instrument), state), notes) in player
+                            .instruments
+                            .iter_mut()
+                            .zip(states)
+                            .zip(player.plugin_notes.iter_mut())
+                        {
                             if on {
                                 if state.plays.contains(pitch) {
-                                    instrument.note_on(id, pitch, velocity);
+                                    instrument.note_on(id, pitch, velocity, 0, notes);
                                 }
                             } else {
-                                instrument.note_off(id);
+                                instrument.note_off(id, 0, notes);
                             }
                         }
                     }
@@ -448,9 +453,14 @@ impl AudioProcessor {
     /// back any it replaces (or this one, if the effect is gone).
     fn attach_plugin(&mut self, effect: DeviceId, block: Box<DawBlock>) {
         for player in self.players.iter_mut() {
-            if let Some((_, EffectInstance::Plugin(slot))) =
-                player.effects.iter_mut().find(|(id, _)| *id == effect)
-            {
+            let slot = match player.effects.iter_mut().find(|(id, _)| *id == effect) {
+                Some((_, EffectInstance::Plugin(slot))) => Some(slot),
+                _ => match player.instruments.iter_mut().find(|(id, _)| *id == effect) {
+                    Some((_, InstrumentInstance::Plugin(plugin))) => Some(&mut plugin.block),
+                    _ => None,
+                },
+            };
+            if let Some(slot) = slot {
                 if let Some(old) = slot.replace(block) {
                     retire(&mut self.retired, old);
                 }
@@ -465,6 +475,12 @@ impl AudioProcessor {
             if let Some((_, EffectInstance::Plugin(slot))) =
                 player.effects.iter_mut().find(|(id, _)| *id == effect)
                 && let Some(old) = slot.take()
+            {
+                retire(&mut self.retired, old);
+            }
+            if let Some((_, InstrumentInstance::Plugin(plugin))) =
+                player.instruments.iter_mut().find(|(id, _)| *id == effect)
+                && let Some(old) = plugin.block.take()
             {
                 retire(&mut self.retired, old);
             }
@@ -513,7 +529,7 @@ impl AudioProcessor {
         for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
             let player = self.players.get_mut(index);
             player.sync_effects(&node.effects, self.sample_rate, &mut self.retired);
-            player.sync_instruments(&node.instruments);
+            player.sync_instruments(&node.instruments, &mut self.retired);
             // Audio nodes with clips borrow a clip player; without clips
             // they give it back.
             if node.clips.is_empty() {
@@ -742,6 +758,92 @@ impl EffectInstance {
 enum InstrumentInstance {
     Synth(Synth),
     Sampler(Sampler),
+    Plugin(PluginInstrument),
+}
+
+/// Notes sounding on one plugin instrument at once (more are not started).
+const MAX_PLUGIN_NOTES: usize = 64;
+/// Note starts and ends one plugin instrument takes in a chunk.
+const MAX_CHUNK_NOTES: usize = 256;
+
+/// A plugin instrument: its channel to the host process (once the control
+/// side sends it) and the notes sounding on it, so an end, or ending them
+/// all, can name their pitch.
+#[derive(Debug)]
+struct PluginInstrument {
+    block: Option<Box<DawBlock>>,
+    sounding: [Option<(u32, u8)>; MAX_PLUGIN_NOTES],
+}
+
+/// A plugin instrument's note starts and ends for the chunk being played,
+/// at their frames within it.
+#[derive(Debug)]
+struct ChunkNotes {
+    events: [NoteEvent; MAX_CHUNK_NOTES],
+    count: usize,
+}
+
+impl ChunkNotes {
+    fn new() -> Self {
+        Self {
+            events: [NoteEvent::default(); MAX_CHUNK_NOTES],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, event: NoteEvent) {
+        if let Some(slot) = self.events.get_mut(self.count) {
+            *slot = event;
+            self.count += 1;
+        }
+    }
+}
+
+impl PluginInstrument {
+    fn note_on(&mut self, note: u32, pitch: u8, velocity: u8, at: usize, notes: &mut ChunkNotes) {
+        let Some(slot) = self.sounding.iter_mut().find(|s| s.is_none()) else {
+            return;
+        };
+        *slot = Some((note, pitch));
+        notes.push(NoteEvent {
+            offset: at as u32,
+            note: note as i32,
+            pitch: u16::from(pitch),
+            on: 1,
+            velocity: f32::from(velocity) / 127.0,
+        });
+    }
+
+    fn note_off(&mut self, note: u32, at: usize, notes: &mut ChunkNotes) {
+        for slot in &mut self.sounding {
+            if let Some((id, pitch)) = *slot
+                && id == note
+            {
+                *slot = None;
+                notes.push(NoteEvent {
+                    offset: at as u32,
+                    note: id as i32,
+                    pitch: u16::from(pitch),
+                    on: 0,
+                    velocity: 0.0,
+                });
+            }
+        }
+    }
+
+    fn release_all(&mut self, at: usize, notes: &mut ChunkNotes) {
+        for slot in &mut self.sounding {
+            if let Some((id, pitch)) = slot.take() {
+                notes.push(NoteEvent {
+                    offset: at as u32,
+                    note: id as i32,
+                    pitch: u16::from(pitch),
+                    on: 0,
+                    velocity: 0.0,
+                });
+            }
+        }
+    }
 }
 
 impl InstrumentInstance {
@@ -749,6 +851,10 @@ impl InstrumentInstance {
         match kind {
             InstrumentKind::Synth => Self::Synth(Synth::new(sample_rate)),
             InstrumentKind::SingleSampler => Self::Sampler(Sampler::new(sample_rate)),
+            InstrumentKind::Plugin => Self::Plugin(PluginInstrument {
+                block: None,
+                sounding: [None; MAX_PLUGIN_NOTES],
+            }),
         }
     }
 
@@ -756,6 +862,14 @@ impl InstrumentInstance {
         match self {
             Self::Synth(_) => InstrumentKind::Synth,
             Self::Sampler(_) => InstrumentKind::SingleSampler,
+            Self::Plugin(_) => InstrumentKind::Plugin,
+        }
+    }
+
+    fn take_block(&mut self) -> Option<Box<DawBlock>> {
+        match self {
+            Self::Plugin(plugin) => plugin.block.take(),
+            Self::Synth(_) | Self::Sampler(_) => None,
         }
     }
 
@@ -764,27 +878,34 @@ impl InstrumentInstance {
         match self {
             Self::Synth(synth) => synth.set_params(synth_params(plain)),
             Self::Sampler(sampler) => sampler.set_level(sampler_level(plain)),
+            // A plugin takes its parameters per chunk (`play_plugins`).
+            Self::Plugin(_) => {}
         }
     }
 
-    fn note_on(&mut self, note: u32, pitch: u8, velocity: u8) {
+    /// Starts a note `at` a frame of the chunk (built-in instruments start
+    /// it now, at the current span; a plugin hears it at that frame).
+    fn note_on(&mut self, note: u32, pitch: u8, velocity: u8, at: usize, notes: &mut ChunkNotes) {
         match self {
             Self::Synth(synth) => synth.note_on(note, pitch, velocity),
             Self::Sampler(sampler) => sampler.note_on(note, pitch, velocity),
+            Self::Plugin(plugin) => plugin.note_on(note, pitch, velocity, at, notes),
         }
     }
 
-    fn note_off(&mut self, note: u32) {
+    fn note_off(&mut self, note: u32, at: usize, notes: &mut ChunkNotes) {
         match self {
             Self::Synth(synth) => synth.note_off(note),
             Self::Sampler(sampler) => sampler.note_off(note),
+            Self::Plugin(plugin) => plugin.note_off(note, at, notes),
         }
     }
 
-    fn release_all(&mut self) {
+    fn release_all(&mut self, at: usize, notes: &mut ChunkNotes) {
         match self {
             Self::Synth(synth) => synth.release_all(),
             Self::Sampler(sampler) => sampler.release_all(),
+            Self::Plugin(plugin) => plugin.release_all(at, notes),
         }
     }
 
@@ -797,6 +918,11 @@ impl InstrumentInstance {
                 right.copy_from_slice(left);
             }
             Self::Sampler(sampler) => sampler.render(sample.map(SampleData::view), left, right),
+            // Plays over the whole chunk (`play_plugins`).
+            Self::Plugin(_) => {
+                left.fill(0.0);
+                right.fill(0.0);
+            }
         }
     }
 }
@@ -921,6 +1047,12 @@ struct NodePlayer {
     control_count: usize,
     /// A plugin effect's parameter changes for the chunk.
     plugin_changes: Box<[ParamChange; MAX_PARAM_CHANGES]>,
+    /// Each plugin instrument's notes for the chunk, by the instrument's
+    /// place in `instruments`.
+    plugin_notes: Box<[ChunkNotes; MAX_INSTRUMENTS]>,
+    /// The frame within the chunk being rendered, for notes sent to
+    /// plugins.
+    at: usize,
 }
 
 impl NodePlayer {
@@ -946,6 +1078,8 @@ impl NodePlayer {
             controls: [ControlPoint::default(); MAX_CONTROL_POINTS],
             control_count: 0,
             plugin_changes: Box::new([ParamChange::default(); MAX_PARAM_CHANGES]),
+            plugin_notes: Box::new(std::array::from_fn(|_| ChunkNotes::new())),
+            at: 0,
         }
     }
 
@@ -953,7 +1087,7 @@ impl NodePlayer {
     fn start(&mut self, node: NodeId, meter: &PlayerMeter, retired: &mut Retired) {
         self.node = Some(node);
         self.fresh = true;
-        self.instruments.clear();
+        self.retire_instruments(retired);
         self.retire_effects(retired);
         self.cursor = 0;
         self.pending_ends = [None; MAX_PENDING_ENDS];
@@ -965,7 +1099,7 @@ impl NodePlayer {
     fn free(&mut self, meter: &PlayerMeter, retired: &mut Retired) {
         self.node = None;
         self.release_all();
-        self.instruments.clear();
+        self.retire_instruments(retired);
         self.retire_effects(retired);
         meter.node.store(0, Ordering::Relaxed);
         meter.peaks.take();
@@ -1022,6 +1156,7 @@ impl NodePlayer {
             };
             let segment_end = done + segment;
             while done < segment_end {
+                self.at = done as usize;
                 let into_control = processed % CONTROL_FRAMES;
                 if into_control == 0 {
                     let beat = transport.position();
@@ -1050,16 +1185,20 @@ impl NodePlayer {
             }
             if jumps {
                 transport.jump_to_loop_start();
+                self.at = done as usize;
                 self.release_all();
                 self.seek(node, &transport);
             }
         }
+        // Notes from outside the chunk (previews) come at its start.
+        self.at = 0;
         let context = PluginContext {
             tempo_bpm: plugin.tempo_bpm,
             position_beats: start.position(),
             playing: start.is_playing(),
             offline: plugin.offline,
         };
+        self.play_plugins(node, chunk, context, plugin.deadline);
         self.process_effects(node, chunk, context, plugin.deadline);
         self.apply_channel(node, chunk);
     }
@@ -1105,6 +1244,18 @@ impl NodePlayer {
 
     /// Rebuilds the running chain to match `wanted`, keeping existing effects
     /// (and their filter memory) by id. Allocation-free.
+    /// Drops every instrument, handing plugin channels back.
+    fn retire_instruments(&mut self, retired: &mut Retired) {
+        for (_, mut instrument) in self.instruments.drain(..) {
+            if let Some(block) = instrument.take_block() {
+                retire(retired, block);
+            }
+        }
+        for notes in self.plugin_notes.iter_mut() {
+            notes.count = 0;
+        }
+    }
+
     /// Empties the chain, handing plugin channels back.
     fn retire_effects(&mut self, retired: &mut Retired) {
         for (_, mut effect) in self.effects.drain(..) {
@@ -1136,7 +1287,7 @@ impl NodePlayer {
     /// Rebuilds the running instruments to match `wanted`, keeping existing
     /// ones (and their sounding voices) by id and kind. Allocation-free: an
     /// instrument holds no heap memory.
-    fn sync_instruments(&mut self, wanted: &[InstrumentState]) {
+    fn sync_instruments(&mut self, wanted: &[InstrumentState], retired: &mut Retired) {
         debug_assert!(wanted.len() <= MAX_INSTRUMENTS);
         self.spare_instruments.clear();
         for state in wanted {
@@ -1150,8 +1301,17 @@ impl NodePlayer {
             };
             self.spare_instruments.push((state.id, instance));
         }
-        self.instruments.clear();
+        // Whatever is left was removed.
+        for (_, mut instrument) in self.instruments.drain(..) {
+            if let Some(block) = instrument.take_block() {
+                retire(retired, block);
+            }
+        }
         std::mem::swap(&mut self.instruments, &mut self.spare_instruments);
+        // Notes queued for the old order no longer line up.
+        for notes in self.plugin_notes.iter_mut() {
+            notes.count = 0;
+        }
     }
 
     /// Evaluates every parameter's layers at `beat` and applies the results.
@@ -1287,8 +1447,12 @@ impl NodePlayer {
             if let Some(pending) = *slot
                 && transport.frames_until(pending.end_beats) <= 0
             {
-                for (_, instrument) in &mut self.instruments {
-                    instrument.note_off(pending.note_id);
+                for ((_, instrument), notes) in self
+                    .instruments
+                    .iter_mut()
+                    .zip(self.plugin_notes.iter_mut())
+                {
+                    instrument.note_off(pending.note_id, self.at, notes);
                 }
                 *slot = None;
             }
@@ -1309,17 +1473,26 @@ impl NodePlayer {
                     .filter_map(|(i, p)| p.map(|p| (i, p)))
                     .min_by(|(_, a), (_, b)| a.end_beats.total_cmp(&b.end_beats))
                     .unwrap_or((0, PendingEnd { note_id, end_beats }));
-                for (_, instrument) in &mut self.instruments {
-                    instrument.note_off(soonest.note_id);
+                for ((_, instrument), notes) in self
+                    .instruments
+                    .iter_mut()
+                    .zip(self.plugin_notes.iter_mut())
+                {
+                    instrument.note_off(soonest.note_id, self.at, notes);
                 }
                 slot
             }
         };
         self.pending_ends[slot] = Some(PendingEnd { note_id, end_beats });
         // Each instrument plays only its own notes.
-        for ((_, instrument), state) in self.instruments.iter_mut().zip(&node.instruments) {
+        for (((_, instrument), state), notes) in self
+            .instruments
+            .iter_mut()
+            .zip(&node.instruments)
+            .zip(self.plugin_notes.iter_mut())
+        {
             if state.plays.contains(pitch) {
-                instrument.note_on(note_id, pitch, velocity);
+                instrument.note_on(note_id, pitch, velocity, self.at, notes);
             }
         }
     }
@@ -1351,10 +1524,60 @@ impl NodePlayer {
     }
 
     fn release_all(&mut self) {
-        for (_, instrument) in &mut self.instruments {
-            instrument.release_all();
+        for ((_, instrument), notes) in self
+            .instruments
+            .iter_mut()
+            .zip(self.plugin_notes.iter_mut())
+        {
+            instrument.release_all(self.at, notes);
         }
         self.pending_ends = [None; MAX_PENDING_ENDS];
+    }
+
+    /// Plays the plugin instruments over the chunk, after the built-in
+    /// ones: each takes its notes at their frames and its parameters at the
+    /// chunk's control points, and joins the bus. Silent while it has no
+    /// channel, is late or its process is gone.
+    fn play_plugins(
+        &mut self,
+        node: &NodeRender,
+        frames: usize,
+        context: PluginContext,
+        deadline: Option<Instant>,
+    ) {
+        let controls = &self.controls[..self.control_count];
+        for (((_, instrument), state), notes) in self
+            .instruments
+            .iter_mut()
+            .zip(&node.instruments)
+            .zip(self.plugin_notes.iter_mut())
+        {
+            let InstrumentInstance::Plugin(plugin) = instrument else {
+                continue;
+            };
+            let count = plugin_changes(&state.plugin_params, controls, &mut *self.plugin_changes);
+            let left = &mut self.scratch_left[..frames];
+            let right = &mut self.scratch_right[..frames];
+            let done = plugin.block.as_deref_mut().is_some_and(|block| {
+                block.process_with_notes(
+                    &[],
+                    &self.plugin_changes[..count],
+                    &notes.events[..notes.count],
+                    context,
+                    &mut [&mut *left, &mut *right],
+                    deadline,
+                ) == Outcome::Done
+            });
+            notes.count = 0;
+            if done && node.instrument_on && state.enabled {
+                for (to, from) in self.bus_left[..frames].iter_mut().zip(left.iter()) {
+                    *to += *from;
+                }
+                for (to, from) in self.bus_right[..frames].iter_mut().zip(right.iter()) {
+                    *to += *from;
+                }
+            }
+        }
     }
 }
 

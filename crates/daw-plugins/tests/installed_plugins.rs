@@ -7,7 +7,7 @@
 #![cfg(windows)]
 #![allow(clippy::unwrap_used, reason = "tests fail on error")]
 
-use daw_plugins::block::{Context, Layout, Outcome};
+use daw_plugins::block::{Context, Layout, NoteEvent, Outcome};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
 use daw_plugins::control::PluginSpec;
 use daw_plugins::scan::{Catalog, Progress, ScanCommand, standard_folders};
@@ -146,6 +146,120 @@ fn installed_effects_process_audio_in_a_host_process() {
         );
         if late > 2 || !finite {
             failures.push(format!("{name}: {late} late blocks, finite {finite}"));
+        }
+        drop(block);
+        let _ = host.destroy(id);
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Instruments to try, by name, if installed.
+const INSTRUMENTS: &[&str] = &["Serum 2"];
+
+#[test]
+#[ignore = "needs the user's installed plugins"]
+fn installed_instruments_play_notes_in_a_host_process() {
+    let scanner = ScanCommand {
+        program: env!("CARGO_BIN_EXE_daw-plugin-host").into(),
+        args: vec![daw_plugins::scan::SCAN_FLAG.into()],
+        env: Vec::new(),
+    };
+    let mut catalog = Catalog::default();
+    catalog.update(&standard_folders(), &scanner, &Progress::default());
+    let layout = Layout {
+        max_frames: 512,
+        inputs: 0,
+        outputs: 2,
+    };
+    let mut failures = Vec::new();
+    for name in INSTRUMENTS {
+        let Some(plugin) = catalog
+            .plugins()
+            .into_iter()
+            .find(|p| p.name == *name && p.is_instrument())
+            .cloned()
+        else {
+            println!("{name}: not installed");
+            continue;
+        };
+        let mut host = HostProcess::spawn(&HostCommand {
+            program: env!("CARGO_BIN_EXE_daw-plugin-host").into(),
+            args: Vec::new(),
+        })
+        .unwrap();
+        let id = next_instance();
+        let started = Instant::now();
+        let spec = PluginSpec::Vst3 {
+            bundle: plugin.bundle.clone(),
+            cid: plugin.cid.clone(),
+            name: plugin.name.clone(),
+            vendor: plugin.vendor.clone(),
+        };
+        if let Err(e) = host.create(id, spec, None) {
+            failures.push(format!("{name}: create: {e}"));
+            continue;
+        }
+        let mut block = match host.activate(id, layout, 48_000.) {
+            Ok(block) => block,
+            Err(e) => {
+                failures.push(format!("{name}: activate: {e}"));
+                continue;
+            }
+        };
+        let load = started.elapsed();
+        match host.open_editor(id, &format!("{name} — test"), None) {
+            Ok((w, h)) => println!("{name}: window {w} x {h}"),
+            Err(e) => failures.push(format!("{name}: window: {e}")),
+        }
+        let _ = host.close_editor(id);
+        // A chord for one second, then a second of release.
+        let (mut late, mut peak, mut finite) = (0, 0f32, true);
+        for n in 0..(96_000 / 512) {
+            let notes: Vec<NoteEvent> = [60u16, 64, 67]
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &pitch)| {
+                    let on = match n {
+                        0 => 1,
+                        93 => 0,
+                        _ => return None,
+                    };
+                    Some(NoteEvent {
+                        offset: 0,
+                        note: i as i32,
+                        pitch,
+                        on,
+                        velocity: if on == 1 { 0.8 } else { 0.0 },
+                    })
+                })
+                .collect();
+            let (mut l, mut r) = (vec![0.; 512], vec![0.; 512]);
+            let outcome = block.process_with_notes(
+                &[],
+                &[],
+                &notes,
+                Context {
+                    tempo_bpm: 120.,
+                    position_beats: 0.,
+                    playing: true,
+                    offline: false,
+                },
+                &mut [&mut l, &mut r],
+                Some(Instant::now() + Duration::from_millis(500)),
+            );
+            if outcome != Outcome::Done {
+                late += 1;
+            }
+            finite &= l.iter().chain(&r).all(|s| s.is_finite());
+            peak = l.iter().chain(&r).fold(peak, |p, s| p.max(s.abs()));
+        }
+        println!(
+            "{name} ({}): loaded in {:.0} ms, late {late}, peak {peak:.3}",
+            plugin.vendor,
+            load.as_secs_f64() * 1000.
+        );
+        if late > 2 || !finite || peak == 0.0 {
+            failures.push(format!("{name}: {late} late, finite {finite}, peak {peak}"));
         }
         drop(block);
         let _ = host.destroy(id);

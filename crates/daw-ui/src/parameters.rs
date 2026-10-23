@@ -1366,7 +1366,10 @@ impl ProjectView {
                         )
                 };
                 let button: AnyElement = match (learn, device_ref) {
-                    (Some((learning, name)), DeviceRef::Effect(effect)) => cell
+                    (
+                        Some((learning, name)),
+                        DeviceRef::Effect(effect) | DeviceRef::Instrument(effect),
+                    ) => cell
                         .pl(px(16.))
                         .gap(px(16.))
                         .child(add(div().flex().items_center()))
@@ -1430,11 +1433,12 @@ impl ProjectView {
                     cx.stop_propagation();
                     if learning {
                         this.session
-                            .apply(Command::LearnPluginParam { effect: None });
+                            .apply(Command::LearnPluginParam { device: None });
                     } else {
-                        this.session.apply(Command::OpenPluginWindow { effect });
+                        this.session
+                            .apply(Command::OpenPluginWindow { device: effect });
                         this.session.apply(Command::LearnPluginParam {
-                            effect: Some(effect),
+                            device: Some(effect),
                         });
                     }
                     this.invalidate_all(cx);
@@ -1908,7 +1912,7 @@ pub(crate) fn device_selector(device: DeviceRef) -> String {
 /// The edit adding a plugin's parameter to the song, resting where the
 /// plugin holds it, if it is a plugin parameter not in the song yet.
 fn plugin_param_to_add(snapshot: &Snapshot, param: ParamId) -> Option<Edit> {
-    let DeviceRef::Effect(effect) = param.device else {
+    let (DeviceRef::Effect(effect) | DeviceRef::Instrument(effect)) = param.device else {
         return None;
     };
     let device = snapshot
@@ -1926,7 +1930,7 @@ fn plugin_param_to_add(snapshot: &Snapshot, param: ParamId) -> Option<Edit> {
         .iter()
         .find(|p| p.id == param.index)?;
     Some(Edit::AddPluginParam {
-        effect,
+        device: effect,
         param: PluginParam {
             id: info.id,
             name: info.name.clone(),

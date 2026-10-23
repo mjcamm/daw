@@ -49,6 +49,7 @@ Working knowledge of the VST3 API for hosting, kept because the official docs ar
 
 - `createView("editor")`, `isPlatformTypeSupported("HWND" | "NSView" | "X11EmbedWindowID")`, `canResize`, `setFrame(plugFrame)`, `setContentScaleFactor`, `attached(parent, type)`, then size the window from `getSize`; to close, `removed()`, `setFrame(null)`, release, then destroy the window. Works with all seven of the user's tried effects (`editor.rs`).
 - Some editors take a while to open (Serum 2 FX and Cassette 1.5 s): never wait for one on the DAW's UI thread.
+- Instruments: activate the event input bus (`activateBus(kEvent, kInput, 0, true)`) and pass `inputEvents`; most have no audio input bus, so `setBusArrangements` gets zero inputs. Note ids pair a note's off with its on; give each note a fresh id. Serum 2 takes a chord at offset 0 of a block fine.
 - The controller never talks to the processor itself: `performEdit` from the window must reach the processor as an input parameter change, or the sound won't follow the knob. Plugins may call `performEdit` without `beginEdit` / `endEdit` (mouse wheel).
 - Plugin resizes: `IPlugFrame::resizeView(size)` → host resizes its window → `onSize`. User resizes (only if `canResize`): `checkSizeConstraint` → resize → `onSize`.
 - `IPlugViewContentScaleSupport::setContentScaleFactor`: call just before or after `attached`, and again when the window moves to a screen with another scale.

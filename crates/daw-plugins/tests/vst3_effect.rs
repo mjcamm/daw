@@ -300,7 +300,7 @@ fn learn_and_knob_turns_in_a_plugins_window_change_the_song() {
     let (_, bundle) = install("vst3-learn");
     let (mut engine, _processor) = song(Some(gain(&bundle)));
     engine
-        .apply(Command::OpenPluginWindow { effect: EFFECT })
+        .apply(Command::OpenPluginWindow { device: EFFECT })
         .unwrap();
     // Asked without waiting: it says Open once the host has opened it.
     wait_for("the window to open", || {
@@ -337,7 +337,7 @@ fn learn_and_knob_turns_in_a_plugins_window_change_the_song() {
     // Learn: the first knob turned (a gesture) joins the song with a layer.
     engine
         .apply(Command::LearnPluginParam {
-            effect: Some(EFFECT),
+            device: Some(EFFECT),
         })
         .unwrap();
     assert!(plugin_of(&engine).learning);
@@ -372,7 +372,7 @@ fn learn_and_knob_turns_in_a_plugins_window_change_the_song() {
     // pauses.
     engine
         .apply(Command::LearnPluginParam {
-            effect: Some(EFFECT),
+            device: Some(EFFECT),
         })
         .unwrap();
     click(view, WM_MBUTTONDOWN);

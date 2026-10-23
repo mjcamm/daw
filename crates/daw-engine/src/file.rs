@@ -34,7 +34,9 @@ pub const FORMAT: &str = "daw-project";
 /// Version 16 added plugin effects (`EffectKind::Plugin` with `plugin`).
 /// Version 17 saves each plugin's state with its effect (`state`).
 /// Version 18 adds plugin parameters moved by layers (`plugin_params`).
-pub const VERSION: u32 = 18;
+/// Version 19 adds plugin instruments (`InstrumentKind::Plugin`, with
+/// `plugin`, `plugin_params`, `state` and `window` as for effects).
+pub const VERSION: u32 = 19;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -107,6 +109,12 @@ pub struct InstrumentFile {
     pub id: DeviceId,
     #[serde(flatten)]
     pub instrument: Instrument,
+    /// A plugin instrument's state, if it has any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<PluginData>,
+    /// Where a plugin instrument's window was last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -195,6 +203,8 @@ fn node_file(id: NodeId, node: &Node) -> NodeFile {
             .map(|(id, instrument)| InstrumentFile {
                 id: *id,
                 instrument: instrument.clone(),
+                state: None,
+                window: None,
             })
             .collect(),
         effects: node
@@ -312,6 +322,9 @@ impl ProjectFile {
             for effect in &mut node.effects {
                 effect.state = states.get(&effect.id).cloned();
             }
+            for instrument in &mut node.instruments {
+                instrument.state = states.get(&instrument.id).cloned();
+            }
             for child in &mut node.children {
                 walk(child, states);
             }
@@ -325,6 +338,11 @@ impl ProjectFile {
             for effect in &node.effects {
                 if let Some(state) = &effect.state {
                     states.insert(effect.id, state.clone());
+                }
+            }
+            for instrument in &node.instruments {
+                if let Some(state) = &instrument.state {
+                    states.insert(instrument.id, state.clone());
                 }
             }
             for child in &node.children {
@@ -342,6 +360,9 @@ impl ProjectFile {
             for effect in &mut node.effects {
                 effect.window = places.get(&effect.id).copied();
             }
+            for instrument in &mut node.instruments {
+                instrument.window = places.get(&instrument.id).copied();
+            }
             for child in &mut node.children {
                 walk(child, places);
             }
@@ -355,6 +376,11 @@ impl ProjectFile {
             for effect in &node.effects {
                 if let Some(at) = effect.window {
                     places.insert(effect.id, at);
+                }
+            }
+            for instrument in &node.instruments {
+                if let Some(at) = instrument.window {
+                    places.insert(instrument.id, at);
                 }
             }
             for child in &node.children {
@@ -711,7 +737,7 @@ mod tests {
                 )),
             },
             Edit::AddPluginParam {
-                effect: DeviceId(30),
+                device: DeviceId(30),
                 param: daw_protocol::PluginParam {
                     id: 4097,
                     name: "Drive".to_owned(),

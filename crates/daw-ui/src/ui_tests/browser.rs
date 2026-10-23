@@ -127,3 +127,28 @@ fn the_browser_remembers_its_side_and_works_from_the_keys() {
         "nothing else added"
     );
 }
+
+/// docs/behaviours.md: "+ Instrument and + Effect open the device browser
+/// ...; search and Enter add a plugin" (an instrument here).
+#[test]
+fn a_plugin_instrument_is_added_from_the_browser() {
+    let mut h = mixer_with_plugins("browser-plugin-instrument");
+    let add = h.bounds(selector("instrument-add")).center();
+    h.click(add, 1);
+    let plugins = h.bounds("browser-side-Plugins").center();
+    h.click(plugins, 1);
+    h.type_text("serum");
+    h.keys("enter");
+    assert_eq!(browsing(&mut h), None, "adding closes it");
+    let snapshot = h.snapshot();
+    let node = snapshot.node(FIRST_NODE).unwrap();
+    let added = node
+        .devices
+        .iter()
+        .find(|d| d.instrument == Some(InstrumentKind::Plugin))
+        .expect("a plugin instrument");
+    assert_eq!(added.name, "Serum 2");
+    assert!(
+        matches!(&added.plugin.as_ref().unwrap().spec, PluginSpec::Vst3 { vendor, .. } if vendor == "Xfer Records")
+    );
+}
