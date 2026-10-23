@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 /// Bump when messages change; the host refuses a different one.
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 
 /// Largest message accepted, so a garbled length can't allocate gigabytes.
 const MAX_MESSAGE: u32 = 64 << 20;
@@ -54,6 +54,11 @@ pub enum Request {
         /// remembers it; `None`: where it was, or near the mouse.
         at: Option<(i32, i32)>,
     },
+    /// How late the instance's sound comes out, in frames
+    /// ([`Reply::Latency`]); asked after activating.
+    GetLatency {
+        instance: u64,
+    },
     /// Renames the plugin's window, if open.
     SetEditorTitle {
         instance: u64,
@@ -71,6 +76,7 @@ pub enum Reply {
     /// `None` for a device without state.
     State(Option<PluginData>),
     Params(Vec<PluginParamInfo>),
+    Latency(u32),
     /// The window's content size, in pixels.
     Editor {
         width: u32,

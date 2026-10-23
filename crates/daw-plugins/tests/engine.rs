@@ -250,3 +250,103 @@ fn a_plugin_parameter_follows_its_resting_value_and_its_layers() {
     );
     assert!(!expected.samples[48_128 * 2..].iter().all(|&s| s == 0.0));
 }
+
+/// A second node ("Copy", node 2) playing the same chord on its own synth.
+fn add_copy(engine: &mut Engine) {
+    let mut node = daw_engine::Node::new("Copy", 1).with_instrument(DeviceId(50));
+    let notes = [60, 64, 67]
+        .map(|pitch| MidiNote {
+            start: Ticks::ZERO,
+            length: Ticks::from_bars(4),
+            pitch,
+            velocity: 100,
+        })
+        .to_vec();
+    node.clips.insert(
+        ClipId(2),
+        MidiClip {
+            start: Ticks::ZERO,
+            length: Ticks::from_bars(4),
+            notes,
+            looping: None,
+        },
+    );
+    engine
+        .apply(Command::Edit(Edit::AddNode {
+            id: daw_engine::NodeId(2),
+            parent: daw_engine::NodeId::ROOT,
+            index: 1,
+            node,
+        }))
+        .unwrap();
+}
+
+#[test]
+fn a_delaying_plugin_lines_the_song_up_late_by_its_latency() {
+    let (mut plain, mut plain_processor) = engine(None);
+    add_copy(&mut plain);
+    let expected = render(&mut plain, &mut plain_processor, 20_000, &[512]);
+    assert_eq!(plain_processor.latency(), 0);
+
+    let (mut delayed, mut processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut delayed);
+    let out = render(&mut delayed, &mut processor, 20_000, &[512]);
+    assert_eq!(processor.latency(), 100, "the song's latency");
+    assert!(out.samples[..200].iter().all(|&s| s == 0.0), "late by 100");
+    assert!(
+        out.samples[200..] == expected.samples[..expected.samples.len() - 200],
+        "both nodes line up, exactly 100 frames late"
+    );
+
+    let (mut again, mut again_processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut again);
+    let varied = render(&mut again, &mut again_processor, 20_000, VARIED_BLOCKS);
+    assert!(varied == out, "the same at any block size");
+}
+
+#[test]
+fn automation_acts_on_the_sound_it_was_drawn_against() {
+    use daw_engine::{BlendMode, Block, BlockId, DeviceRef, Layer, LayerId, ParamId, Shape};
+    let (mut engine, mut processor) = engine(Some(TestPlugin::Delay { frames: 1_000 }));
+    // The volume drops to nothing from beat 1 (frame 24 000).
+    let volume = ParamId {
+        node: FIRST_NODE,
+        device: DeviceRef::Channel,
+        index: 0,
+    };
+    for edit in [
+        Edit::AddLayer {
+            param: volume,
+            id: LayerId(1),
+            index: 0,
+            layer: Layer::new(BlendMode::Multiply),
+        },
+        Edit::AddBlock {
+            layer: LayerId(1),
+            id: BlockId(1),
+            block: Block::new(
+                Ticks::from_beats(1),
+                Ticks::from_beats(2),
+                Shape::constant(0.0),
+            ),
+        },
+    ] {
+        engine.apply(Command::Edit(edit)).unwrap();
+    }
+    let out = render(&mut engine, &mut processor, 30_000, &[512]);
+    let loud = |range: std::ops::Range<usize>| {
+        out.samples[range.start * 2..range.end * 2]
+            .iter()
+            .any(|&s| s.abs() > 1e-3)
+    };
+    // Beat 1's sound comes out at frame 25 000: the cut lands there, not
+    // 1 000 frames early.
+    assert!(
+        loud(24_100..24_900),
+        "still sounding until its sound is due"
+    );
+    assert!(!loud(25_100..30_000), "cut from beat 1's sound on");
+    // The playhead shows what is heard.
+    let heard = (30_000.0 - 1_000.0) / 24_000.0;
+    assert!((engine.position_beats() - heard).abs() < 1e-9);
+}

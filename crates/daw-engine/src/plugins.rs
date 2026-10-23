@@ -46,6 +46,8 @@ pub(crate) struct Plugins {
     /// Parameter lists shown for plugins that are not running, for front
     /// ends' tests (which run no host).
     shown_params: BTreeMap<DeviceId, Arc<Vec<PluginParamInfo>>>,
+    /// How late each running plugin's sound comes out, in frames.
+    latencies: BTreeMap<DeviceId, u32>,
     /// Plugin windows open, or why one couldn't open (absent: closed).
     windows: BTreeMap<DeviceId, PluginWindow>,
     /// Windows asked for and not answered yet, by call.
@@ -71,6 +73,8 @@ struct Instance {
     stats: Arc<BlockStats>,
     /// Its automatable parameters, asked once it starts.
     params: Arc<Vec<PluginParamInfo>>,
+    /// How late its sound comes out, in frames.
+    latency: u32,
 }
 
 impl Plugins {
@@ -152,11 +156,13 @@ impl Plugins {
         let block = host
             .activate(id, LAYOUT, f64::from(sample_rate))
             .map_err(|e| e.to_string())?;
+        let latency = host.latency(id).unwrap_or(0);
         let instance = Instance {
             id,
             spec: spec.clone(),
             stats: block.stats(),
             params: Arc::new(params),
+            latency,
         };
         Ok((instance, Box::new(block)))
     }
@@ -255,6 +261,7 @@ impl Plugins {
             for (id, instance) in &mut self.running {
                 if let Ok(block) = host.activate(instance.id, LAYOUT, f64::from(sample_rate)) {
                     instance.stats = block.stats();
+                    instance.latency = host.latency(instance.id).unwrap_or(instance.latency);
                     outbox.push_back(AudioMsg::AttachPlugin {
                         effect: *id,
                         block: Box::new(block),
@@ -392,6 +399,26 @@ impl Plugins {
             self.windows.remove(&effect);
         }
         (edits, changed)
+    }
+
+    /// How late a plugin's sound comes out, in frames: 0 unless it runs
+    /// (one that can't run is silent).
+    pub(crate) fn latency(&self, device: DeviceId) -> u32 {
+        self.running.get(&device).map_or(0, |i| i.latency)
+    }
+
+    /// Whether any plugin's latency changed since last asked (one started,
+    /// ended or was reactivated).
+    pub(crate) fn take_latency_changed(&mut self) -> bool {
+        let now: BTreeMap<DeviceId, u32> = self
+            .running
+            .iter()
+            .filter(|(_, i)| i.latency > 0)
+            .map(|(id, i)| (*id, i.latency))
+            .collect();
+        let changed = now != self.latencies;
+        self.latencies = now;
+        changed
     }
 
     /// A running plugin's automatable parameters; none for anything else.

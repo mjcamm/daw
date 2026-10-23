@@ -173,6 +173,10 @@ impl Host {
                     Instance {
                         state: handle,
                         test_params,
+                        test: match &device {
+                            PluginSpec::Test(test) => Some(*test),
+                            PluginSpec::Vst3 { .. } => None,
+                        },
                         #[cfg(windows)]
                         editor: None,
                         position: None,
@@ -262,6 +266,17 @@ impl Host {
                     .ok_or_else(|| format!("no instance {instance}"))?;
                 entry.open_editor(&title, at)
             }
+            Request::GetLatency { instance } => {
+                let entry = self
+                    .instances
+                    .get(&instance)
+                    .ok_or_else(|| format!("no instance {instance}"))?;
+                Ok(Reply::Latency(match (&entry.state, &entry.test) {
+                    (Some(state), _) => state.latency(),
+                    (None, Some(TestPlugin::Delay { frames })) => *frames,
+                    _ => 0,
+                }))
+            }
             Request::SetEditorTitle { instance, title } => {
                 #[cfg(windows)]
                 if let Some(editor) = self
@@ -339,6 +354,8 @@ struct Instance {
     state: Option<Vst3State>,
     /// A built-in test device's parameters.
     test_params: Vec<PluginParamInfo>,
+    /// Which built-in test device, if it is one.
+    test: Option<TestPlugin>,
     /// The plugin's window, while open.
     #[cfg(windows)]
     editor: Option<Editor>,
@@ -462,10 +479,25 @@ impl Processor {
 /// The built-in test devices.
 #[derive(Debug)]
 enum TestProcessor {
-    Gain { gain: f32 },
-    CrashAt { at: u64, blocks: u64 },
-    HangAt { at: u64, blocks: u64 },
-    Slow { millis: u64 },
+    Gain {
+        gain: f32,
+    },
+    CrashAt {
+        at: u64,
+        blocks: u64,
+    },
+    HangAt {
+        at: u64,
+        blocks: u64,
+    },
+    Slow {
+        millis: u64,
+    },
+    /// A ring of `frames` per channel (made on the main thread).
+    Delay {
+        lines: Vec<Vec<f32>>,
+        at: usize,
+    },
 }
 
 impl TestProcessor {
@@ -475,6 +507,10 @@ impl TestProcessor {
             TestPlugin::CrashAt(at) => Self::CrashAt { at, blocks: 0 },
             TestPlugin::HangAt(at) => Self::HangAt { at, blocks: 0 },
             TestPlugin::Slow { millis } => Self::Slow { millis },
+            TestPlugin::Delay { frames } => Self::Delay {
+                lines: vec![vec![0.; frames as usize]; crate::block::MAX_CHANNELS],
+                at: 0,
+            },
         }
     }
 
@@ -483,6 +519,31 @@ impl TestProcessor {
         reason = "test devices stand in for slow and hung plugins"
     )]
     fn process(&mut self, block: &mut HostBlock<'_>) {
+        if let Self::Delay { lines, at } = self {
+            let len = lines[0].len();
+            let start = *at;
+            for (ch, line) in lines.iter_mut().enumerate().take(block.outputs()) {
+                let mut pos = start;
+                for i in 0..block.frames() {
+                    let input = if ch < block.inputs() {
+                        block.input(ch)[i]
+                    } else {
+                        0.
+                    };
+                    if len == 0 {
+                        block.output(ch)[i] = input;
+                        continue;
+                    }
+                    block.output(ch)[i] = line[pos];
+                    line[pos] = input;
+                    pos = (pos + 1) % len;
+                }
+            }
+            if len > 0 {
+                *at = (start + block.frames()) % len;
+            }
+            return;
+        }
         let gain = match self {
             Self::Gain { gain } => {
                 if let Some(last) = block.params().iter().rev().find(|p| p.id == 0) {
@@ -510,6 +571,7 @@ impl TestProcessor {
                 std::thread::sleep(std::time::Duration::from_millis(*millis));
                 1.
             }
+            Self::Delay { .. } => 1.,
         };
         for ch in 0..block.outputs() {
             if ch < block.inputs() {

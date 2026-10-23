@@ -13,6 +13,7 @@
 
 mod audio;
 mod clips;
+pub mod compensation;
 pub mod devices;
 mod file;
 mod history;
@@ -55,7 +56,7 @@ use std::sync::Arc;
 /// delays delivery until the next [`Engine::maintain`].
 const QUEUE_CAPACITY: usize = 1024;
 /// Room for every plugin channel there can be, so returning one never fails.
-const RETIRED_CAPACITY: usize = MAX_NODES * MAX_EFFECTS;
+const RETIRED_CAPACITY: usize = MAX_NODES * (MAX_EFFECTS + MAX_INSTRUMENTS + 2);
 
 /// Shortest allowed loop: a 64th note.
 pub const MIN_LOOP_LENGTH: Ticks = Ticks(TICKS_PER_BEAT / 16);
@@ -110,7 +111,9 @@ pub struct Engine {
     /// Plugin effects' instances, in host processes.
     plugins: plugins::Plugins,
     /// Plugin channels the audio side let go of, to free here.
-    retired: rtrb::Consumer<Box<daw_plugins::block::DawBlock>>,
+    retired: rtrb::Consumer<audio::Leftover>,
+    /// The room each node's delay lines have on the audio side.
+    delay_rooms: BTreeMap<NodeId, usize>,
     /// The plugin effect learning: the next parameter moved in its window
     /// joins the song.
     learning: Option<DeviceId>,
@@ -179,6 +182,7 @@ impl Engine {
             retired,
             learning: None,
             turning: BTreeMap::new(),
+            delay_rooms: BTreeMap::new(),
         };
         (engine, processor)
     }
@@ -221,9 +225,7 @@ impl Engine {
         while let Ok(retired) = self.garbage.pop() {
             drop(retired);
         }
-        while let Ok(block) = self.retired.pop() {
-            self.plugins.retired(block);
-        }
+        self.free_retired();
         self.retired = retired;
         self.to_audio = to_audio;
         self.garbage = garbage;
@@ -238,6 +240,10 @@ impl Engine {
         }
         self.plugins
             .reactivate(&self.project, config.sample_rate, &mut self.outbox);
+        // The new processor has no delay lines yet, and latencies may differ
+        // at the new rate.
+        self.delay_rooms.clear();
+        self.publish_state();
         self.revision += 1;
         self.maintain();
         processor
@@ -505,9 +511,7 @@ impl Engine {
         while let Ok(retired) = self.garbage.pop() {
             drop(retired);
         }
-        while let Ok(block) = self.retired.pop() {
-            self.plugins.retired(block);
-        }
+        self.free_retired();
         self.window_edits();
         while let Some(msg) = self.outbox.pop_front() {
             if let Err(rtrb::PushError::Full(msg)) = self.to_audio.push(msg) {
@@ -748,16 +752,57 @@ impl Engine {
         self.samples.refresh(&self.project.samples);
         self.samples
             .convert_clips(&self.project, self.config.sample_rate);
-        let state = Box::new(RenderState::compile_with(
-            &self.project,
-            &self.samples,
-            self.config.sample_rate,
-        ));
-        self.outbox.push_back(AudioMsg::SwapState(state));
+        self.push_state();
         // After the state: its plugin effects exist when their channels
         // arrive.
         self.plugins
             .sync(&self.project, self.config.sample_rate, &mut self.outbox);
+        // Plugins that just started may delay their sound: line the song up
+        // for them (after their channels, which keep their places).
+        if self.plugins.take_latency_changed() {
+            self.push_state();
+        }
+    }
+
+    /// Compiles the song, lined up for the plugins' latencies, and sends
+    /// it, with bigger delay lines for nodes that need them.
+    fn push_state(&mut self) {
+        let plugins = &self.plugins;
+        let state = Box::new(RenderState::compile_with_latency(
+            &self.project,
+            &self.samples,
+            self.config.sample_rate,
+            &|device| plugins.latency(device),
+        ));
+        let nodes: std::collections::BTreeSet<NodeId> = state.nodes.iter().map(|n| n.id).collect();
+        self.delay_rooms.retain(|node, _| nodes.contains(node));
+        let mut grow = Vec::new();
+        for node in state.nodes.iter().filter(|n| n.comp.delays()) {
+            let longest = node.comp.longest();
+            let room = audio::Delays::room_for(longest);
+            if self.delay_rooms.get(&node.id).is_none_or(|&had| had < room) {
+                self.delay_rooms.insert(node.id, room);
+                grow.push((node.id, longest));
+            }
+        }
+        self.outbox.push_back(AudioMsg::SwapState(state));
+        // After the state, so their nodes have players.
+        for (node, longest) in grow {
+            self.outbox.push_back(AudioMsg::SetDelays {
+                node,
+                delays: Box::new(audio::Delays::new(longest)),
+            });
+        }
+    }
+
+    /// Frees what the audio side let go of.
+    fn free_retired(&mut self) {
+        while let Ok(left) = self.retired.pop() {
+            match left {
+                audio::Leftover::Block(block) => self.plugins.retired(block),
+                audio::Leftover::Delays(delays) => drop(delays),
+            }
+        }
     }
 }
 

@@ -274,6 +274,15 @@ impl HostProcess {
         }
     }
 
+    /// How late the instance's sound comes out, in frames (after
+    /// activating).
+    pub fn latency(&mut self, instance: u64) -> Result<u32, HostError> {
+        match self.call(Request::GetLatency { instance })? {
+            Reply::Latency(frames) => Ok(frames),
+            _ => Ok(0),
+        }
+    }
+
     pub fn deactivate(&mut self, instance: u64) -> Result<(), HostError> {
         self.call(Request::Deactivate { instance }).map(drop)
     }

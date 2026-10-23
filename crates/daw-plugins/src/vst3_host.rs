@@ -819,6 +819,7 @@ impl Vst3Instance {
         let mirror = Arc::new(ParamMirror::new());
         let state = Vst3State {
             component: component.clone(),
+            processor: processor.clone(),
             controller: controller.clone(),
             _handler: handler,
             touching,
@@ -1077,6 +1078,7 @@ impl Vst3Instance {
 /// the audio thread, as the API intends.
 pub struct Vst3State {
     component: ComPtr<IComponent>,
+    processor: ComPtr<IAudioProcessor>,
     controller: Option<ComPtr<IEditController>>,
     _handler: ComWrapper<ComponentHandler>,
     touching: Rc<RefCell<HashSet<ParamID>>>,
@@ -1094,6 +1096,11 @@ impl std::fmt::Debug for Vst3State {
 impl Vst3State {
     pub fn controller(&self) -> Option<&ComPtr<IEditController>> {
         self.controller.as_ref()
+    }
+
+    /// How late the plugin's sound comes out, in frames (once active).
+    pub fn latency(&self) -> u32 {
+        unsafe { self.processor.getLatencySamples() }
     }
 
     /// Shows the song's latest values in the plugin's window (and keeps

@@ -131,9 +131,9 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 - Folders: the standard ones per platform (Windows: `%LOCALAPPDATA%\Programs\Common\VST3`, `C:\Program Files\Common Files\VST3`), searched recursively; extra folders can be added in Preferences.
 - When: in the background at startup, and a Rescan button in Preferences. Plugins that failed to scan are listed with the reason and can be retried.
 
-## Delay compensation (needed with plugins)
+## Delay compensation
 
-Many plugins report latency (`getLatencySamples`). The engine has none yet, and the tree makes it matter: a parent sums children whose chains have different latencies. Plan: each node's latency is its chain's sum plus the most-delayed child; shorter children are delayed to match at each sum; the transport runs ahead by the song's total latency so audio still lines up with the playhead, and signals and automation are read at the compensated time. Its own design note when built.
+*Built (2026-10-23): `delay-compensation.md` has the rule and how it runs.* Each plugin's latency is asked after activation (`Request::GetLatency`, control protocol 6); nodes line up at every sum, automation follows the sound, the playhead shows what is heard, and renders to a file start the latency in.
 
 ## Testing
 
@@ -149,7 +149,7 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 3. **Effects:** load, buses, process (**built**: `vst3_host.rs`, `PluginSpec::Vst3`; tested with the test plugin alone and in a song, and with seven installed commercial effects), state and the modal browser (**built**), parameters picked from a list and moved by layers (**built**).
 4. **Instruments:** note events (**built**, 2026-10-23); multiple outputs later.
 5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn (**built**, done before step 4 at the user's call).
-6. **Delay compensation.**
+6. **Delay compensation** (**built**, `delay-compensation.md`).
 7. `restartComponent` handling, bypass, presets, diagnostics.
 
 ## Still to decide

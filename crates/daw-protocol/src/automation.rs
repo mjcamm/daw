@@ -288,6 +288,8 @@ pub enum TestPlugin {
     HangAt(u64),
     /// Passes sound, taking this long over every block.
     Slow { millis: u64 },
+    /// Passes sound `frames` late, and says so (its latency).
+    Delay { frames: u32 },
 }
 
 /// An effect and the state of its parameters.
