@@ -6,8 +6,9 @@
 //! says it can, the user may too (its size limits come from
 //! `checkSizeConstraint`). Content scale follows the screen. The windows
 //! are never linked to the DAW's (that would freeze the DAW while a plugin
-//! hangs): instead they float above everything while the DAW is the active
-//! app, and drop back when another app is.
+//! hangs): instead they lift themselves above the DAW's main window when it
+//! comes forward ([`stacking`]). The window reports where the user moved it,
+//! so the song can reopen it there.
 
 #![cfg(windows)]
 #![allow(
@@ -31,14 +32,14 @@ use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetWindowLongPtrW, GetWindowLongW, GetWindowRect,
-    GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, LoadCursorW, RegisterClassW,
-    SIZE_MINIMIZED, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE,
-    WM_DPICHANGED, WM_SIZE, WM_SIZING, WMSZ_BOTTOMLEFT, WMSZ_LEFT, WMSZ_TOP, WMSZ_TOPLEFT,
-    WMSZ_TOPRIGHT, WNDCLASSW, WS_CAPTION, WS_EX_TOOLWINDOW, WS_SYSMENU, WS_THICKFRAME,
+    EVENT_SYSTEM_FOREGROUND, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GWLP_USERDATA, GetClientRect,
+    GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowLongW, GetWindowRect,
+    GetWindowThreadProcessId, HWND_TOP, IDC_ARROW, LoadCursorW, RegisterClassW, SIZE_MINIMIZED,
+    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_DPICHANGED, WM_EXITSIZEMOVE,
+    WM_SIZE, WM_SIZING, WMSZ_BOTTOMLEFT, WMSZ_LEFT, WMSZ_TOP, WMSZ_TOPLEFT, WMSZ_TOPRIGHT,
+    WNDCLASSW, WS_CAPTION, WS_EX_TOOLWINDOW, WS_SYSMENU, WS_THICKFRAME,
 };
 
 const CLASS: &str = "DawPluginWindow";
@@ -56,6 +57,8 @@ struct Shared {
     closed: Cell<bool>,
     /// Inside a resize the plugin asked for: it already knows its size.
     plugin_resizing: Cell<bool>,
+    /// Placed or moved since the host last reported where it is.
+    moved: Cell<bool>,
 }
 
 impl Shared {
@@ -131,6 +134,8 @@ impl Editor {
             resizable,
             closed: Cell::new(false),
             plugin_resizing: Cell::new(false),
+            // Where it first lands is worth remembering too.
+            moved: Cell::new(true),
         });
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::as_ptr(&shared) as isize) };
         let frame = ComWrapper::new(PlugFrame {
@@ -165,7 +170,7 @@ impl Editor {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
         }
-        topmost::add(hwnd);
+        stacking::add(hwnd);
         Ok(editor)
     }
 
@@ -193,19 +198,28 @@ impl Editor {
 
     /// Brings it in front, and renames it.
     pub fn raise(&self, title: &str) {
+        self.set_title(title);
         let hwnd = self.shared.hwnd.get();
         unsafe {
-            SetWindowTextW(hwnd, wide(title).as_ptr());
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
         }
+    }
+
+    pub fn set_title(&self, title: &str) {
+        unsafe { SetWindowTextW(self.shared.hwnd.get(), wide(title).as_ptr()) };
+    }
+
+    /// Whether it was placed or moved since last asked.
+    pub fn take_moved(&self) -> bool {
+        self.shared.moved.replace(false)
     }
 }
 
 impl Drop for Editor {
     fn drop(&mut self) {
         let hwnd = self.shared.hwnd.get();
-        topmost::remove(hwnd);
+        stacking::remove(hwnd);
         if let Some(view) = self.shared.view.borrow_mut().take() {
             unsafe {
                 view.removed();
@@ -362,6 +376,11 @@ unsafe extern "system" fn window_proc(
         return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     };
     match message {
+        // The user let go after moving it.
+        WM_EXITSIZEMOVE => {
+            shared.moved.set(true);
+            0
+        }
         WM_CLOSE => {
             // Taken down by the host after this round of messages, so
             // nothing is freed while the plugin may still be on the stack.
@@ -421,6 +440,7 @@ unsafe extern "system" fn window_proc(
         // Moved to a screen with another scale: the plugin rescales, and
         // the window takes the size Windows suggests.
         WM_DPICHANGED => {
+            shared.moved.set(true);
             if let Some(view) = shared.view() {
                 set_content_scale(&view, words(wparam).1 as f32 / 96.0);
             }
@@ -443,11 +463,13 @@ unsafe extern "system" fn window_proc(
     }
 }
 
-/// Plugin windows float above everything while the DAW is the active app
-/// (or one of them is), and drop back behind the app that takes over.
-/// Told by the system when the active window changes; never touches the
-/// DAW's windows.
-pub mod topmost {
+/// Plugin windows stay above the DAW's main window: when one of the DAW's
+/// own unowned windows comes forward (the user clicked the DAW), they are
+/// lifted just above it, without taking focus. The DAW's dialogs (a file
+/// picker, owned by its window) stay above them, and other apps cover them
+/// as they would any window. Told by the system when the active window
+/// changes; never touches the DAW's windows.
+pub mod stacking {
     use super::*;
 
     thread_local! {
@@ -477,27 +499,16 @@ pub mod topmost {
 
     pub(super) fn add(hwnd: HWND) {
         WINDOWS.with_borrow_mut(|w| w.push(hwnd));
-        // The DAW asked for it, so the DAW (or this window) is in front.
-        float(hwnd, None);
     }
 
     pub(super) fn remove(hwnd: HWND) {
         WINDOWS.with_borrow_mut(|w| w.retain(|&h| h != hwnd));
     }
 
-    /// Above everything (`behind: None`), or just behind another app's
-    /// window.
-    fn float(hwnd: HWND, behind: Option<HWND>) {
-        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
-        unsafe {
-            match behind {
-                None => SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags),
-                Some(front) => {
-                    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
-                    SetWindowPos(hwnd, front, 0, 0, 0, 0, flags)
-                }
-            }
-        };
+    /// Whether plugin windows go above a window that came forward: one of
+    /// the DAW's own, not owned by another (a dialog).
+    pub(crate) fn lift_above(front_pid: u32, front_owned: bool, daw_pid: u32) -> bool {
+        front_pid == daw_pid && !front_owned
     }
 
     unsafe extern "system" fn on_foreground(
@@ -516,10 +527,36 @@ pub mod topmost {
         };
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(front, &mut pid) };
-        let daw = pid == DAW.get();
+        let owned = !unsafe { GetWindow(front, GW_OWNER) }.is_null();
+        if !lift_above(pid, owned, DAW.get()) {
+            return;
+        }
+        // The most recently opened ends up on top.
         let windows = WINDOWS.with_borrow(Vec::clone);
         for hwnd in windows {
-            float(hwnd, (!daw).then_some(front));
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+            };
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::lift_above;
+
+        #[test]
+        fn plugin_windows_go_above_the_daws_main_window_only() {
+            assert!(lift_above(10, false, 10), "the DAW's main window");
+            assert!(!lift_above(10, true, 10), "a DAW dialog stays on top");
+            assert!(!lift_above(11, false, 10), "another app covers them");
         }
     }
 }

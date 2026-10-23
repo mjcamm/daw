@@ -287,19 +287,9 @@ impl Engine {
             }
             Command::TestTone => self.outbox.push_back(AudioMsg::TestTone),
             Command::OpenPluginWindow { effect } => {
-                let node = self
-                    .project
-                    .effect_node(effect)
-                    .and_then(|n| self.project.node(n))
-                    .ok_or(CommandError::UnknownDevice { id: effect })?;
-                let (_, plugin) = node
-                    .effect(effect)
-                    .ok_or(CommandError::UnknownDevice { id: effect })?;
-                let spec = plugin
-                    .plugin
-                    .as_ref()
+                let title = self
+                    .window_title(effect)
                     .ok_or(CommandError::NotAPlugin { id: effect })?;
-                let title = format!("{} — {}", spec.name(), node.name);
                 self.plugins.open_window(effect, &title);
             }
             Command::LearnPluginParam { effect } => {
@@ -346,6 +336,12 @@ impl Engine {
                 self.history.redo(&mut self.project)?;
                 self.publish_state();
                 self.content_revision += 1;
+            }
+        }
+        // A renamed node renames its plugins' windows.
+        for effect in self.plugins.open_windows() {
+            if let Some(title) = self.window_title(effect) {
+                self.plugins.retitle(effect, &title);
             }
         }
         self.revision += 1;
@@ -585,6 +581,13 @@ impl Engine {
         }
     }
 
+    /// A plugin effect's window title: the plugin, then its node.
+    fn window_title(&self, effect: DeviceId) -> Option<String> {
+        let node = self.project.node(self.project.effect_node(effect)?)?;
+        let spec = node.effect(effect)?.1.plugin.as_ref()?;
+        Some(format!("{} — {}", spec.name(), node.name))
+    }
+
     /// A plugin parameter as the song names it, if its effect exists.
     fn plugin_param(&self, effect: DeviceId, id: u32) -> Option<ParamId> {
         Some(ParamId {
@@ -674,6 +677,7 @@ impl Engine {
         let mut file = ProjectFile::new(&self.project, self.loop_range);
         file.loop_enabled = self.loop_enabled;
         file.set_plugin_states(&self.plugins.states(&self.project));
+        file.set_window_places(&self.plugins.places(&self.project));
         file
     }
 
@@ -683,10 +687,11 @@ impl Engine {
     pub fn load(&mut self, file: ProjectFile) -> Result<(), LoadError> {
         let loop_enabled = file.loop_enabled;
         let states = file.plugin_states();
+        let places = file.window_places();
         let (project, loop_range) = file.into_project()?;
         self.project = project;
         // Before the new state, so the old song's plugins go quiet first.
-        self.plugins.replace_song(states, &mut self.outbox);
+        self.plugins.replace_song(states, places, &mut self.outbox);
         self.history = History::default();
         self.playing = false;
         self.outbox.push_back(AudioMsg::SetPlaying(false));

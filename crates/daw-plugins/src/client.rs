@@ -205,8 +205,13 @@ impl HostProcess {
 
     /// Opens the plugin's window (or brings it to the front) and waits:
     /// its content size in pixels.
-    pub fn open_editor(&mut self, instance: u64, title: &str) -> Result<(u32, u32), HostError> {
-        let call = self.start_open_editor(instance, title)?;
+    pub fn open_editor(
+        &mut self,
+        instance: u64,
+        title: &str,
+        at: Option<(i32, i32)>,
+    ) -> Result<(u32, u32), HostError> {
+        let call = self.start_open_editor(instance, title, at)?;
         match self.wait_for(call)? {
             Reply::Editor { width, height } => Ok((width, height)),
             other => Err(HostError::Protocol(format!("{other:?}"))),
@@ -216,14 +221,29 @@ impl HostProcess {
     /// Asks for the plugin's window without waiting (some take a second or
     /// two to open): the reply comes from [`HostProcess::take_replies`]
     /// under the returned call id.
-    pub fn start_open_editor(&mut self, instance: u64, title: &str) -> Result<u64, HostError> {
+    pub fn start_open_editor(
+        &mut self,
+        instance: u64,
+        title: &str,
+        at: Option<(i32, i32)>,
+    ) -> Result<u64, HostError> {
         // The DAW is in front (the user just asked): let the host's window
         // come in front of it.
         crate::sys::allow_foreground(self.pid);
         self.start_call(Request::OpenEditor {
             instance,
             title: title.to_owned(),
+            at,
         })
+    }
+
+    /// Renames the plugin's window, if open, without waiting.
+    pub fn retitle_editor(&mut self, instance: u64, title: &str) -> Result<(), HostError> {
+        self.start_call(Request::SetEditorTitle {
+            instance,
+            title: title.to_owned(),
+        })
+        .map(drop)
     }
 
     /// Replies to calls started without waiting. Never blocks.

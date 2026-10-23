@@ -98,7 +98,7 @@ fn installed_effects_process_audio_in_a_host_process() {
         let load = started.elapsed();
         // Its window opens (briefly, on screen) and closes.
         let opened = Instant::now();
-        match host.open_editor(id, &format!("{name} — test")) {
+        match host.open_editor(id, &format!("{name} — test"), None) {
             Ok((w, h)) => println!(
                 "{name}: window {w} x {h}, opened in {:.0} ms",
                 opened.elapsed().as_secs_f64() * 1000.

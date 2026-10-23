@@ -49,6 +49,10 @@ pub(crate) struct Plugins {
     windows: BTreeMap<DeviceId, PluginWindow>,
     /// Windows asked for and not answered yet, by call.
     opening: BTreeMap<u64, DeviceId>,
+    /// Where each plugin effect's window was last, saved with the song.
+    places: BTreeMap<DeviceId, (i32, i32)>,
+    /// The title each window was given.
+    titles: BTreeMap<DeviceId, String>,
 }
 
 /// Something the user did in a plugin's window.
@@ -193,8 +197,12 @@ impl Plugins {
     pub(crate) fn replace_song(
         &mut self,
         states: BTreeMap<DeviceId, PluginData>,
+        places: BTreeMap<DeviceId, (i32, i32)>,
         outbox: &mut VecDeque<AudioMsg>,
     ) {
+        self.places = places;
+        self.titles.clear();
+        self.opening.clear();
         for (effect, instance) in std::mem::take(&mut self.running) {
             outbox.push_back(AudioMsg::DetachPlugin(effect));
             self.ending.insert(instance.id);
@@ -264,8 +272,11 @@ impl Plugins {
         let started = match self.running.get(&effect) {
             Some(instance) => {
                 let id = instance.id;
-                self.host()
-                    .and_then(|host| host.start_open_editor(id, title).map_err(|e| e.to_string()))
+                let at = self.places.get(&effect).copied();
+                self.host().and_then(|host| {
+                    host.start_open_editor(id, title, at)
+                        .map_err(|e| e.to_string())
+                })
             }
             None => Err(self
                 .failed
@@ -276,11 +287,52 @@ impl Plugins {
         match started {
             Ok(call) => {
                 self.opening.insert(call, effect);
+                self.titles.insert(effect, title.to_owned());
             }
             Err(why) => {
                 self.windows.insert(effect, PluginWindow::Failed(why));
             }
         }
+    }
+
+    /// Renames a plugin effect's window if it is open and its title
+    /// changed (its node was renamed).
+    pub(crate) fn retitle(&mut self, effect: DeviceId, title: &str) {
+        let open = matches!(self.windows.get(&effect), Some(PluginWindow::Open))
+            || self.opening.values().any(|e| *e == effect);
+        if !open || self.titles.get(&effect).is_some_and(|t| t == title) {
+            return;
+        }
+        if let Some(instance) = self.running.get(&effect).map(|i| i.id)
+            && let Some(host) = self.host.as_mut().filter(|h| h.is_alive())
+            && host.retitle_editor(instance, title).is_ok()
+        {
+            self.titles.insert(effect, title.to_owned());
+        }
+    }
+
+    /// Plugin effects whose windows are open or opening.
+    pub(crate) fn open_windows(&self) -> Vec<DeviceId> {
+        let mut open: Vec<DeviceId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| matches!(w, PluginWindow::Open))
+            .map(|(e, _)| *e)
+            .chain(self.opening.values().copied())
+            .collect();
+        open.sort();
+        open.dedup();
+        open
+    }
+
+    /// Where the project's plugin windows were last, to save with it.
+    pub(crate) fn places(&self, project: &Project) -> BTreeMap<DeviceId, (i32, i32)> {
+        let wanted = plugin_effects(project);
+        self.places
+            .iter()
+            .filter(|(id, _)| wanted.contains_key(id))
+            .map(|(id, at)| (*id, *at))
+            .collect()
     }
 
     pub(crate) fn window(&self, effect: DeviceId) -> PluginWindow {
@@ -327,6 +379,11 @@ impl Plugins {
                     edits.extend(effect_of(instance).map(|e| (e, WindowEdit::End(id))));
                 }
                 HostEvent::EditorClosed { instance } => closed.extend(effect_of(instance)),
+                HostEvent::EditorMoved { instance, at } => {
+                    if let Some(effect) = effect_of(instance) {
+                        self.places.insert(effect, at);
+                    }
+                }
             }
         }
         changed |= !closed.is_empty();

@@ -316,6 +316,24 @@ fn learn_and_knob_turns_in_a_plugins_window_change_the_song() {
     assert_eq!(found.len(), 1, "titled with the plugin, then its node");
     let view = view_of(found[0].0);
 
+    // Renaming its node renames the window.
+    engine
+        .apply(Command::Edit(Edit::RenameNode {
+            node: FIRST_NODE,
+            name: "Lead".into(),
+        }))
+        .unwrap();
+    wait_for("the new title", || {
+        plugin_windows()
+            .iter()
+            .any(|(_, t)| t == "Test Gain — Lead")
+    });
+    // Where it is goes into the song, to reopen it there.
+    wait_for("its place", || {
+        engine.maintain();
+        engine.to_file().window_places().contains_key(&EFFECT)
+    });
+
     // Learn: the first knob turned (a gesture) joins the song with a layer.
     engine
         .apply(Command::LearnPluginParam {

@@ -117,6 +117,10 @@ pub struct EffectFile {
     /// A plugin effect's state, if it has any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<PluginData>,
+    /// Where a plugin effect's window was last (its top-left corner on
+    /// screen), to open it there again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -200,6 +204,7 @@ fn node_file(id: NodeId, node: &Node) -> NodeFile {
                 id: *id,
                 effect: effect.clone(),
                 state: None,
+                window: None,
             })
             .collect(),
         channel: node.channel.clone(),
@@ -329,6 +334,36 @@ impl ProjectFile {
         let mut states = BTreeMap::new();
         walk(&self.root, &mut states);
         states
+    }
+
+    /// Sets where each plugin effect's window was last.
+    pub fn set_window_places(&mut self, places: &BTreeMap<DeviceId, (i32, i32)>) {
+        fn walk(node: &mut NodeFile, places: &BTreeMap<DeviceId, (i32, i32)>) {
+            for effect in &mut node.effects {
+                effect.window = places.get(&effect.id).copied();
+            }
+            for child in &mut node.children {
+                walk(child, places);
+            }
+        }
+        walk(&mut self.root, places);
+    }
+
+    /// Where plugin effects' windows were last, by effect.
+    pub fn window_places(&self) -> BTreeMap<DeviceId, (i32, i32)> {
+        fn walk(node: &NodeFile, places: &mut BTreeMap<DeviceId, (i32, i32)>) {
+            for effect in &node.effects {
+                if let Some(at) = effect.window {
+                    places.insert(effect.id, at);
+                }
+            }
+            for child in &node.children {
+                walk(child, places);
+            }
+        }
+        let mut places = BTreeMap::new();
+        walk(&self.root, &mut places);
+        places
     }
 
     pub fn to_json(&self) -> String {
@@ -756,6 +791,18 @@ mod tests {
             ProjectFile::new(&rich_project(), None)
                 .plugin_states()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn plugin_window_places_are_saved_with_their_effects() {
+        let mut file = ProjectFile::new(&rich_project(), None);
+        let places = BTreeMap::from([(DeviceId(30), (120, -40)), (DeviceId(12), (5, 6))]);
+        file.set_window_places(&places);
+        let json = file.to_json();
+        assert_eq!(
+            ProjectFile::from_json(&json).unwrap().window_places(),
+            places
         );
     }
 

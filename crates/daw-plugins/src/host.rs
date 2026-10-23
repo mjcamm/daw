@@ -66,7 +66,7 @@ fn serve(input: impl io::Read + Send + 'static, output: &mut impl Write) -> io::
         },
     )?;
     #[cfg(windows)]
-    crate::editor::topmost::set_daw(daw_pid);
+    crate::editor::stacking::set_daw(daw_pid);
     #[cfg(not(windows))]
     let _ = daw_pid;
 
@@ -130,6 +130,9 @@ impl Host {
     fn round(&mut self) -> Vec<HostEvent> {
         let mut events = std::mem::take(&mut *self.events.borrow_mut());
         for (&id, instance) in &mut self.instances {
+            if let Some(at) = instance.moved_to() {
+                events.push(HostEvent::EditorMoved { instance: id, at });
+            }
             if instance.close_if_closed() {
                 events.push(HostEvent::EditorClosed { instance: id });
             }
@@ -248,12 +251,29 @@ impl Host {
                 });
                 Ok(Reply::Done)
             }
-            Request::OpenEditor { instance, title } => {
+            Request::OpenEditor {
+                instance,
+                title,
+                at,
+            } => {
                 let entry = self
                     .instances
                     .get_mut(&instance)
                     .ok_or_else(|| format!("no instance {instance}"))?;
-                entry.open_editor(&title)
+                entry.open_editor(&title, at)
+            }
+            Request::SetEditorTitle { instance, title } => {
+                #[cfg(windows)]
+                if let Some(editor) = self
+                    .instances
+                    .get(&instance)
+                    .and_then(|i| i.editor.as_ref())
+                {
+                    editor.set_title(&title);
+                }
+                #[cfg(not(windows))]
+                let _ = (instance, title);
+                Ok(Reply::Done)
             }
             Request::CloseEditor { instance } => {
                 let entry = self
@@ -338,7 +358,7 @@ struct Running {
 
 impl Instance {
     /// Opens the plugin's window, or brings it to the front.
-    fn open_editor(&mut self, title: &str) -> Result<Reply, String> {
+    fn open_editor(&mut self, title: &str, at: Option<(i32, i32)>) -> Result<Reply, String> {
         #[cfg(windows)]
         {
             if let Some(editor) = &self.editor {
@@ -349,14 +369,14 @@ impl Instance {
                     .as_ref()
                     .and_then(Vst3State::controller)
                     .ok_or("this plugin has no window")?;
-                self.editor = Some(Editor::open(controller, title, self.position)?);
+                self.editor = Some(Editor::open(controller, title, at.or(self.position))?);
             }
             let (width, height) = self.editor.as_ref().map_or((0, 0), Editor::size);
             Ok(Reply::Editor { width, height })
         }
         #[cfg(not(windows))]
         {
-            let _ = title;
+            let _ = (title, at);
             Err("plugin windows are Windows-only for now".into())
         }
     }
@@ -366,6 +386,17 @@ impl Instance {
         if let Some(editor) = self.editor.take() {
             self.position = Some(editor.position());
         }
+    }
+
+    /// Where its window went, if it was placed or moved since last asked.
+    fn moved_to(&mut self) -> Option<(i32, i32)> {
+        #[cfg(windows)]
+        if let Some(editor) = self.editor.as_ref().filter(|e| e.take_moved()) {
+            let at = editor.position();
+            self.position = Some(at);
+            return Some(at);
+        }
+        None
     }
 
     /// Takes down a window the user closed; true if there was one.

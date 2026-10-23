@@ -14,8 +14,8 @@ use daw_plugins::client::{HostCommand, HostProcess, next_instance};
 use daw_plugins::control::{HostEvent, PluginSpec};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, WM_CLOSE, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-    WM_RBUTTONDOWN,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, WM_CLOSE, WM_EXITSIZEMOVE, WM_LBUTTONDOWN,
+    WM_MBUTTONDOWN, WM_RBUTTONDOWN,
 };
 
 fn host_command() -> HostCommand {
@@ -46,14 +46,28 @@ fn gain(name: &str) -> (HostProcess, u64, DawBlock) {
     (host, id, block)
 }
 
-/// Collects the host's events until there are `count`.
+/// Collects the host's events, leaving out where windows moved, until
+/// there are `count`.
 fn events(host: &mut HostProcess, count: usize) -> Vec<HostEvent> {
     let mut got = Vec::new();
     wait_for("events", || {
-        got.extend(host.take_events());
+        got.extend(
+            host.take_events()
+                .into_iter()
+                .filter(|e| !matches!(e, HostEvent::EditorMoved { .. })),
+        );
         got.len() >= count
     });
     got
+}
+
+/// Waits until the host reports its window moved to `at`.
+fn moved_to(host: &mut HostProcess, at: (i32, i32)) {
+    wait_for("the window to report its place", || {
+        host.take_events()
+            .iter()
+            .any(|e| matches!(e, HostEvent::EditorMoved { at: got, .. } if *got == at))
+    });
 }
 
 #[test]
@@ -61,7 +75,7 @@ fn a_plugin_window_opens_resizes_closes_and_reopens_where_it_was() {
     let (mut host, id, _block) = gain("editor-window");
     let pid = host.pid();
     assert_eq!(
-        host.open_editor(id, "Test Gain — Drums").unwrap(),
+        host.open_editor(id, "Test Gain — Drums", None).unwrap(),
         (400, 300)
     );
     let windows = windows_of(pid);
@@ -73,7 +87,7 @@ fn a_plugin_window_opens_resizes_closes_and_reopens_where_it_was() {
     assert_eq!(client_size(view), (400, 300));
 
     // Asking again brings the same window forward (and renames it).
-    host.open_editor(id, "Test Gain — Bass").unwrap();
+    host.open_editor(id, "Test Gain — Bass", None).unwrap();
     let windows = windows_of(pid);
     assert_eq!(windows.len(), 1);
     assert_eq!(windows[0].1, "Test Gain — Bass");
@@ -111,7 +125,7 @@ fn a_plugin_window_opens_resizes_closes_and_reopens_where_it_was() {
         [HostEvent::EditorClosed { instance: id }]
     );
     wait_for("the window to go", || windows_of(pid).is_empty());
-    host.open_editor(id, "Test Gain — Bass").unwrap();
+    host.open_editor(id, "Test Gain — Bass", None).unwrap();
     let again = windows_of(pid)[0].0;
     let reopened = window_rect(again);
     assert_eq!((reopened.left, reopened.top), (place.left, place.top));
@@ -123,7 +137,7 @@ fn a_plugin_window_opens_resizes_closes_and_reopens_where_it_was() {
 #[test]
 fn knob_moves_reach_the_daw_and_the_sound_and_the_window_follows_the_song() {
     let (mut host, id, mut block) = gain("editor-knobs");
-    host.open_editor(id, "Test Gain").unwrap();
+    host.open_editor(id, "Test Gain", None).unwrap();
     let view = view_of(windows_of(host.pid())[0].0);
     let mut play = |params: &[ParamChange]| {
         let input = vec![0.5; 64];
@@ -180,5 +194,38 @@ fn knob_moves_reach_the_daw_and_the_sound_and_the_window_follows_the_song() {
     assert_eq!(play(&song), 0.25);
     wait_for("the window to follow", || {
         host.params(id).unwrap()[0].value == 0.25
+    });
+}
+
+#[test]
+fn a_plugin_window_opens_where_the_song_says_reports_moves_and_is_renamed() {
+    let (mut host, id, _block) = gain("editor-place");
+    let pid = host.pid();
+    host.open_editor(id, "Test Gain — Drums", Some((150, 120)))
+        .unwrap();
+    let window = windows_of(pid)[0].0;
+    let rect = window_rect(window);
+    assert_eq!((rect.left, rect.top), (150, 120));
+    moved_to(&mut host, (150, 120));
+
+    // The user drags it (moved, then let go).
+    unsafe {
+        SetWindowPos(
+            window,
+            std::ptr::null_mut(),
+            300,
+            200,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER,
+        );
+    }
+    click(window, WM_EXITSIZEMOVE);
+    moved_to(&mut host, (300, 200));
+
+    // The node was renamed.
+    host.retitle_editor(id, "Test Gain — Kit").unwrap();
+    wait_for("the new title", || {
+        windows_of(pid)[0].1 == "Test Gain — Kit"
     });
 }
