@@ -1,7 +1,7 @@
 //! Compiling the project into the flat, time-sorted form the audio side plays.
 
 use crate::clips::ClipRender;
-use crate::compensation::{Compensation, compensate};
+use crate::compensation::{Compensation, PluginFacts, compensate};
 use crate::project::Project;
 use crate::samples::{SampleData, SamplePool};
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
@@ -78,6 +78,8 @@ pub struct EffectState {
     pub params: Vec<Automation>,
     /// A plugin's parameters in the song, by the plugin's ids.
     pub plugin_params: Vec<(u32, Automation)>,
+    /// A plugin's own bypass parameter, used while it is switched off.
+    pub bypass_param: Option<u32>,
 }
 
 /// A note at an absolute song position, in beats.
@@ -173,6 +175,7 @@ struct Context<'a> {
     samples: &'a SamplePool,
     sample_rate: u32,
     comp: &'a BTreeMap<NodeId, Compensation>,
+    facts: &'a dyn Fn(DeviceId) -> PluginFacts,
 }
 
 /// A node's audio clips ready to play, sorted by start. Clips whose audio
@@ -269,6 +272,11 @@ fn compile_node(
                     .iter()
                     .map(|p| (p.id, Automation::compile_with(&p.state, signals)))
                     .collect(),
+                bypass_param: if effect.kind == EffectKind::Plugin {
+                    (cx.facts)(*id).bypass
+                } else {
+                    None
+                },
             })
             .collect(),
         channel: compile_params(&node.channel, signals),
@@ -289,19 +297,19 @@ impl RenderState {
     /// The project, with samples' audio from `samples`; audio clips play
     /// their samples as converted to `sample_rate`.
     pub fn compile_with(project: &Project, samples: &SamplePool, sample_rate: u32) -> Self {
-        Self::compile_with_latency(project, samples, sample_rate, &|_| 0)
+        Self::compile_with_plugins(project, samples, sample_rate, &|_| PluginFacts::default())
     }
 
-    /// As [`RenderState::compile_with`], lined up for each plugin's
-    /// `latency` in frames (`compensation.rs`).
-    pub fn compile_with_latency(
+    /// As [`RenderState::compile_with`], lined up for the running
+    /// plugins (`compensation.rs`).
+    pub fn compile_with_plugins(
         project: &Project,
         samples: &SamplePool,
         sample_rate: u32,
-        latency: &dyn Fn(DeviceId) -> u32,
+        facts: &dyn Fn(DeviceId) -> PluginFacts,
     ) -> Self {
         let signals = compile_signals(project);
-        let (comp, total) = compensate(project, latency);
+        let (comp, total) = compensate(project, facts);
         let cx = Context {
             any_soloed: project.nodes().iter().any(|e| e.node.soloed),
             signals: &signals,
@@ -309,6 +317,7 @@ impl RenderState {
             samples,
             sample_rate,
             comp: &comp,
+            facts,
         };
         let mut nodes = Vec::new();
         compile_node(NodeId::ROOT, &project.root, false, &cx, &mut nodes);

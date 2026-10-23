@@ -113,7 +113,7 @@ pub struct Engine {
     /// Plugin channels the audio side let go of, to free here.
     retired: rtrb::Consumer<audio::Leftover>,
     /// The room each node's delay lines have on the audio side.
-    delay_rooms: BTreeMap<NodeId, usize>,
+    delay_rooms: BTreeMap<NodeId, audio::Rooms>,
     /// The plugin effect learning: the next parameter moved in its window
     /// joins the song.
     learning: Option<DeviceId>,
@@ -526,8 +526,22 @@ impl Engine {
     /// step per turn); while learning, the first parameter turned joins
     /// the song with a drawn layer.
     fn window_edits(&mut self) {
-        let (edits, closed) = self.plugins.window_edits();
+        let plugins::HostNews {
+            edits,
+            changed: closed,
+            restarts,
+        } = self.plugins.window_edits();
         let mut changed = closed;
+        // Plugins whose latency, buses or parameters changed.
+        for (device, flags) in restarts {
+            changed |=
+                self.plugins
+                    .restart(device, flags, self.config.sample_rate, &mut self.outbox);
+        }
+        if self.plugins.take_facts_changed() {
+            self.push_state();
+            changed = true;
+        }
         let now = std::time::Instant::now();
         for (effect, edit) in edits {
             let (id, value, held) = match edit {
@@ -759,7 +773,7 @@ impl Engine {
             .sync(&self.project, self.config.sample_rate, &mut self.outbox);
         // Plugins that just started may delay their sound: line the song up
         // for them (after their channels, which keep their places).
-        if self.plugins.take_latency_changed() {
+        if self.plugins.take_facts_changed() {
             self.push_state();
         }
     }
@@ -768,29 +782,37 @@ impl Engine {
     /// it, with bigger delay lines for nodes that need them.
     fn push_state(&mut self) {
         let plugins = &self.plugins;
-        let state = Box::new(RenderState::compile_with_latency(
+        let state = Box::new(RenderState::compile_with_plugins(
             &self.project,
             &self.samples,
             self.config.sample_rate,
-            &|device| plugins.latency(device),
+            &|device| plugins.facts(device),
         ));
         let nodes: std::collections::BTreeSet<NodeId> = state.nodes.iter().map(|n| n.id).collect();
         self.delay_rooms.retain(|node, _| nodes.contains(node));
         let mut grow = Vec::new();
         for node in state.nodes.iter().filter(|n| n.comp.delays()) {
-            let longest = node.comp.longest();
-            let room = audio::Delays::room_for(longest);
-            if self.delay_rooms.get(&node.id).is_none_or(|&had| had < room) {
-                self.delay_rooms.insert(node.id, room);
-                grow.push((node.id, longest));
+            let need = audio::Delays::rooms(&node.comp);
+            let had = self.delay_rooms.get(&node.id);
+            let short = had.is_none_or(|had| had.iter().zip(&need).any(|(h, n)| h < n));
+            if short {
+                // Each line keeps at least the room it had.
+                let mut rooms = need;
+                if let Some(had) = had {
+                    for (r, h) in rooms.iter_mut().zip(had) {
+                        *r = (*r).max(*h);
+                    }
+                }
+                self.delay_rooms.insert(node.id, rooms);
+                grow.push((node.id, rooms));
             }
         }
         self.outbox.push_back(AudioMsg::SwapState(state));
         // After the state, so their nodes have players.
-        for (node, longest) in grow {
+        for (node, rooms) in grow {
             self.outbox.push_back(AudioMsg::SetDelays {
                 node,
-                delays: Box::new(audio::Delays::new(longest)),
+                delays: Box::new(audio::Delays::new(&rooms)),
             });
         }
     }

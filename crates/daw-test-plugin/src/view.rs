@@ -1,8 +1,9 @@
 //! "Test Gain"'s window: a plain child window that tests drive with posted
 //! mouse messages. A left click sets Gain to 0.75 as one gesture (begin,
 //! perform, end); a middle click sets Tilt to 0.3 with no gesture (as a
-//! mouse wheel does); a right click asks the host for 600 × 450. It can be
-//! resized between 200 × 150 and 1600 × 1200.
+//! mouse wheel does); a right click asks the host for 600 × 450; any key
+//! changes the plugin (a latency of 64, Tilt renamed) and asks the host to
+//! restart it. It can be resized between 200 × 150 and 1600 × 1200.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
@@ -13,8 +14,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, MoveWindow,
-    RegisterClassW, SetWindowLongPtrW, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN, WNDCLASSW,
-    WS_CHILD, WS_VISIBLE,
+    RegisterClassW, SetWindowLongPtrW, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_RBUTTONDOWN,
+    WNDCLASSW, WS_CHILD, WS_VISIBLE,
 };
 
 use crate::{GAIN, TILT};
@@ -74,6 +75,14 @@ impl View {
         }
     }
 
+    fn change(&self) {
+        crate::change();
+        if let Some(handler) = &self.handler {
+            use RestartFlags_::{kLatencyChanged, kParamTitlesChanged};
+            unsafe { handler.restartComponent((kLatencyChanged | kParamTitlesChanged) as int32) };
+        }
+    }
+
     fn ask_for(&self, width: i32, height: i32) {
         let frame = self.frame.borrow().clone();
         if let Some(frame) = frame {
@@ -99,6 +108,7 @@ unsafe extern "system" fn window_proc(
         (WM_LBUTTONDOWN, Some(view)) => view.gesture(GAIN, 0.75, true),
         (WM_MBUTTONDOWN, Some(view)) => view.gesture(TILT, 0.3, false),
         (WM_RBUTTONDOWN, Some(view)) => view.ask_for(600, 450),
+        (WM_KEYDOWN, Some(view)) => view.change(),
         _ => return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
     0

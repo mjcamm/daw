@@ -43,9 +43,18 @@ const INSTRUMENT_CID: TUID = uid(0x4441_5754, 0x5359_4E54, 0x0000_0000, 0x0000_0
 /// The gain parameter's id and default (normalized).
 const GAIN: ParamID = 0;
 const DEFAULT_GAIN: f64 = 0.5;
-/// A parameter in a group, and a read-only one.
+/// A parameter in a group, a read-only one, and the plugin's own bypass.
 const TILT: ParamID = 7;
 const METER: ParamID = 9;
+const BYPASS: ParamID = 11;
+
+/// What the window's "change" key (any key) turns on, for every instance
+/// in the process: a latency of 64 frames, and Tilt renamed "Tilt (wide)".
+/// The plugin then asks the host to restart (`restartComponent`).
+static CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn change() {
+    CHANGED.store(true, Ordering::Relaxed);
+}
 const TONE_UNIT: UnitID = 1;
 
 /// (cid, category, name, subcategories) for each class.
@@ -99,6 +108,8 @@ unsafe fn write_gain(stream: *mut IBStream, gain: f64) -> tresult {
 
 struct Processor {
     gain: AtomicU64,
+    /// Its own bypass parameter: at 0.5 and up, sound passes untouched.
+    bypass: AtomicU64,
     /// "Test Synth": notes in, sound out.
     synth: Option<Synth>,
 }
@@ -345,7 +356,11 @@ impl IAudioProcessorTrait for Processor {
     }
 
     unsafe fn getLatencySamples(&self) -> uint32 {
-        0
+        if CHANGED.load(Ordering::Relaxed) {
+            64
+        } else {
+            0
+        }
     }
 
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
@@ -373,10 +388,15 @@ impl IAudioProcessorTrait for Processor {
                     continue;
                 };
                 let points = unsafe { queue.getPointCount() };
-                if unsafe { queue.getParameterId() } == GAIN && points > 0 {
+                let target = match unsafe { queue.getParameterId() } {
+                    GAIN => &self.gain,
+                    BYPASS => &self.bypass,
+                    _ => continue,
+                };
+                if points > 0 {
                     let (mut offset, mut value) = (0, 0.0);
                     if unsafe { queue.getPoint(points - 1, &mut offset, &mut value) } == kResultOk {
-                        self.gain.store(value.to_bits(), Ordering::Relaxed);
+                        target.store(value.to_bits(), Ordering::Relaxed);
                     }
                 }
             }
@@ -389,7 +409,12 @@ impl IAudioProcessorTrait for Processor {
         if data.numInputs < 1 || data.numOutputs < 1 {
             return kResultOk;
         }
-        let gain = (2.0 * f64::from_bits(self.gain.load(Ordering::Relaxed))) as f32;
+        let bypassed = f64::from_bits(self.bypass.load(Ordering::Relaxed)) >= 0.5;
+        let gain = if bypassed {
+            1.0
+        } else {
+            (2.0 * f64::from_bits(self.gain.load(Ordering::Relaxed))) as f32
+        };
         let frames = data.numSamples as usize;
         let (input, output) = unsafe { (&*data.inputs, &*data.outputs) };
         let channels = input.numChannels.min(output.numChannels) as usize;
@@ -551,18 +576,24 @@ impl IEditControllerTrait for Controller {
     }
 
     unsafe fn getParameterCount(&self) -> int32 {
-        3
+        4
     }
 
     unsafe fn getParameterInfo(&self, index: int32, info: *mut ParameterInfo) -> tresult {
         let Some(info) = (unsafe { info.as_mut() }) else {
             return kInvalidArgument;
         };
-        use ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsReadOnly};
+        use ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsBypass, kIsReadOnly};
+        let tilt = if CHANGED.load(Ordering::Relaxed) {
+            "Tilt (wide)"
+        } else {
+            "Tilt"
+        };
         let (id, name, units, unit, flags) = match index {
             0 => (GAIN, "Gain", "x", kRootUnitId, kCanAutomate),
-            1 => (TILT, "Tilt", "dB", TONE_UNIT, kCanAutomate),
+            1 => (TILT, tilt, "dB", TONE_UNIT, kCanAutomate),
             2 => (METER, "Meter", "", kRootUnitId, kIsReadOnly),
+            3 => (BYPASS, "Bypass", "", kRootUnitId, kCanAutomate | kIsBypass),
             _ => return kInvalidArgument,
         };
         info.id = id;
@@ -688,11 +719,13 @@ impl IPluginFactoryTrait for Factory {
         let instance = match unsafe { *cid.cast::<TUID>() } {
             EFFECT_CID => ComWrapper::new(Processor {
                 gain: AtomicU64::new(DEFAULT_GAIN.to_bits()),
+                bypass: AtomicU64::new(0),
                 synth: None,
             })
             .to_com_ptr::<FUnknown>(),
             INSTRUMENT_CID => ComWrapper::new(Processor {
                 gain: AtomicU64::new(DEFAULT_GAIN.to_bits()),
+                bypass: AtomicU64::new(0),
                 synth: Some(Synth::new()),
             })
             .to_com_ptr::<FUnknown>(),

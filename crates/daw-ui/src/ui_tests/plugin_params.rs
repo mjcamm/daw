@@ -19,6 +19,7 @@ fn param(id: u32, name: &str, group: &str, value: f64) -> PluginParamInfo {
         unit: String::new(),
         steps: 0,
         value,
+        bypass: false,
     }
 }
 

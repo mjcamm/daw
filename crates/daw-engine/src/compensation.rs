@@ -3,12 +3,24 @@
 //!
 //! At every node, its built-in sources, its plugin instruments and its
 //! children's outputs meet at its sum point, each delayed to arrive with
-//! the slowest; its switched-on plugin effects then add their latency. The
+//! the slowest; its plugin effects then add their latency. A plugin keeps
+//! its latency when switched off, so switching never moves the timing: one
+//! with its own bypass parameter keeps running bypassed, and around one
+//! without, the sound waits as long as the plugin would have taken. The
 //! Song's output latency is the song's total.
 
 use crate::project::Project;
 use daw_protocol::{DeviceId, EffectKind, InstrumentKind, Node, NodeId};
 use std::collections::BTreeMap;
+
+/// What compensation needs to know about a running plugin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PluginFacts {
+    /// How late its sound comes out, in frames.
+    pub latency: u32,
+    /// Its own bypass parameter, if it has one.
+    pub bypass: Option<u32>,
+}
 
 /// One node's delays and how late the sound is at each of its devices, in
 /// frames.
@@ -22,6 +34,9 @@ pub struct Compensation {
     /// How late the sound reaching each effect is (its automation reads
     /// that much earlier).
     pub effects: Vec<u32>,
+    /// For each effect, the delay that stands in for it while it is
+    /// switched off (a plugin without its own bypass); 0 for the rest.
+    pub bypass: Vec<u32>,
     /// How late the sound reaching volume and pan is: the node's output
     /// latency.
     pub channel: u32,
@@ -32,17 +47,10 @@ pub struct Compensation {
 impl Compensation {
     /// Whether it delays anything.
     pub fn delays(&self) -> bool {
-        self.sources > 0 || self.output > 0 || self.instruments.iter().any(|&d| d > 0)
-    }
-
-    /// The longest delay it needs.
-    pub fn longest(&self) -> u32 {
-        self.instruments
-            .iter()
-            .copied()
-            .chain([self.sources, self.output])
-            .max()
-            .unwrap_or(0)
+        self.sources > 0
+            || self.output > 0
+            || self.instruments.iter().any(|&d| d > 0)
+            || self.bypass.iter().any(|&d| d > 0)
     }
 }
 
@@ -50,10 +58,10 @@ impl Compensation {
 /// plugin's `latency` in frames.
 pub fn compensate(
     project: &Project,
-    latency: &dyn Fn(DeviceId) -> u32,
+    facts: &dyn Fn(DeviceId) -> PluginFacts,
 ) -> (BTreeMap<NodeId, Compensation>, u32) {
     let mut out = BTreeMap::new();
-    let total = walk(NodeId::ROOT, &project.root, latency, &mut out);
+    let total = walk(NodeId::ROOT, &project.root, facts, &mut out);
     (out, total)
 }
 
@@ -61,20 +69,20 @@ pub fn compensate(
 fn walk(
     id: NodeId,
     node: &Node,
-    latency: &dyn Fn(DeviceId) -> u32,
+    facts: &dyn Fn(DeviceId) -> PluginFacts,
     out: &mut BTreeMap<NodeId, Compensation>,
 ) -> u32 {
     let children: Vec<(NodeId, u32)> = node
         .children
         .iter()
-        .map(|(child, n)| (*child, walk(*child, n, latency, out)))
+        .map(|(child, n)| (*child, walk(*child, n, facts, out)))
         .collect();
     let instrument_latency: Vec<u32> = node
         .instruments
         .iter()
         .map(|(device, i)| {
-            if i.kind == InstrumentKind::Plugin && i.enabled {
-                latency(*device)
+            if i.kind == InstrumentKind::Plugin {
+                facts(*device).latency
             } else {
                 0
             }
@@ -92,14 +100,17 @@ fn walk(
         }
     }
     let mut at = sum;
+    let mut bypass = Vec::with_capacity(node.effects.len());
     let effects = node
         .effects
         .iter()
         .map(|(device, e)| {
             let here = at;
-            if e.kind == EffectKind::Plugin && e.enabled {
-                at += latency(*device);
-            }
+            let plugin = (e.kind == EffectKind::Plugin).then(|| facts(*device));
+            let latency = plugin.map_or(0, |f| f.latency);
+            at += latency;
+            let stands_in = plugin.is_some_and(|f| f.bypass.is_none()) && !e.enabled;
+            bypass.push(if stands_in { latency } else { 0 });
             here
         })
         .collect();
@@ -121,6 +132,7 @@ fn walk(
             sources: sum,
             instruments,
             effects,
+            bypass,
             channel: at,
             output: 0,
         },
@@ -138,12 +150,17 @@ mod tests {
     const SLOWER: DeviceId = DeviceId(501);
     const INSTRUMENT: DeviceId = DeviceId(502);
 
-    fn latency(device: DeviceId) -> u32 {
-        match device {
+    /// SLOW has its own bypass parameter (id 3); the others don't.
+    fn latency(device: DeviceId) -> PluginFacts {
+        let latency = match device {
             SLOW => 100,
             SLOWER => 30,
             INSTRUMENT => 50,
             _ => 0,
+        };
+        PluginFacts {
+            latency,
+            bypass: (device == SLOW).then_some(3),
         }
     }
 
@@ -221,7 +238,8 @@ mod tests {
         assert_eq!(first.channel, 80);
         assert_eq!(total, 80);
 
-        // Switched off, a plugin instrument (or effect) adds nothing.
+        // Switched off, plugins keep their latency, so the timing stays;
+        // around one without its own bypass the sound waits as long.
         project
             .apply(Edit::SetDeviceEnabled {
                 id: INSTRUMENT,
@@ -234,7 +252,24 @@ mod tests {
                 enabled: false,
             })
             .unwrap();
-        assert_eq!(compensate(&project, &latency).1, 0);
+        let (comp, total) = compensate(&project, &latency);
+        assert_eq!(total, 80);
+        assert_eq!(comp[&FIRST_NODE].bypass, [30]);
+    }
+
+    #[test]
+    fn a_plugin_with_its_own_bypass_needs_no_stand_in_delay() {
+        let mut project = two_nodes();
+        add_effect(&mut project, FIRST_NODE, SLOW, 0);
+        project
+            .apply(Edit::SetDeviceEnabled {
+                id: SLOW,
+                enabled: false,
+            })
+            .unwrap();
+        let (comp, total) = compensate(&project, &latency);
+        assert_eq!(total, 100);
+        assert_eq!(comp[&FIRST_NODE].bypass, [0], "it runs bypassed");
     }
 
     #[test]

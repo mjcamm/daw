@@ -9,9 +9,10 @@ Many plugins delay their sound (a limiter's lookahead, a linear-phase EQ) and sa
 At every node, everything summed arrives lined up with the slowest of it; the song as a whole comes out late by its total latency, and the playhead shows what is heard.
 
 - A node's **sum point** collects its built-in sources (built-in instruments and audio clips: no latency), its plugin instruments (each its own latency) and its children's outputs. Its latency there, `S`, is the largest of those; each is delayed by `S` minus its own.
-- Its **output latency** is `S` plus every switched-on plugin effect's latency in its chain (a switched-off effect passes sound untouched, so adds none; switching one changes the timing, until bypass keeps latency constant in step 7).
+- Its **output latency** is `S` plus every plugin effect's latency in its chain, **switched on or off**: switching never moves the timing. A switched-off plugin with its own bypass parameter (`kIsBypass`) keeps running with that parameter on; around one without, the sound waits in a delay line as long as the plugin would have taken (`Compensation::bypass`).
 - A child's output is delayed (at the child) so it reaches the parent's sum point lined up; the Song's output latency is the song's **total latency** `D`.
-- Only switched-on plugin instruments count. Plugins not running count as none.
+- Plugin instruments count switched on or off. Plugins not running count as none.
+- A plugin that announces a new latency (`restartComponent`) is activated again and the song re-lined (the engine notices through `Plugins::take_facts_changed`).
 
 ## Automation follows the sound
 
@@ -19,7 +20,7 @@ A parameter is read at the song time of the audio passing it: an effect after `L
 
 ## How it runs
 
-- **Latencies:** the host answers `GetLatency` after activation (`Vst3State::latency`, or the test device's); the engine keeps them (`Plugins::latency`) and compiles them into the render state: each node's `Compensation` (sum-point delays for its built-in sources and each plugin instrument, each effect's automation shift, the channel's, and its output delay), and the song's total.
+- **Latencies:** the host answers `GetLatency` after activation (`Vst3State::latency`, or the test device's); the engine keeps them, with each plugin's own bypass parameter (`Plugins::facts`, a `PluginFacts`), and compiles them into the render state: each node's `Compensation` (sum-point delays for its built-in sources and each plugin instrument, each effect's automation shift, the channel's, and its output delay), and the song's total.
 - **Delay lines** live with each node's player in a `Delays` box made on the control side (one capacity for the node's lines, a power of two above the longest delay) and sent when a node needs more (`AudioMsg::SetDelays`); the audio side copies the old lines' history into the new ones and hands the old box back to be freed (`retired_delays`). Allocation-free on the audio thread; a delay longer than its line (only until the bigger box arrives) is clamped.
 - **Each chunk** of a node: its sources render into the bus and are delayed, each plugin instrument plays into scratch and is delayed and added, then its children's buses are added, then the effects, volume and pan, then the output delay. Live and offline share this, and the result is the same at any block size.
 - **Playhead:** while playing, the shown position is the transport's minus `D`.

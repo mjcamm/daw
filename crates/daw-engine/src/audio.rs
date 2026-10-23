@@ -12,6 +12,7 @@
 //! bus, and the Song's output is the processor's.
 
 use crate::clips::{ClipPlayer, ClipRender};
+use crate::compensation::Compensation;
 use crate::devices::{
     CHANNEL_PARAMS, MAX_DEVICE_PARAMS, ParamInfo, channel_settings, effect_params, filter_params,
     instrument_params, sampler_level, synth_params,
@@ -135,28 +136,57 @@ impl DelayLine {
 pub(crate) struct Delays {
     sources: DelayLine,
     instruments: [DelayLine; MAX_INSTRUMENTS],
+    /// Standing in for switched-off plugins without their own bypass.
+    effects: [DelayLine; MAX_EFFECTS],
     output: DelayLine,
 }
 
+/// A node's delay lines: sources, each instrument, each effect, output.
+pub(crate) const DELAY_LINES: usize = 2 + MAX_INSTRUMENTS + MAX_EFFECTS;
+
+/// The room each of a node's delay lines needs.
+pub(crate) type Rooms = [usize; DELAY_LINES];
+
 impl Delays {
-    /// Lines with room for delays up to `longest` frames.
-    pub(crate) fn new(longest: u32) -> Self {
-        let room = Self::room_for(longest);
+    /// Lines with the room `rooms` says (0: none).
+    pub(crate) fn new(rooms: &Rooms) -> Self {
+        let line = |i: usize| DelayLine::new(rooms[i]);
         Self {
-            sources: DelayLine::new(room),
-            instruments: std::array::from_fn(|_| DelayLine::new(room)),
-            output: DelayLine::new(room),
+            sources: line(0),
+            instruments: std::array::from_fn(|i| line(1 + i)),
+            effects: std::array::from_fn(|i| line(1 + MAX_INSTRUMENTS + i)),
+            output: line(DELAY_LINES - 1),
         }
     }
 
-    /// The room made for delays up to `longest` (a power of two above it).
-    pub(crate) fn room_for(longest: u32) -> usize {
-        (longest as usize + 1).next_power_of_two().max(64)
+    /// The room each line needs for `comp`: a power of two above its
+    /// delay, none for no delay.
+    pub(crate) fn rooms(comp: &Compensation) -> Rooms {
+        let room = |delay: u32| {
+            if delay == 0 {
+                0
+            } else {
+                (delay as usize + 1).next_power_of_two().max(64)
+            }
+        };
+        let mut rooms = [0; DELAY_LINES];
+        rooms[0] = room(comp.sources);
+        for (i, &d) in comp.instruments.iter().take(MAX_INSTRUMENTS).enumerate() {
+            rooms[1 + i] = room(d);
+        }
+        for (i, &d) in comp.bypass.iter().take(MAX_EFFECTS).enumerate() {
+            rooms[1 + MAX_INSTRUMENTS + i] = room(d);
+        }
+        rooms[DELAY_LINES - 1] = room(comp.output);
+        rooms
     }
 
     fn take_history(&mut self, old: &Self) {
         self.sources.take_history(&old.sources);
         for (new, old) in self.instruments.iter_mut().zip(&old.instruments) {
+            new.take_history(old);
+        }
+        for (new, old) in self.effects.iter_mut().zip(&old.effects) {
             new.take_history(old);
         }
         self.output.take_history(&old.output);
@@ -1185,6 +1215,8 @@ struct NodePlayer {
     at: usize,
     /// Its delay lines, once it needs some (sent by the control side).
     delays: Option<Box<Delays>>,
+    /// Which plugin effects (by place) were last run bypassed.
+    bypassed: [bool; MAX_EFFECTS],
     /// The chunk being rendered, for its second half (`finish_chunk`).
     chunk: ChunkRun,
 }
@@ -1223,6 +1255,7 @@ impl NodePlayer {
             plugin_notes: Box::new(std::array::from_fn(|_| ChunkNotes::new())),
             at: 0,
             delays: None,
+            bypassed: [false; MAX_EFFECTS],
             chunk: ChunkRun::default(),
         }
     }
@@ -1549,31 +1582,66 @@ impl NodePlayer {
         let (left, right) = (&mut self.bus_left[..frames], &mut self.bus_right[..frames]);
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
         let beats_per_frame = self.chunk.beats_per_frame;
-        for (((_, effect), state), &late) in self
+        for (index, (((_, effect), state), &late)) in self
             .effects
             .iter_mut()
             .zip(&node.effects)
             .zip(node.comp.effects.iter().chain(std::iter::repeat(&0)))
+            .enumerate()
         {
             // Its layers act on the sound reaching it, `late` frames behind.
             let behind = f64::from(late) * beats_per_frame;
             if let EffectInstance::Plugin(block) = effect {
-                if state.enabled {
-                    let count = plugin_changes(
-                        &state.plugin_params,
-                        controls,
-                        behind,
-                        &mut *self.plugin_changes,
-                    );
-                    let changes = &self.plugin_changes[..count];
-                    run_plugin(
-                        block.as_deref_mut(),
-                        left,
-                        right,
-                        changes,
-                        context,
-                        deadline,
-                    );
+                let was_bypassed = &mut self.bypassed[index.min(MAX_EFFECTS - 1)];
+                match (state.enabled, state.bypass_param) {
+                    // Switched off without a bypass of its own: not run, and
+                    // the sound waits as long as it would have taken.
+                    (false, None) => {
+                        if let Some(delays) = &mut self.delays {
+                            let wait = node.comp.bypass.get(index).copied().unwrap_or(0);
+                            delays.effects[index.min(MAX_EFFECTS - 1)].process(
+                                left,
+                                right,
+                                wait as usize,
+                            );
+                        }
+                    }
+                    // Run, its own bypass switched to match (on while off;
+                    // back off once, when switched on again, so its own
+                    // bypass button stays the user's otherwise).
+                    (enabled, bypass) => {
+                        let mut count = plugin_changes(
+                            &state.plugin_params,
+                            controls,
+                            behind,
+                            &mut *self.plugin_changes,
+                        );
+                        let set = match (enabled, *was_bypassed) {
+                            (false, _) => Some(1.0),
+                            (true, true) => Some(0.0),
+                            (true, false) => None,
+                        };
+                        if let (Some(id), Some(value)) = (bypass, set)
+                            && let Some(slot) = self.plugin_changes.get_mut(count)
+                        {
+                            *slot = ParamChange {
+                                id,
+                                offset: 0,
+                                value,
+                            };
+                            count += 1;
+                        }
+                        *was_bypassed = !enabled;
+                        let changes = &self.plugin_changes[..count];
+                        run_plugin(
+                            block.as_deref_mut(),
+                            left,
+                            right,
+                            changes,
+                            context,
+                            deadline,
+                        );
+                    }
                 }
                 continue;
             }

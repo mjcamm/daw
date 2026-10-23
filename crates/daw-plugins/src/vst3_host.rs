@@ -280,6 +280,13 @@ const PENDING_EDITS: usize = 256;
 struct ComponentHandler {
     instance: u64,
     events: Events,
+    /// The host's main thread: calls from any other (some plugins call
+    /// from their audio thread) are ignored, since what they touch is the
+    /// main thread's.
+    main: std::thread::ThreadId,
+    /// Set while the host activates the plugin: a restart asked then is
+    /// already covered (latency is read right after).
+    activating: Arc<AtomicBool>,
     to_audio: RefCell<rtrb::Producer<(ParamID, f64)>>,
     /// Parameters the user is holding, so the window isn't moved under
     /// their hand (`Vst3State::follow`).
@@ -290,8 +297,17 @@ impl Class for ComponentHandler {
     type Interfaces = (IComponentHandler,);
 }
 
+impl ComponentHandler {
+    fn on_main(&self) -> bool {
+        std::thread::current().id() == self.main
+    }
+}
+
 impl IComponentHandlerTrait for ComponentHandler {
     unsafe fn beginEdit(&self, id: ParamID) -> tresult {
+        if !self.on_main() {
+            return kResultOk;
+        }
         self.touching.borrow_mut().insert(id);
         self.events.borrow_mut().push(HostEvent::EditBegin {
             instance: self.instance,
@@ -301,6 +317,9 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
+        if !self.on_main() {
+            return kResultOk;
+        }
         let value = value.clamp(0.0, 1.0);
         // Full only if the audio thread has stopped; then the DAW's value
         // reaches it anyway.
@@ -314,6 +333,9 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn endEdit(&self, id: ParamID) -> tresult {
+        if !self.on_main() {
+            return kResultOk;
+        }
         self.touching.borrow_mut().remove(&id);
         self.events.borrow_mut().push(HostEvent::EditEnd {
             instance: self.instance,
@@ -322,7 +344,13 @@ impl IComponentHandlerTrait for ComponentHandler {
         kResultOk
     }
 
-    unsafe fn restartComponent(&self, _flags: int32) -> tresult {
+    unsafe fn restartComponent(&self, flags: int32) -> tresult {
+        if self.on_main() && !self.activating.load(Ordering::Relaxed) {
+            self.events.borrow_mut().push(HostEvent::Restart {
+                instance: self.instance,
+                flags,
+            });
+        }
         kResultOk
     }
 }
@@ -722,6 +750,8 @@ pub struct Vst3Instance {
     processing: bool,
     /// Knob moves from the window, for the processor.
     edits: rtrb::Consumer<(ParamID, f64)>,
+    /// Shared with the handler: true while activating.
+    activating: Arc<AtomicBool>,
     mirror: Arc<ParamMirror>,
     _host: ComWrapper<HostApplication>,
     /// Dropped last: the plugin's code lives in it.
@@ -778,9 +808,12 @@ impl Vst3Instance {
         };
         let (to_audio, edits) = rtrb::RingBuffer::new(PENDING_EDITS);
         let touching = Rc::new(RefCell::new(HashSet::new()));
+        let activating = Arc::new(AtomicBool::new(false));
         let handler = ComWrapper::new(ComponentHandler {
             instance,
             events,
+            main: std::thread::current().id(),
+            activating: activating.clone(),
             to_audio: RefCell::new(to_audio),
             touching: touching.clone(),
         });
@@ -845,6 +878,7 @@ impl Vst3Instance {
             processing: false,
             edits,
             mirror,
+            activating,
             _host: host,
             _module: module,
         };
@@ -858,6 +892,13 @@ impl Vst3Instance {
         max_frames: u32,
         offline: bool,
     ) -> Result<(), String> {
+        self.activating.store(true, Ordering::Relaxed);
+        let result = self.set_up(sample_rate, max_frames, offline);
+        self.activating.store(false, Ordering::Relaxed);
+        result
+    }
+
+    fn set_up(&mut self, sample_rate: f64, max_frames: u32, offline: bool) -> Result<(), String> {
         self.deactivate();
         let audio = MediaTypes_::kAudio as MediaType;
         let (input, output) = (
@@ -1170,7 +1211,9 @@ impl Vst3State {
                 {
                     return None;
                 }
+                use ParameterInfo_::ParameterFlags_::kIsBypass;
                 Some(PluginParamInfo {
+                    bypass: info.flags as u32 & kIsBypass as u32 != 0,
                     id: info.id,
                     name: wide(&info.title),
                     group: groups.get(&info.unitId).cloned().unwrap_or_default(),

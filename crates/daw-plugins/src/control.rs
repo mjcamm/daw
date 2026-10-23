@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 /// Bump when messages change; the host refuses a different one.
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 /// Largest message accepted, so a garbled length can't allocate gigabytes.
 const MAX_MESSAGE: u32 = 64 << 20;
@@ -84,6 +84,16 @@ pub enum Reply {
     },
 }
 
+/// VST3's `RestartFlags`, as [`HostEvent::Restart`] carries them.
+pub mod restart {
+    pub const RELOAD: i32 = 1;
+    pub const IO: i32 = 2;
+    pub const PARAM_VALUES: i32 = 4;
+    pub const LATENCY: i32 = 8;
+    pub const PARAM_TITLES: i32 = 16;
+    pub const PARAM_IDS: i32 = 2048;
+}
+
 /// What a host tells the DAW without being asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HostEvent {
@@ -106,6 +116,12 @@ pub enum HostEvent {
     /// The user closed the plugin's window.
     EditorClosed {
         instance: u64,
+    },
+    /// The plugin asks for a restart (`restartComponent`): its latency,
+    /// buses or parameters changed. Flags as VST3's `RestartFlags`.
+    Restart {
+        instance: u64,
+        flags: i32,
     },
     /// The plugin's window was placed or moved: its top-left corner.
     EditorMoved {

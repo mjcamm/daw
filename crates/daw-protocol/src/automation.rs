@@ -233,6 +233,10 @@ pub struct PluginParamInfo {
     pub steps: u32,
     /// The value the plugin holds now (normalized).
     pub value: f64,
+    /// The plugin's own bypass switch (`kIsBypass`): the DAW uses it when
+    /// the plugin is switched off.
+    #[serde(default)]
+    pub bypass: bool,
 }
 
 /// A plugin parameter added to the song: the plugin's id for it, its name

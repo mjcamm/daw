@@ -7,6 +7,7 @@
 //! takes a moment the first time a song needs one.
 
 use crate::audio::{AudioMsg, CHUNK_FRAMES};
+use crate::compensation::PluginFacts;
 use crate::project::Project;
 use daw_plugins::block::{BlockStats, DawBlock, Layout};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
@@ -46,8 +47,8 @@ pub(crate) struct Plugins {
     /// Parameter lists shown for plugins that are not running, for front
     /// ends' tests (which run no host).
     shown_params: BTreeMap<DeviceId, Arc<Vec<PluginParamInfo>>>,
-    /// How late each running plugin's sound comes out, in frames.
-    latencies: BTreeMap<DeviceId, u32>,
+    /// What compensation last took about each running plugin.
+    facts: BTreeMap<DeviceId, PluginFacts>,
     /// Plugin windows open, or why one couldn't open (absent: closed).
     windows: BTreeMap<DeviceId, PluginWindow>,
     /// Windows asked for and not answered yet, by call.
@@ -56,6 +57,17 @@ pub(crate) struct Plugins {
     places: BTreeMap<DeviceId, (i32, i32)>,
     /// The title each window was given.
     titles: BTreeMap<DeviceId, String>,
+}
+
+/// What host processes reported since last asked.
+#[derive(Debug, Default)]
+pub(crate) struct HostNews {
+    /// Knobs moved in plugin windows, by device.
+    pub edits: Vec<(DeviceId, WindowEdit)>,
+    /// A window opened, failed to or closed.
+    pub changed: bool,
+    /// Plugins asking to be restarted, with their `RestartFlags`.
+    pub restarts: Vec<(DeviceId, i32)>,
 }
 
 /// Something the user did in a plugin's window.
@@ -349,9 +361,9 @@ impl Plugins {
 
     /// What the user did in plugin windows since last asked, by effect,
     /// and whether any window opened, failed to or closed.
-    pub(crate) fn window_edits(&mut self) -> (Vec<(DeviceId, WindowEdit)>, bool) {
+    pub(crate) fn window_edits(&mut self) -> HostNews {
         let Some(host) = self.host.as_mut().filter(|h| h.is_alive()) else {
-            return (Vec::new(), false);
+            return HostNews::default();
         };
         let events = host.take_events();
         let mut changed = false;
@@ -373,6 +385,7 @@ impl Plugins {
         };
         let mut edits = Vec::new();
         let mut closed = Vec::new();
+        let mut restarts = Vec::new();
         for event in events {
             match event {
                 HostEvent::EditBegin { instance, id } => {
@@ -387,6 +400,9 @@ impl Plugins {
                     edits.extend(effect_of(instance).map(|e| (e, WindowEdit::End(id))));
                 }
                 HostEvent::EditorClosed { instance } => closed.extend(effect_of(instance)),
+                HostEvent::Restart { instance, flags } => {
+                    restarts.extend(effect_of(instance).map(|e| (e, flags)));
+                }
                 HostEvent::EditorMoved { instance, at } => {
                     if let Some(effect) = effect_of(instance) {
                         self.places.insert(effect, at);
@@ -398,26 +414,75 @@ impl Plugins {
         for effect in closed {
             self.windows.remove(&effect);
         }
-        (edits, changed)
+        HostNews {
+            edits,
+            changed,
+            restarts,
+        }
     }
 
-    /// How late a plugin's sound comes out, in frames: 0 unless it runs
-    /// (one that can't run is silent).
-    pub(crate) fn latency(&self, device: DeviceId) -> u32 {
-        self.running.get(&device).map_or(0, |i| i.latency)
+    /// A plugin asked to be restarted (`restartComponent`): for a new
+    /// latency, buses or a reload it is activated again (a fresh channel;
+    /// its latency read again); for new parameter names or values its list
+    /// is read again. Returns whether its list changed.
+    pub(crate) fn restart(
+        &mut self,
+        device: DeviceId,
+        flags: i32,
+        sample_rate: u32,
+        outbox: &mut VecDeque<AudioMsg>,
+    ) -> bool {
+        use daw_plugins::control::restart;
+        let reactivate = restart::RELOAD | restart::IO | restart::LATENCY;
+        let relist = restart::PARAM_VALUES | restart::PARAM_TITLES | restart::PARAM_IDS;
+        let Some(instance) = self.running.get_mut(&device) else {
+            return false;
+        };
+        let Some(host) = self.host.as_mut().filter(|h| h.is_alive()) else {
+            return false;
+        };
+        if flags & reactivate != 0
+            && let Ok(block) = host.activate(instance.id, LAYOUT, f64::from(sample_rate))
+        {
+            instance.stats = block.stats();
+            instance.latency = host.latency(instance.id).unwrap_or(instance.latency);
+            outbox.push_back(AudioMsg::AttachPlugin {
+                effect: device,
+                block: Box::new(block),
+            });
+        }
+        if flags & relist != 0
+            && let Ok(params) = host.params(instance.id)
+        {
+            instance.params = Arc::new(params);
+            return true;
+        }
+        false
     }
 
-    /// Whether any plugin's latency changed since last asked (one started,
-    /// ended or was reactivated).
-    pub(crate) fn take_latency_changed(&mut self) -> bool {
-        let now: BTreeMap<DeviceId, u32> = self
+    /// What compensation needs about a plugin: its latency (0 unless it
+    /// runs: one that can't run is silent) and its own bypass parameter.
+    pub(crate) fn facts(&self, device: DeviceId) -> PluginFacts {
+        self.running
+            .get(&device)
+            .map(|i| PluginFacts {
+                latency: i.latency,
+                bypass: i.params.iter().find(|p| p.bypass).map(|p| p.id),
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether any plugin's facts changed since last asked (one started,
+    /// ended or was restarted).
+    pub(crate) fn take_facts_changed(&mut self) -> bool {
+        let now: BTreeMap<DeviceId, PluginFacts> = self
             .running
-            .iter()
-            .filter(|(_, i)| i.latency > 0)
-            .map(|(id, i)| (*id, i.latency))
+            .keys()
+            .map(|id| (*id, self.facts(*id)))
+            .filter(|(_, f)| *f != PluginFacts::default())
             .collect();
-        let changed = now != self.latencies;
-        self.latencies = now;
+        let changed = now != self.facts;
+        self.facts = now;
         changed
     }
 

@@ -350,3 +350,22 @@ fn automation_acts_on_the_sound_it_was_drawn_against() {
     let heard = (30_000.0 - 1_000.0) / 24_000.0;
     assert!((engine.position_beats() - heard).abs() < 1e-9);
 }
+
+#[test]
+fn switching_off_a_delaying_plugin_keeps_the_timing() {
+    let (mut on, mut on_processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut on);
+    let expected = render(&mut on, &mut on_processor, 20_000, &[512]);
+
+    let (mut off, mut processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut off);
+    off.apply(Command::Edit(Edit::SetDeviceEnabled {
+        id: PLUGIN,
+        enabled: false,
+    }))
+    .unwrap();
+    let out = render(&mut off, &mut processor, 20_000, &[512]);
+    assert_eq!(processor.latency(), 100, "it keeps its latency");
+    // It has no bypass of its own: the sound waits as long around it.
+    assert!(out == expected, "both nodes still line up, 100 late");
+}

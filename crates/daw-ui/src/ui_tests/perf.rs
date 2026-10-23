@@ -387,6 +387,7 @@ fn perf_param_picker() {
             unit: String::new(),
             steps: 0,
             value: 0.5,
+            bypass: false,
         })
         .collect();
     h.view.update(h.cx, |view, _| {

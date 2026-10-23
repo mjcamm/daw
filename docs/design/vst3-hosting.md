@@ -87,8 +87,8 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 - **Learn (wiggle the knob):** while armed, the first parameter the user touches in the plugin's window (`beginEdit` / `performEdit` from the plugin, forwarded over the control channel) is added. Mouse-wheel moves may come without `beginEdit`.
 - **Knob moves edit the resting value** (as for built-in devices): a `beginEdit` … `endEdit` gesture becomes one undoable edit of the default state. Not recording; that stays a later, armed mode.
 - **Automation delivery** (built): layers are evaluated on the 32-frame control grid; each chunk sends every song parameter's first value, then a point wherever it changes (`audio.rs`, `plugin_changes`), in the shared parameter area (512 changes a block; more are dropped), rebuilt into `IParamValueQueue`s (sample accurate to the grid). A parameter at rest costs one change per chunk, so the plugin always follows the song. The plugin's window follows along (Editor windows, below).
-- **`restartComponent`:** titles or flags changed: rescan parameter info; values changed: re-read values; latency changed: re-plan delay compensation; I/O changed: redo the bus setup (outside the audio callback); reload: deactivate, reload state, reactivate.
-- **Bypass:** a plugin's own bypass parameter (`kIsBypass`) is used when it has one, so its latency stays constant; otherwise the host stops calling it and passes sound through, delayed by its latency.
+- **`restartComponent`** (built 2026-10-23, control protocol 7): the host forwards it (`HostEvent::Restart` with VST3's flags), except while it is activating the plugin itself (latency is read right after). A new latency, new buses or a reload: the plugin is activated again (a fresh channel; `GetLatency` again) and the song re-lined; new parameter titles, values or ids: its list is read again. The handler ignores calls from any thread but the host's main thread (some plugins call from their audio thread).
+- **Bypass** (built 2026-10-23): switching a plugin effect off on its slot uses its own bypass parameter when it has one (`PluginParamInfo::bypass`): it keeps running with that parameter on, and when switched on again it is turned off once (so the plugin's own bypass button stays the user's). Without one the plugin is not run and the sound passes through a delay as long as its latency. Either way the timing stays.
 
 ## State
 
@@ -150,7 +150,7 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 4. **Instruments:** note events (**built**, 2026-10-23); multiple outputs later.
 5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn (**built**, done before step 4 at the user's call).
 6. **Delay compensation** (**built**, `delay-compensation.md`).
-7. `restartComponent` handling, bypass, presets, diagnostics.
+7. `restartComponent` handling and bypass (**built**), presets, diagnostics.
 
 ## Still to decide
 

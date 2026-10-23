@@ -162,6 +162,7 @@ impl Host {
                         unit: String::new(),
                         steps: 0,
                         value: 0.5,
+                        bypass: false,
                     }],
                     _ => Vec::new(),
                 };
