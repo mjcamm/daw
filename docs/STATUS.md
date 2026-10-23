@@ -20,7 +20,7 @@
 
 The project file is at **version 19** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
-## In progress: Phase 8, VST3 hosting
+## Phase 8, VST3 hosting: built (2026-10-23)
 
 Decisions: `docs/design/vst3-hosting.md`. VST3 API facts and gotchas: `docs/vst3-notes.md` (read both before plugin work). Agreed with the user: plugins in their own processes from the start ("build it right first"), default grouping Together (as Bitwig), plugin state inside the project file, our own Rust test plugin, unlinked floating editor windows (a cross-process owner window was measured to freeze the DAW when the plugin hangs), parameters picked from a list or learned by wiggling a knob, the `vst3` crate for bindings.
 
@@ -39,7 +39,7 @@ Decisions: `docs/design/vst3-hosting.md`. VST3 API facts and gotchas: `docs/vst3
 
 **Next, in order:**
 
-1. **Presets** (step 7's last part): loading and saving a plugin's presets; layout to agree with the user. Multiple plugin outputs and multitimbral plugins later (the user: not needed now).
+Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user's call, 2026-10-23: each plugin's own preset browser works and is saved with the song; a DAW preset list was proposed as a "Preset" button beside Learn). Multiple plugin outputs and multitimbral plugins later (the user: playing several instruments on one node is enough). Not yet heard by the user in the app: see "Waiting on the user".
 
 **Gotchas from this session:**
 
@@ -89,7 +89,7 @@ Decisions: `docs/design/vst3-hosting.md`. VST3 API facts and gotchas: `docs/vst3
 
 ## Next up
 
-1. **Phase 8, VST3 hosting:** see "In progress" above.
+1. **Next phase, to choose with the user:** Phase 6 (audio signals: sends, sidechains, following an audio signal's loudness; next in the plan), Phase 9's mixdown and stem export (the app has no export yet), or Phase 7 (built-in devices).
 2. **Phase 5, rest:** a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call).
 3. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): three so far (Arrange double-click, looping a clip, menus). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
 4. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI). Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
