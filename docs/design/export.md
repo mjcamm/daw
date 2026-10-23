@@ -24,7 +24,7 @@
 
 ## Licence (MP3)
 
-LAME is LGPL-2.0 and the `mp3lame-encoder` bindings are LGPL-3.0; both are compiled from C source into the binary (needs a C compiler; MSVC on Windows). The project is MIT OR Apache-2.0, so MP3 sits behind `daw-host`'s `mp3` feature, on by default. A release must either build with `--no-default-features` (WAV only), or meet the LGPL for the linked LAME (offer the source and a way to relink, e.g. by linking LAME dynamically). To settle before Phase 11.
+LAME is LGPL-2.0 and the `mp3lame-encoder` bindings are LGPL-3.0; both are compiled from C source into the binary (needs a C compiler; MSVC on Windows). The project is MIT OR Apache-2.0, so MP3 sits behind `daw-host`'s `mp3` feature, on by default. A release must either build with `--no-default-features` (WAV only), or meet the LGPL for the linked LAME (offer the source and a way to relink, e.g. by linking LAME dynamically). `THIRD-PARTY-LICENSES.md` (and `licenses/`) gives the notices, sources and how to rebuild or leave MP3 out; ship it with releases. Whether to link LAME as a DLL instead is to settle before Phase 11.
 
 ## Later
 
