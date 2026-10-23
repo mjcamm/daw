@@ -7,6 +7,7 @@
 //! [`drivers`] and [`device_choices`] list what the settings can choose.
 
 pub mod demo;
+pub mod export;
 pub mod plugins;
 pub mod preferences;
 pub mod projects;

@@ -119,6 +119,8 @@ pub struct Engine {
     learning: Option<DeviceId>,
     /// Knobs being turned in plugin windows.
     turning: BTreeMap<(DeviceId, u32), Turn>,
+    /// Whether render workers run at audio priority (not for exports).
+    realtime_workers: bool,
 }
 
 /// A knob being turned in a plugin's window. A turn of a parameter in the
@@ -145,6 +147,19 @@ impl Engine {
     ///
     /// If `config.channels` or `config.sample_rate` is zero.
     pub fn new(config: EngineConfig) -> (Self, AudioProcessor) {
+        Self::build(config, true)
+    }
+
+    /// An engine for rendering to a file while a live one plays: its
+    /// workers stay at normal priority (live audio always comes first), and
+    /// its processor is offline (plugins take as long as they need).
+    pub fn new_offline(config: EngineConfig) -> (Self, AudioProcessor) {
+        let (engine, mut processor) = Self::build(config, false);
+        processor.set_offline(true);
+        (engine, processor)
+    }
+
+    fn build(config: EngineConfig, realtime_workers: bool) -> (Self, AudioProcessor) {
         assert!(config.channels > 0, "engine needs at least one channel");
         assert!(config.sample_rate > 0, "engine needs a sample rate");
         let project = Project::default();
@@ -156,6 +171,7 @@ impl Engine {
             config.sample_rate,
             usize::from(config.channels),
             config.threads.max(1),
+            realtime_workers,
             Box::new(RenderState::compile(&project)),
             AudioQueues {
                 from_control,
@@ -183,6 +199,7 @@ impl Engine {
             learning: None,
             turning: BTreeMap::new(),
             delay_rooms: BTreeMap::new(),
+            realtime_workers,
         };
         (engine, processor)
     }
@@ -210,6 +227,7 @@ impl Engine {
             config.sample_rate,
             usize::from(config.channels),
             config.threads.max(1),
+            self.realtime_workers,
             Box::new(RenderState::compile_with(
                 &self.project,
                 &self.samples,

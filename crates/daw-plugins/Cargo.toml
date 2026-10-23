@@ -35,6 +35,9 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 daw-engine.workspace = true
+# Exports with plugins (daw-host depends on this crate; tests may use it).
+daw-host.workspace = true
+hound.workspace = true
 daw-testkit.workspace = true
 
 [lints]

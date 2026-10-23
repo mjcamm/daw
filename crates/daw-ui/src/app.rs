@@ -28,6 +28,11 @@ const QUIT_SHORTCUT: &str = if cfg!(target_os = "macos") {
 } else {
     "Ctrl+Q"
 };
+const EXPORT_SHORTCUT: &str = if cfg!(target_os = "macos") {
+    "⌘E"
+} else {
+    "Ctrl+E"
+};
 const PREFERENCES_SHORTCUT: &str = if cfg!(target_os = "macos") {
     "⌘,"
 } else {
@@ -287,6 +292,15 @@ impl AppView {
         cx.notify();
     }
 
+    /// File → Export…: the open project's export dialog.
+    fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        if let Screen::Project(project) = &self.screen {
+            project.update(cx, |project, cx| project.open_export(window, cx));
+        }
+        cx.notify();
+    }
+
     /// Opens `menu`, or closes it if it is open (a press on the trigger of
     /// an open menu first closes it as a press outside; it stays closed).
     fn toggle_top_menu(&mut self, menu: TopMenu) {
@@ -347,7 +361,14 @@ impl AppView {
 
     /// The menu bar across the top: File and Track.
     fn render_menu_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_project = matches!(self.screen, Screen::Project(_));
         let file_items = {
+            let export = menu::item(theme, "menu-export", "Export…", EXPORT_SHORTCUT)
+                .when(!has_project, |d| d.text_color(theme.text_tertiary))
+                .when(has_project, |d| {
+                    d.on_click(cx.listener(|this, _, window, cx| this.export(window, cx)))
+                });
+            let export_separator = menu::separator(theme);
             let preferences = menu::item(
                 theme,
                 "menu-preferences",
@@ -358,9 +379,15 @@ impl AppView {
             let quit = menu::item(theme, "menu-quit", "Quit", QUIT_SHORTCUT)
                 .on_click(cx.listener(|this, _, _, cx| this.quit(cx)));
             let separator = menu::separator(theme);
-            move |panel: gpui::Div| panel.child(preferences).child(separator).child(quit)
+            move |panel: gpui::Div| {
+                panel
+                    .child(export)
+                    .child(export_separator)
+                    .child(preferences)
+                    .child(separator)
+                    .child(quit)
+            }
         };
-        let has_project = matches!(self.screen, Screen::Project(_));
         let track_items = {
             let import = menu::item(theme, "menu-import-audio", "Import Audio…", "")
                 .when(!has_project, |d| d.text_color(theme.text_tertiary))

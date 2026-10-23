@@ -5,6 +5,7 @@
 
 mod arrange;
 mod browser;
+mod export;
 mod loop_strip;
 mod menus;
 mod perf;

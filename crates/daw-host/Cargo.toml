@@ -15,8 +15,17 @@ daw-plugins.workspace = true
 daw-rt.workspace = true
 dirs.workspace = true
 hound.workspace = true
+# MP3 export. LAME and its Rust bindings are LGPL: see docs/design/export.md.
+mp3lame-encoder = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+
+[features]
+default = ["mp3"]
+mp3 = ["dep:mp3lame-encoder"]
+
+[dev-dependencies]
+daw-testkit.workspace = true
 
 [lints]
 workspace = true

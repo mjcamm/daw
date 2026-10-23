@@ -377,11 +377,14 @@ pub(crate) struct AudioQueues {
 
 impl AudioProcessor {
     /// `threads` is how many threads render, this one included (1: no
-    /// workers).
+    /// workers). Workers run at audio priority when `realtime_workers`;
+    /// renders to a file beside live play leave them at normal priority, so
+    /// they never compete with the live song.
     pub(crate) fn new(
         sample_rate: u32,
         channels: usize,
         threads: usize,
+        realtime_workers: bool,
         state: Box<RenderState>,
         queues: AudioQueues,
         status: Arc<SharedStatus>,
@@ -407,6 +410,9 @@ impl AudioProcessor {
             heights: Vec::with_capacity(MAX_NODES),
             pool: Pool::new(threads.saturating_sub(1), move || {
                 // Workers run at audio priority, like the device's thread.
+                if !realtime_workers {
+                    return;
+                }
                 if let Ok(handle) =
                     audio_thread_priority::promote_current_thread_to_real_time(512, rate)
                 {
@@ -1901,6 +1907,7 @@ mod tests {
             48_000,
             2,
             1,
+            true,
             state(100.0),
             AudioQueues {
                 from_control,
@@ -1937,6 +1944,7 @@ mod tests {
             48_000,
             2,
             1,
+            true,
             state(120.0),
             AudioQueues {
                 from_control,

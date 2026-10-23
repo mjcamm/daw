@@ -369,3 +369,51 @@ fn switching_off_a_delaying_plugin_keeps_the_timing() {
     // It has no bypass of its own: the sound waits as long around it.
     assert!(out == expected, "both nodes still line up, 100 late");
 }
+
+/// Exports `engine`'s song as a float WAV, with plugins, and reads it back.
+fn exported(engine: &mut Engine, name: &str) -> Vec<f32> {
+    use daw_host::export::{
+        ExportJob, ExportSettings, Format, Progress, Range, Tail, WavDepth, export,
+    };
+    let path = std::env::temp_dir().join(format!("daw-{name}-{}.wav", std::process::id()));
+    export(
+        ExportJob {
+            song: engine.to_file(),
+            sample_dir: None,
+            sample_rate: 48_000,
+            threads: 2,
+            plugin_host: Some(host_command()),
+            settings: ExportSettings {
+                format: Format::Wav(WavDepth::Float32),
+                range: Range::Song,
+                tail: Tail::Off,
+            },
+            path: path.clone(),
+        },
+        &Progress::default(),
+    )
+    .unwrap();
+    let samples = hound::WavReader::open(&path)
+        .unwrap()
+        .samples::<f32>()
+        .map(Result::unwrap)
+        .collect();
+    let _ = std::fs::remove_file(&path);
+    samples
+}
+
+#[test]
+fn an_export_starts_the_songs_latency_in() {
+    let (mut plain, _) = engine(None);
+    add_copy(&mut plain);
+    let expected = exported(&mut plain, "export-plain");
+    let (mut delayed, _) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut delayed);
+    let out = exported(&mut delayed, "export-delayed");
+    assert!(!expected.iter().all(|&s| s == 0.0));
+    assert_eq!(out.len(), expected.len(), "the song's length");
+    assert!(
+        out == expected,
+        "lined up with the song, not 100 frames late"
+    );
+}

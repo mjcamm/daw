@@ -114,7 +114,7 @@ Every phase follows the foundation principles: test-driven, engine-owned state, 
 
 - Audio clip import and editing (built early, 2026-10-19), and audio/MIDI recording.
 - A MIDI editor (the piano roll, built early, 2026-10-16).
-- Mixdown/stem export.
+- Mixdown export (built 2026-10-23, `docs/design/export.md`) and stem export.
 - Any other gaps found by producing real tracks.
 
 **Done when:** a complete dance track can be produced from start to finish in the app.

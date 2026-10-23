@@ -16,6 +16,7 @@
 - **UI speed** (2026-10-20, `docs/design/ui-speed.md`): cached panes that redraw only on change, a live layer for playheads and meters, no frames when idle, dense content painted and culled, the faster GPU requested on dual-GPU laptops. Playback frames 1.3–2.6 ms; full redraws 5.5–8.8 ms (release, full song). **Next, if wanted:** the last few ms are GPUI's per-element and per-glyph cost; less text on Arrange or fewer interactive elements per row and strip.
 - **Looping clips** (2026-10-20, `docs/design/clip-loops.md`): MIDI and audio clips loop like blocks, with linked repeats; expanded at compile time, so the audio thread is unchanged.
 - **Tempo** (2026-10-21): typed in a box beside the transport.
+- **Export** (2026-10-23, `docs/design/export.md`): File → Export… (Ctrl+E): WAV (16 dithered / 24 / 32 float) or MP3 (192 / 256 / 320 kbps, LAME behind `daw-host`'s `mp3` feature, LGPL: settle before release), whole song (to the last clip's end) or the loop, tail until silent or off. Renders a copy of the song offline on its own thread and plugin host (`daw_host::export`), sample-for-sample the live sound, latency trimmed; the app stays usable; cancel leaves no file.
 - **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
 The project file is at **version 19** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
@@ -51,6 +52,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 
 - **Menu bar:** File → Preferences… (Ctrl+,: Audio, Appearance and Plugins) and Quit (Ctrl+Q, saves first); Track → Import Audio….
 - **Launch page:** new project (`Documents/DAW Projects/<name>/project.json`), Open…, recent projects. New songs start with one Synth node and one clip of demo notes.
+- **Menu bar:** File → Export… (Ctrl+E) as well.
 - **Header:** song name menu (Save, Rename, Back to projects) with "4/4 · Saved" under it, page tabs (Arrange, Parameters, Signals, Mixer), the pointer / scissors tool and snap control, transport (back, play/stop, loop, position) and **tempo** (click to type, Enter applies, Escape cancels; 20 to 999 BPM, two decimals), CPU meter.
 - **Arrange:** the node list (colour, name, meter, signal button, M/S) with the nesting map and toolbar, and clips on the timeline. Click the ruler to locate; click a node to select it (this enables Parameters and points the bottom panel at it). Double-click a clip, or an empty lane, to open the bottom panel: the piano roll for MIDI, the audio panel for audio.
 - **Parameters:** per device, "+ Add Parameter" makes a result row with its layers. Layers: drag to reorder, rename, blend mode (Add or Multiply, both centred), mix, show/hide, delete. Block editing on the lanes, settings bar, resting-value slider.
@@ -74,6 +76,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 
 ## Waiting on the user (try it)
 
+- **Export** (2026-10-23): Ctrl+E, export a song with plugins as WAV and as MP3 and listen to both; try Loop, Tail Off, Cancel mid-way, and playing or editing while it renders. Claude checked the files' contents in tests, not by ear.
 - **Device browser and plugin effects** (2026-10-21): "+ Effect" on a strip, Plugins, search, add one of your effects (OTT, ValhallaRoom…), play, save, reopen the song: the plugin should come back with its settings (no editor windows yet; the state round trip is tested with the test plugin).
 - **Plugin instruments** (2026-10-23): "+ Instrument" on a strip → Plugins → Serum 2; play a clip; double-click its slot for its window; Learn a knob. Claude heard nothing (no ears): Serum's chord was checked for sound and timing in a test.
 - **Plugin windows and Learn** (2026-10-23): double-click OTT's slot on its strip; resize Serum 2 FX's window; open two at once; click another app and back (it covers them; clicking the DAW brings them back above it); move a window, save, restart, reopen it (same place); rename the node (title follows); Track → Import Audio… with a plugin window open (the file picker stays above it); turn a knob of a parameter on Parameters and undo; Learn, then turn a knob. Claude saw each of the seven effects' windows open and close (briefly, from a test), not in the app.
@@ -89,7 +92,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 
 ## Next up
 
-1. **Next phase, to choose with the user:** Phase 6 (audio signals: sends, sidechains, following an audio signal's loudness; next in the plan), Phase 9's mixdown and stem export (the app has no export yet), or Phase 7 (built-in devices).
+1. **Next phase, to choose with the user:** Phase 6 (audio signals: sends, sidechains, following an audio signal's loudness; next in the plan), Phase 9's stem export (mixdown export is built), or Phase 7 (built-in devices).
 2. **Phase 5, rest:** a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call).
 3. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): three so far (Arrange double-click, looping a clip, menus). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
 4. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI). Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.

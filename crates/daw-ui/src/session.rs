@@ -232,6 +232,36 @@ impl Session {
         Ok(())
     }
 
+    /// An export of the song as it is now, at the engine's sample rate.
+    /// Running plugins are asked for their state, as when saving.
+    pub fn export_job(
+        &mut self,
+        settings: daw_host::export::ExportSettings,
+        path: PathBuf,
+    ) -> daw_host::export::ExportJob {
+        let config = self.engine.config();
+        daw_host::export::ExportJob {
+            song: self.engine.to_file(),
+            sample_dir: Some(self.folder.clone()),
+            sample_rate: config.sample_rate,
+            threads: config.threads,
+            // Tests run no plugins (their binary can't be a plugin host).
+            plugin_host: daw_host::plugins::host_command().filter(|_| !cfg!(test)),
+            settings,
+            path,
+        }
+    }
+
+    /// The rate the engine renders at (the device's, or the default).
+    pub fn sample_rate(&self) -> u32 {
+        self.engine.config().sample_rate
+    }
+
+    /// Where the song ends: the end of its last clip.
+    pub fn song_end(&self) -> daw_engine::Ticks {
+        daw_host::export::song_end(self.engine.project())
+    }
+
     /// Whether there are changes since the last save.
     pub fn is_edited(&self) -> bool {
         self.engine.content_revision() != self.saved_revision

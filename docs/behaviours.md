@@ -137,6 +137,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Tempo beside the transport: click to type, Enter applies (one undo step) | `transport::typing_a_tempo_sets_the_song_tempo` |
 | Escape, or a tempo outside 20 to 999, leaves it | `transport::escape_or_an_impossible_tempo_leaves_the_tempo` |
 | Ctrl+S saves; Ctrl+Z / Ctrl+Shift+Z undo and redo | – |
+| File → Export… (Ctrl+E, `export.md`): format, quality, range and tail, then a save dialog starting in the project's Exports folder; renders with progress, the app usable around it; Done shows length and peak | `export::ctrl_e_exports_the_song_to_the_chosen_file` |
+| The export dialog closes with Cancel, Escape or a click outside | `export::the_export_dialog_closes_with_cancel_escape_or_a_click_outside` |
 | Snap control: Snap or Slide, grid; Alt flips while dragging | – |
 | Page tabs switch pages | – |
 | Song name menu: Save, Rename, Back to projects | – |
