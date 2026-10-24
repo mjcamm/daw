@@ -173,6 +173,8 @@ impl ProjectView {
     }
 
     fn press_combined(&mut self, node: NodeId, block: &CombinedBlock, event: &MouseDownEvent) {
+        // The block's track (the parent it shows on) is the selected one.
+        self.selected_node = Some(node);
         self.selected_clips.clear();
         self.clear_note_selection();
         self.selected_combined = Some((node, block.start));

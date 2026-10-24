@@ -493,3 +493,32 @@ fn the_piano_roll_takes_the_audio_panels_place_without_sliding() {
         assert_eq!(editor.height, 333., "at the panel's height");
     });
 }
+
+/// docs/behaviours.md: "On Arrange, clicking a clip (or a parent's
+/// combined block) selects its track".
+#[test]
+fn clicking_a_clip_selects_its_track() {
+    use daw_engine::NodeId;
+    let mut h = Harness::new("clip-selects-track");
+    h.view.update(h.cx, |v, _| v.selected_node = None);
+    h.redraw_all();
+    let lane = h.arrange_lane(FIRST_NODE);
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    // The starter clip, a beat in.
+    h.click(point(lane.left() + px(ppb), lane.center().y), 1);
+    assert_eq!(
+        h.view.read_with(h.cx, |v, _| v.selected_node),
+        Some(FIRST_NODE),
+        "the clip's track"
+    );
+    // The same clip shown combined on the Song's lane: the Song.
+    let song = h.arrange_lane(NodeId::ROOT);
+    h.click(point(song.left() + px(ppb), song.center().y), 1);
+    assert_eq!(
+        h.view.read_with(h.cx, |v, _| v.selected_node),
+        Some(NodeId::ROOT),
+        "the parent the block shows on"
+    );
+}

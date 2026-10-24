@@ -107,7 +107,13 @@ impl ProjectView {
         if !self.selected_clips.contains(&id) {
             return;
         }
+        // The clip's track is the selected one, as a click on its row makes it.
         let snapshot = self.session.snapshot();
+        if let Some(node) = snapshot.nodes.iter().find(|n| {
+            n.clips.iter().any(|(c, _)| *c == id) || n.audio_clips.iter().any(|(c, _)| *c == id)
+        }) {
+            self.selected_node = Some(node.id);
+        }
         let shown = display_order(snapshot, &self.folded);
         let rows = row_kinds(&shown);
         let held: Vec<Held> = shown
