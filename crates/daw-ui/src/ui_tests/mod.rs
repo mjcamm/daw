@@ -16,6 +16,7 @@ mod piano_roll;
 mod plugin_params;
 mod rulers;
 mod transport;
+mod zoom;
 
 use crate::project::ProjectView;
 use crate::session::Session;
@@ -171,6 +172,18 @@ impl Harness {
             position: to,
             modifiers: Modifiers::none(),
             pressed_button: Some(MouseButton::Left),
+        });
+        self.redraw();
+    }
+
+    /// Turns the wheel `lines` notches (positive: away, up) at `at` with
+    /// `modifiers` held.
+    pub fn wheel(&mut self, at: Point<Pixels>, lines: f32, modifiers: Modifiers) {
+        self.cx.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Lines(gpui::point(0., lines)),
+            modifiers,
+            touch_phase: gpui::TouchPhase::Moved,
         });
         self.redraw();
     }

@@ -4,7 +4,9 @@
 //! the same proportion across a wide range. Each page keeps its own `Zoom`.
 //!
 //! Shared by every timeline page: the page's frame (`frame.rs`) holds a
-//! `Zoom` and draws the sliders at the ends of its scrollbars.
+//! `Zoom` and draws the sliders at the ends of its scrollbars. Over the
+//! frame, Ctrl+wheel zooms rows and Ctrl+Shift+wheel zooms time, about the
+//! pointer.
 
 use crate::slider;
 use crate::theme::Theme;
@@ -17,6 +19,8 @@ const MIN_ROW_HEIGHT: f32 = 44.;
 const MAX_ROW_HEIGHT: f32 = 400.;
 /// Length of a slider's travel.
 const SLIDER_LENGTH: f32 = 80.;
+/// How much one notch of Ctrl+wheel zooms.
+pub const WHEEL_STEP: f32 = 1.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
@@ -97,6 +101,23 @@ impl Zoom {
         self.with_position(axis, self.position(axis) + travel / SLIDER_LENGTH)
     }
 
+    /// This zoom after `notches` of Ctrl+wheel on `axis` (positive zooms
+    /// in): each notch by the same proportion, within the axis's range.
+    pub fn wheeled(self, axis: Axis, notches: f32) -> Self {
+        let (min, max) = self.range(axis);
+        let value = (self.get(axis) * WHEEL_STEP.powf(notches)).clamp(min, max);
+        match axis {
+            Axis::Horizontal => Self {
+                pixels_per_beat: value,
+                ..self
+            },
+            Axis::Vertical => Self {
+                row_height: value.round(),
+                ..self
+            },
+        }
+    }
+
     pub fn beat_to_x(self, beats: f64) -> f32 {
         beats as f32 * self.pixels_per_beat
     }
@@ -166,6 +187,30 @@ pub fn slider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wheel_notch_zooms_by_a_step_and_stays_in_range() {
+        let zoom = Zoom::new(24., 56.);
+        let wider = zoom.wheeled(Axis::Horizontal, 1.);
+        assert!((wider.pixels_per_beat - 24. * WHEEL_STEP).abs() < 1e-4);
+        assert_eq!(wider.row_height, 56., "only its own axis");
+        let back = wider.wheeled(Axis::Horizontal, -1.);
+        assert!(
+            (back.pixels_per_beat - 24.).abs() < 1e-3,
+            "a notch back undoes it"
+        );
+        let taller = zoom.wheeled(Axis::Vertical, 2.);
+        assert_eq!(taller.row_height, (56. * WHEEL_STEP * WHEEL_STEP).round());
+        assert_eq!(taller.pixels_per_beat, 24.);
+        assert_eq!(
+            zoom.wheeled(Axis::Horizontal, 100.).pixels_per_beat,
+            MAX_PIXELS_PER_BEAT
+        );
+        assert_eq!(
+            zoom.wheeled(Axis::Vertical, -100.).row_height,
+            MIN_ROW_HEIGHT
+        );
+    }
 
     #[test]
     fn slider_positions_span_the_range_on_a_log_scale() {

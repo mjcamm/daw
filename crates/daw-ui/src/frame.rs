@@ -19,9 +19,12 @@ use crate::scroll::{self, Extent, ScrollDrag};
 use crate::slider::Axis;
 use crate::theme::Theme;
 use crate::zoom::{self, Zoom, ZoomDrag, keep_anchor, zoom_anchor};
+
+/// Pixels a wheel's line counts for: one notch of zoom.
+const WHEEL_LINE: f32 = 20.;
 use gpui::{
-    AnyElement, Bounds, Context, Div, MouseButton, MouseDownEvent, Pixels, Point, ScrollHandle,
-    canvas, div, prelude::*, px,
+    AnyElement, Bounds, Context, DispatchPhase, Div, MouseButton, MouseDownEvent, Pixels, Point,
+    ScrollHandle, ScrollWheelEvent, canvas, div, prelude::*, px,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -232,6 +235,88 @@ impl ProjectView {
                     .child(vertical),
             )
             .child(horizontal)
+            .child(self.wheel_zoom_tracker(timeline, cx))
+    }
+
+    /// Over the frame, Ctrl+wheel zooms rows and Ctrl+Shift+wheel zooms
+    /// time, about the pointer. Caught before the lanes scroll; a wheel
+    /// without Ctrl scrolls as usual.
+    fn wheel_zoom_tracker(&self, timeline: Timeline, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        canvas(
+            |_, _, _| {},
+            move |bounds, (), window, _| {
+                let view = view.clone();
+                window.on_mouse_event(move |e: &ScrollWheelEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Capture
+                        || !e.modifiers.secondary()
+                        || !bounds.contains(&e.position)
+                    {
+                        return;
+                    }
+                    let _ = view.update(cx, |this, cx| {
+                        this.wheel_zoom(timeline, e);
+                        this.invalidate_all(cx);
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// Zooms `timeline` by a wheel turned with Ctrl held (Shift: time).
+    pub(crate) fn wheel_zoom(&mut self, timeline: Timeline, event: &ScrollWheelEvent) {
+        let delta = event.delta.pixel_delta(px(WHEEL_LINE));
+        // Shift may turn the wheel sideways.
+        let turned = if delta.y == px(0.) { delta.x } else { delta.y };
+        let notches = turned / px(WHEEL_LINE);
+        let axis = if event.modifiers.shift {
+            zoom::Axis::Horizontal
+        } else {
+            zoom::Axis::Vertical
+        };
+        let zoom = self.timeline(timeline).zoom.wheeled(axis, notches);
+        self.set_zoom(timeline, zoom, Some(event.position));
+    }
+
+    /// Sets a timeline's zoom, holding still what is under `pointer` (a
+    /// wheel), or (a zoom slider) the playhead if in view, else the
+    /// middle, in time, and the middle of the piano roll's keys.
+    fn set_zoom(&mut self, timeline: Timeline, zoom: Zoom, pointer: Option<Point<Pixels>>) {
+        let playhead_beats = self.session.position_beats() as f32;
+        // The piano roll's time starts at its clip.
+        let playhead_beats = if timeline == Timeline::Notes {
+            playhead_beats - self.note_editor_start().unwrap_or(0.)
+        } else {
+            playhead_beats
+        };
+        let view = self.timeline_mut(timeline);
+        let old_rows = view.zoom.row_height;
+        if zoom.row_height != old_rows {
+            let extent = Extent::of(&view.y, Axis::Vertical);
+            let anchor = match pointer {
+                Some(at) => Some((at.y - view.y.bounds().top()) / px(1.)),
+                None => (timeline == Timeline::Notes).then_some(extent.view / 2.),
+            };
+            if let Some(anchor) = anchor {
+                let scrolled = keep_anchor(extent.scrolled, anchor, old_rows, zoom.row_height);
+                scroll::scroll_to(&view.y, Axis::Vertical, scrolled);
+            }
+        }
+        let old = view.zoom.pixels_per_beat;
+        if zoom.pixels_per_beat != old {
+            let extent = Extent::of(&view.x, Axis::Horizontal);
+            let anchor = match pointer {
+                Some(at) => (at.x - view.x.bounds().left()) / px(1.),
+                None => zoom_anchor(playhead_beats * old, extent.scrolled, extent.view),
+            };
+            let scrolled = keep_anchor(extent.scrolled, anchor, old, zoom.pixels_per_beat);
+            scroll::scroll_to(&view.x, Axis::Horizontal, scrolled);
+        }
+        view.zoom = zoom;
     }
 
     fn scrollbar(
@@ -351,9 +436,6 @@ impl ProjectView {
     }
 
     pub(crate) fn drag_frame(&mut self, position: Point<Pixels>) -> bool {
-        let playhead_beats = self.session.position_beats() as f32;
-        // The piano roll's time starts at its clip.
-        let clip_start = self.note_editor_start().unwrap_or(0.);
         match self.frame_drag {
             None => false,
             Some(FrameDrag::Pan(pan)) => {
@@ -373,29 +455,7 @@ impl ProjectView {
                 true
             }
             Some(FrameDrag::Zoom(timeline, drag)) => {
-                let zoom = drag.zoom_at(position);
-                let playhead_beats = if timeline == Timeline::Notes {
-                    playhead_beats - clip_start
-                } else {
-                    playhead_beats
-                };
-                let view = self.timeline_mut(timeline);
-                // The piano roll's keys zoom about the middle of the view.
-                let old_key = view.zoom.row_height;
-                if timeline == Timeline::Notes && zoom.row_height != old_key {
-                    let extent = Extent::of(&view.y, Axis::Vertical);
-                    let middle = extent.view / 2.;
-                    let scrolled = keep_anchor(extent.scrolled, middle, old_key, zoom.row_height);
-                    scroll::scroll_to(&view.y, Axis::Vertical, scrolled);
-                }
-                let old = view.zoom.pixels_per_beat;
-                if zoom.pixels_per_beat != old {
-                    let extent = Extent::of(&view.x, Axis::Horizontal);
-                    let anchor = zoom_anchor(playhead_beats * old, extent.scrolled, extent.view);
-                    let scrolled = keep_anchor(extent.scrolled, anchor, old, zoom.pixels_per_beat);
-                    scroll::scroll_to(&view.x, Axis::Horizontal, scrolled);
-                }
-                view.zoom = zoom;
+                self.set_zoom(timeline, drag.zoom_at(position), None);
                 true
             }
         }

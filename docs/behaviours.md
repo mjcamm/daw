@@ -138,6 +138,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 |---|---|
 | Menus open on press (like native menus); pressing an open menu's trigger closes it | `menus::a_menu_opens_on_press_and_its_trigger_closes_it` |
 | Space plays and stops | – |
+| Ctrl+wheel zooms rows and Ctrl+Shift+wheel zooms time on every timeline (Arrange, Parameters, Signals, piano roll, audio panel), about the pointer; a plain wheel still scrolls | `zoom::ctrl_wheel_zooms_rows_and_ctrl_shift_wheel_zooms_time_everywhere` |
 | The metronome button beside the transport switches the click on and off (lit when on); kept for every song (`metronome.md`) | `metronome::the_metronome_button_switches_the_click`, `metronome::the_transport_switch_is_kept_in_the_preferences` |
 | Hovering the volume button opens a vertical slider for the click's level; it stays while over the button or the slider, or while held; the click follows the drag | `metronome::hovering_the_volume_button_opens_its_slider` |
 | Preferences → Metronome: sound (picking one plays it), accent on beat 1, pitch and volume; kept in the preferences and heard at once | `metronome::the_metronome_page_sets_the_click_and_keeps_it` |
