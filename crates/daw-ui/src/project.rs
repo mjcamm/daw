@@ -127,16 +127,14 @@ pub struct ProjectView {
     /// Arrange's tool: the pointer, or the scissors.
     pub(crate) arrange_tool: crate::arrange::ArrangeTool,
     /// The clip and part of it under the pointer on Arrange (node, clip,
-    /// part) at the last move: a change redraws the lanes, which work the
-    /// part out again from `arrange_pointer` against the clips as drawn.
-    pub(crate) arrange_hover: Option<(NodeId, daw_engine::ClipId, crate::clip_edit::Grab)>,
+    /// part) as the lanes last drew it, worked out from `arrange_pointer`
+    /// against the clips as drawn (its cursor and loop icon). A move that
+    /// finds another part redraws them.
+    pub(crate) arrange_hover: Cell<Option<(NodeId, daw_engine::ClipId, crate::clip_edit::Grab)>>,
     /// The pointer while it is over Arrange's lanes: what the lanes' cursor
     /// and loop icon follow, so they are right after a drag or an edit
     /// moves a clip under a still pointer.
     pub(crate) arrange_pointer: Option<gpui::Point<Pixels>>,
-    /// The part of a clip the lanes last showed under the pointer (its
-    /// cursor), as drawn: for tests.
-    pub(crate) arrange_shown_part: Cell<Option<(NodeId, crate::clip_edit::Grab)>>,
     /// A hover effect changed (a cursor, a preview): the pane under the
     /// pointer redraws. Plain moves redraw nothing otherwise.
     pub(crate) hover_changed: bool,
@@ -339,9 +337,8 @@ impl ProjectView {
             file_hover: None,
             arrange_tool: crate::arrange::ArrangeTool::Pointer,
             scissors_at: None,
-            arrange_hover: None,
+            arrange_hover: Cell::new(None),
             arrange_pointer: None,
-            arrange_shown_part: Cell::new(None),
             hover_changed: false,
             lane_hover: None,
             roll_hovered: false,

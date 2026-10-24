@@ -1148,7 +1148,7 @@ impl ProjectView {
         };
         // Every clip as shown this frame, for the parents' combined blocks.
         let shown_clips = self.shown_clips();
-        self.arrange_shown_part.set(None);
+        self.arrange_hover.set(None);
         let mut row_top = 0.;
         let lanes: Vec<_> = rows
             .iter()
@@ -1214,10 +1214,11 @@ impl ProjectView {
                                 .map(|(clip, grab)| (clip, grab, at))
                         })?
                     });
-                if dragging.is_none()
-                    && let Some((clip, _, _)) = pointed
-                {
-                    crate::clip_paint::show_loop_icon(&mut painted, clip);
+                if let Some((clip, grab, _)) = pointed {
+                    self.arrange_hover.set(Some((id, clip, grab)));
+                    if dragging.is_none() {
+                        crate::clip_paint::show_loop_icon(&mut painted, clip);
+                    }
                 }
                 let part = match dragging {
                     Some(drag) => drag
@@ -1227,9 +1228,6 @@ impl ProjectView {
                         .then_some((drag.grab(), drag.pointer())),
                     None => pointed.map(|(_, grab, at)| (grab, at)),
                 };
-                if let Some((grab, _)) = part {
-                    self.arrange_shown_part.set(Some((id, grab)));
-                }
                 let resize_cursor = matches!(part, Some((Grab::Start | Grab::End, _)));
                 // GPUI has no loop cursor: hide it and draw the icon there.
                 let loop_cursor = part.filter(|(grab, _)| *grab == Grab::Loop).map(|(_, at)| {
@@ -1271,10 +1269,11 @@ impl ProjectView {
                                 .map(|(clip, grab)| (id, clip, grab));
                             let on_loop = matches!(hover, Some((_, _, Grab::Loop)));
                             let was_on_loop =
-                                matches!(this.arrange_hover, Some((_, _, Grab::Loop)));
+                                matches!(this.arrange_hover.get(), Some((_, _, Grab::Loop)));
                             this.arrange_pointer = Some(event.position);
-                            if hover != this.arrange_hover || on_loop || was_on_loop {
-                                this.arrange_hover = hover;
+                            // Against what the lanes show, not the last move:
+                            // a drag or an edit may have moved the clips since.
+                            if hover != this.arrange_hover.get() || on_loop || was_on_loop {
                                 this.hover_changed(cx);
                             }
                         }),

@@ -147,6 +147,17 @@ impl Harness {
         self.redraw();
     }
 
+    /// Moves the pointer with no button held, drawing only what the app
+    /// asks to redraw (as a real move: cached panes stay unless notified).
+    pub fn hover(&mut self, to: Point<Pixels>) {
+        self.cx.simulate_event(gpui::MouseMoveEvent {
+            position: to,
+            modifiers: Modifiers::none(),
+            pressed_button: None,
+        });
+        self.cx.run_until_parked();
+    }
+
     /// Moves the pointer with the left button held (after [`Self::press`]).
     pub fn move_held(&mut self, to: Point<Pixels>) {
         self.cx.simulate_event(gpui::MouseMoveEvent {

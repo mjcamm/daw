@@ -15,7 +15,7 @@ Test names are in `ui_tests/<file>.rs`. A dash means untested.
 The dashes below are the backlog. To cover one:
 
 1. Tag what the test presses with `.debug_selector(|| format!("<page>-<thing>-{}", id.0))` in the view (it does nothing in normal builds).
-2. Add a test to `crates/daw-ui/src/ui_tests/<page>.rs` (one file per page; register new files in `ui_tests/mod.rs`). `Harness::new("<name>")` opens the starter song (a Synth node, one clip over bars 1–4) headless; `h.bounds(..)` / `h.arrange_lane(..)` find things, `h.click(at, clicks)` presses, `h.snapshot()` reads the engine, `h.view.read_with(h.cx, ..)` reads view state (selection, open panels). Add harness helpers (drags, keys via `h.cx.simulate_keystrokes("ctrl-z")`) as tests need them.
+2. Add a test to `crates/daw-ui/src/ui_tests/<page>.rs` (one file per page; register new files in `ui_tests/mod.rs`). `Harness::new("<name>")` opens the starter song (a Synth node, one clip over bars 1–4) headless; `h.bounds(..)` / `h.arrange_lane(..)` find things, `h.click(at, clicks)` presses, `h.snapshot()` reads the engine, `h.view.read_with(h.cx, ..)` reads view state (selection, open panels). Add harness helpers (drags, keys via `h.cx.simulate_keystrokes("ctrl-z")`) as tests need them. `h.redraw()` (and helpers that call it) rebuilds every pane, which hides bugs in cached panes; for hover looks and cursors, move with `h.hover(at)`, which draws only what the app asks to redraw, as a real move does.
 3. Assert the result in the engine (clips, notes, nodes) and in view state, not pixels.
 4. Check it catches the bug: break the behaviour briefly and see the test fail.
 5. Put the test's name on the behaviour's line here.
@@ -34,7 +34,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Drag clips to move (snapped, between rows); Ctrl copies; Alt flips snap; Escape cancels | – |
 | A clip drag is heard as it moves; Escape puts it back | `live_drags::a_clip_drag_is_heard_as_it_moves_and_escape_puts_it_back` |
 | Drag a clip's edge to resize (trim and reveal for audio); a press on its outline or up to 4 px past it takes the end, so narrow clips resize too | `arrange::dragging_from_just_past_a_clips_end_resizes_it` |
-| The cursor on the lanes follows the clips as they are: right after a drag lands or an undo (pointer still), and a resize cursor holds through the whole drag, off the row too | `arrange::the_resize_cursor_follows_the_clip_after_a_drag` |
+| The cursor on the lanes follows the clips as they are: right after a drag lands or an undo (pointer still), moving away and back after a drag, and a resize cursor holds through the whole drag, off the row too | `arrange::the_resize_cursor_follows_the_clip_after_a_drag`, `arrange::after_a_drag_moving_away_and_back_shows_the_right_cursor` |
 | Drag the top of a clip's right end (or its loop icon, shown on hover or selection) to loop it: whole repeats, linked; repeats softer with a line at each cycle end (`clip-loops.md`) | `arrange::dragging_the_top_of_a_clips_end_loops_it` |
 | Dropping clips below the last row makes a new node of their kind | – |
 | A dropped or resized clip cuts what it lands on (clips never overlap on a node) | – |

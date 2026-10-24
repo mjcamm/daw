@@ -107,7 +107,11 @@ fn the_resize_cursor_follows_the_clip_after_a_drag() {
         .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
     let end_x = lane.left() + px((start + length).as_beats() as f32 * ppb);
     let grab = point(end_x - px(2.), lane.bottom() - px(12.));
-    let shown = |h: &mut Harness| h.view.read_with(h.cx, |v, _| v.arrange_shown_part.get());
+    let shown = |h: &mut Harness| {
+        h.view.read_with(h.cx, |v, _| {
+            v.arrange_hover.get().map(|(n, _, grab)| (n, grab))
+        })
+    };
     h.move_to(grab);
     assert_eq!(
         shown(&mut h),
@@ -137,4 +141,56 @@ fn the_resize_cursor_follows_the_clip_after_a_drag() {
     // Undo puts the end back under a still pointer: no resize cursor left.
     h.keys("ctrl-z");
     assert_eq!(shown(&mut h), None, "nothing under the pointer now");
+}
+
+/// docs/behaviours.md: "The cursor on the lanes follows the clips as they
+/// are ...": after a resize either way, moving into the body shows the
+/// plain cursor, back to the end the resize one, past it none.
+#[test]
+fn after_a_drag_moving_away_and_back_shows_the_right_cursor() {
+    for beats in [-4., 4.] {
+        away_and_back(beats);
+    }
+}
+
+/// Drags the starter clip's end `beats` on (back if negative), lets go,
+/// then hovers the body, the end and past it with real (cached) moves.
+fn away_and_back(beats: f32) {
+    use crate::clip_edit::Grab;
+    let mut h = Harness::new(&format!("arrange-cursor-away-back-{beats}"));
+    let lane = h.arrange_lane(FIRST_NODE);
+    let (start, length) = h.view.read_with(h.cx, |v, _| {
+        let node = v
+            .session()
+            .snapshot()
+            .node(FIRST_NODE)
+            .expect("the synth")
+            .clone();
+        let clip = &node.clips[0].1;
+        (clip.start, clip.length)
+    });
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    let end_x = lane.left() + px((start + length).as_beats() as f32 * ppb);
+    let y = lane.bottom() - px(12.);
+    let shown = |h: &mut Harness| {
+        h.view
+            .read_with(h.cx, |v, _| v.arrange_hover.get().map(|(_, _, grab)| grab))
+    };
+    let grab = point(end_x - px(2.), y);
+    let to = point(grab.x + px(beats * ppb), y);
+    h.press(grab);
+    h.move_held(point(grab.x + px(beats / 2. * ppb), y));
+    h.move_held(to);
+    h.release(to);
+    assert_eq!(shown(&mut h), Some(Grab::End), "{beats}: on the new end");
+    h.hover(point(to.x - px(2. * ppb), y));
+    assert_eq!(shown(&mut h), Some(Grab::Body), "{beats}: the body moves");
+    h.hover(to);
+    assert_eq!(shown(&mut h), Some(Grab::End), "{beats}: back on the end");
+    h.hover(point(to.x + px(2. * ppb), y));
+    assert_eq!(shown(&mut h), None, "{beats}: empty lane");
+    h.hover(to);
+    assert_eq!(shown(&mut h), Some(Grab::End), "{beats}: and back again");
 }
