@@ -1193,8 +1193,10 @@ impl ProjectView {
                         })
                         .collect();
                 // Where each clip is, for presses and the cursor.
-                let spans: Vec<(daw_engine::ClipId, f32, f32)> =
-                    painted.iter().map(|c| (c.id, c.left, c.width)).collect();
+                let spans: Vec<(daw_engine::ClipId, f32, f32, bool)> = painted
+                    .iter()
+                    .map(|c| (c.id, c.left, c.width, c.looped))
+                    .collect();
                 // What a press here would do, or what the drag is doing: the
                 // ends resize, the loop zone drags out repeats.
                 let clip_height = zoom.row_height - 2. * crate::clip_paint::CLIP_INSET;

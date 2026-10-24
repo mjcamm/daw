@@ -194,3 +194,83 @@ fn away_and_back(beats: f32) {
     h.hover(to);
     assert_eq!(shown(&mut h), Some(Grab::End), "{beats}: and back again");
 }
+
+/// Seeds the starter clip looped on its own length, two cycles; returns
+/// its end on screen (x), the lane, its cycle and pixels per beat.
+fn looped_starter(h: &mut Harness) -> (gpui::Pixels, gpui::Bounds<gpui::Pixels>, Ticks, f32) {
+    let (id, clip) = h.view.read_with(h.cx, |v, _| {
+        let node = v
+            .session()
+            .snapshot()
+            .node(FIRST_NODE)
+            .expect("the synth")
+            .clone();
+        node.clips[0].clone()
+    });
+    let cycle = clip.length;
+    h.view.update(h.cx, |v, _| {
+        v.session
+            .apply(daw_engine::Command::Edit(daw_engine::Edit::SetClip {
+                id,
+                node: FIRST_NODE,
+                clip: daw_engine::MidiClip {
+                    length: cycle + cycle,
+                    looping: Some(daw_engine::ClipLoop::new(cycle)),
+                    ..clip.clone()
+                },
+            }));
+    });
+    h.redraw();
+    let lane = h.arrange_lane(FIRST_NODE);
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    let end_x = lane.left() + px((clip.start + cycle + cycle).as_beats() as f32 * ppb);
+    (end_x, lane, cycle, ppb)
+}
+
+/// docs/behaviours.md: "A looped clip's right end only drags repeats".
+#[test]
+fn a_looped_clips_end_drags_repeats_never_resizes() {
+    use crate::clip_edit::Grab;
+    let mut h = Harness::new("arrange-looped-end");
+    let (end_x, lane, cycle, ppb) = looped_starter(&mut h);
+    // Low on the end, where an unlooped clip resizes, and just past it.
+    let low = point(end_x - px(2.), lane.bottom() - px(12.));
+    for at in [low, point(end_x + px(2.), low.y)] {
+        h.hover(at);
+        assert_eq!(
+            h.view
+                .read_with(h.cx, |v, _| v.arrange_hover.get().map(|(_, _, g)| g)),
+            Some(Grab::Loop)
+        );
+    }
+    // Half a cycle on: a whole repeat more, never a part of one.
+    h.drag(
+        low,
+        point(low.x + px(cycle.as_beats() as f32 * ppb * 0.6), low.y),
+        6,
+    );
+    let snapshot = h.snapshot();
+    let clip = &snapshot.node(FIRST_NODE).unwrap().clips[0].1;
+    assert_eq!(clip.length, cycle + cycle + cycle, "three cycles");
+    assert_eq!(clip.looping, Some(daw_engine::ClipLoop::new(cycle)));
+}
+
+/// docs/behaviours.md: "Drag the top of a clip's right end ... to loop it":
+/// while dragging, the clip shows its repeats as they will look.
+#[test]
+fn dragging_out_a_loop_shows_its_repeats() {
+    let mut h = Harness::new("arrange-loop-ghost");
+    let (end_x, lane, cycle, ppb) = looped_starter(&mut h);
+    let grab = point(end_x - px(2.), lane.bottom() - px(12.));
+    h.press(grab);
+    h.move_held(point(grab.x + px(cycle.as_beats() as f32 * ppb), grab.y));
+    let seams = h.view.read_with(h.cx, |v, cx| {
+        let (drag, plan) = v.clip_plan().expect("dragging");
+        let theme = crate::theme::Theme::get(cx);
+        v.drag_ghosts(drag.held(), &plan, &theme)[0].seams.len()
+    });
+    assert_eq!(seams, 2, "three cycles: a line at the end of the first two");
+    h.release(grab);
+}

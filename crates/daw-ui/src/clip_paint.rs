@@ -66,6 +66,8 @@ pub struct Painted {
     pub seam_color: Hsla,
     /// Show the loop icon (hovered or selected).
     pub loop_icon: bool,
+    /// Looped: its right end only drags repeats (`clip_at`).
+    pub looped: bool,
 }
 
 /// The clip and the part of it at `x` pixels from the lane's left and `y`
@@ -73,9 +75,10 @@ pub struct Painted {
 /// on top. The ends resize when the clip is wide enough for both zones and
 /// its middle; the top quarter of the right end, and the loop icon beside
 /// it, drag out repeats (as on blocks). Just outside a clip, its nearest
-/// end resizes (any clip, however narrow).
+/// end resizes (any clip, however narrow). Clips come as (id, left, width,
+/// looped): a looped clip's right end only drags repeats, never resizes.
 pub fn clip_at(
-    clips: &[(ClipId, f32, f32)],
+    clips: &[(ClipId, f32, f32, bool)],
     x: f32,
     y: f32,
     height: f32,
@@ -84,14 +87,15 @@ pub fn clip_at(
 }
 
 /// The end of a clip just outside it, the nearest if two are close.
-fn beside_clip(clips: &[(ClipId, f32, f32)], x: f32) -> Option<(ClipId, Grab)> {
+fn beside_clip(clips: &[(ClipId, f32, f32, bool)], x: f32) -> Option<(ClipId, Grab)> {
     clips
         .iter()
         .rev()
-        .filter_map(|&(id, left, width)| {
+        .filter_map(|&(id, left, width, looped)| {
             let right = left + width;
             if (right..right + OUTSIDE).contains(&x) {
-                Some((x - right, (id, Grab::End)))
+                let end = if looped { Grab::Loop } else { Grab::End };
+                Some((x - right, (id, end)))
             } else if (left - OUTSIDE..left).contains(&x) {
                 Some((left - x, (id, Grab::Start)))
             } else {
@@ -103,7 +107,7 @@ fn beside_clip(clips: &[(ClipId, f32, f32)], x: f32) -> Option<(ClipId, Grab)> {
 }
 
 fn inside_clip(
-    clips: &[(ClipId, f32, f32)],
+    clips: &[(ClipId, f32, f32, bool)],
     x: f32,
     y: f32,
     height: f32,
@@ -111,8 +115,8 @@ fn inside_clip(
     clips
         .iter()
         .rev()
-        .find(|(_, left, width)| x >= *left && x < left + width)
-        .map(|&(id, left, width)| {
+        .find(|(_, left, width, _)| x >= *left && x < left + width)
+        .map(|&(id, left, width, looped)| {
             let edges = width >= 3. * EDGE;
             let right = left + width;
             let in_band = (0.0..loop_band(height)).contains(&y);
@@ -126,7 +130,7 @@ fn inside_clip(
             } else if edges && x < left + EDGE {
                 Grab::Start
             } else if edges && x >= right - EDGE {
-                Grab::End
+                if looped { Grab::Loop } else { Grab::End }
             } else {
                 Grab::Body
             };
@@ -152,12 +156,28 @@ impl ProjectView {
         color: ContentColor,
         theme: &Theme,
     ) -> Painted {
-        let zoom = self.arrange_view.zoom;
         let selected = self.selected_clips.contains(&id);
         let moving = self
             .clip_drag
             .as_ref()
             .is_some_and(|d| d.started() && d.moving().contains(&id));
+        self.clip_look(id, clip, label, color, selected, moving, theme)
+    }
+
+    /// A clip's painted look, `selected` (accent outline) or not, faint if
+    /// `moving`: on the lanes, and as a drag's ghost (loop look and all).
+    #[allow(clippy::too_many_arguments, reason = "a clip's look is all of these")]
+    pub(crate) fn clip_look(
+        &self,
+        id: ClipId,
+        clip: &AnyClip,
+        label: &str,
+        color: ContentColor,
+        selected: bool,
+        moving: bool,
+        theme: &Theme,
+    ) -> Painted {
+        let zoom = self.arrange_view.zoom;
         let height = zoom.row_height - 2. * CLIP_INSET;
         let (label, content) = match clip {
             AnyClip::Midi(c) => (
@@ -241,6 +261,7 @@ impl ProjectView {
             seam_color: faint(seam_color, moving),
             // Hovered clips show it too (the lanes set that, `show_loop_icon`).
             loop_icon: selected && width >= 3. * EDGE,
+            looped: clip.looping().is_some(),
         }
     }
 }
@@ -358,7 +379,7 @@ mod tests {
 
     #[test]
     fn a_press_finds_the_clip_and_its_part() {
-        let clips = [(ClipId(1), 0., 100.), (ClipId(2), 100., 10.)];
+        let clips = [(ClipId(1), 0., 100., false), (ClipId(2), 100., 10., false)];
         let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
         assert_eq!(at(50.), Some((ClipId(1), Grab::Body)));
         assert_eq!(at(2.), Some((ClipId(1), Grab::Start)), "left edge");
@@ -373,7 +394,7 @@ mod tests {
 
     #[test]
     fn the_top_of_the_right_end_and_the_loop_icon_drag_out_repeats() {
-        let clips = [(ClipId(1), 0., 100.)];
+        let clips = [(ClipId(1), 0., 100., false)];
         assert_eq!(
             clip_at(&clips, 97., 2., HEIGHT),
             Some((ClipId(1), Grab::Loop)),
@@ -400,7 +421,7 @@ mod tests {
     fn a_press_just_outside_an_end_still_grabs_it() {
         // The outline is what the eye aims at: a press on it or a little
         // past it takes that end, not the empty lane.
-        let clips = [(ClipId(1), 50., 100.)];
+        let clips = [(ClipId(1), 50., 100., false)];
         let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
         assert_eq!(at(150. + OUTSIDE - 1.), Some((ClipId(1), Grab::End)));
         assert_eq!(at(50. - OUTSIDE + 1.), Some((ClipId(1), Grab::Start)));
@@ -414,7 +435,7 @@ mod tests {
 
     #[test]
     fn a_clip_too_narrow_for_edges_resizes_from_just_outside() {
-        let clips = [(ClipId(1), 100., 10.)];
+        let clips = [(ClipId(1), 100., 10., false)];
         let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
         assert_eq!(at(105.), Some((ClipId(1), Grab::Body)), "inside moves it");
         assert_eq!(at(111.), Some((ClipId(1), Grab::End)));
@@ -424,15 +445,34 @@ mod tests {
     #[test]
     fn where_clips_meet_inside_wins_over_outside() {
         // Back to back: just past the first's end is the second's start.
-        let clips = [(ClipId(1), 0., 100.), (ClipId(2), 100., 100.)];
+        let clips = [(ClipId(1), 0., 100., false), (ClipId(2), 100., 100., false)];
         let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
         assert_eq!(at(99.), Some((ClipId(1), Grab::End)));
         assert_eq!(at(101.), Some((ClipId(2), Grab::Start)));
     }
 
     #[test]
+    fn a_looped_clips_end_only_loops() {
+        // Its right end drags repeats in or out, top to bottom, on the
+        // outline and just past it; its start still trims.
+        let clips = [(ClipId(1), 0., 100., true)];
+        let at = |x, y| clip_at(&clips, x, y, HEIGHT);
+        assert_eq!(at(97., HEIGHT - 2.), Some((ClipId(1), Grab::Loop)), "low");
+        assert_eq!(at(97., MIDDLE), Some((ClipId(1), Grab::Loop)), "middle");
+        assert_eq!(at(102., MIDDLE), Some((ClipId(1), Grab::Loop)), "just past");
+        assert_eq!(at(2., MIDDLE), Some((ClipId(1), Grab::Start)));
+        assert_eq!(at(50., MIDDLE), Some((ClipId(1), Grab::Body)));
+        // Too narrow for inner zones: from just past its end.
+        let narrow = [(ClipId(2), 100., 10., true)];
+        assert_eq!(
+            clip_at(&narrow, 111., MIDDLE, HEIGHT),
+            Some((ClipId(2), Grab::Loop))
+        );
+    }
+
+    #[test]
     fn a_later_clip_wins_where_they_meet() {
-        let clips = [(ClipId(1), 0., 100.), (ClipId(2), 90., 50.)];
+        let clips = [(ClipId(1), 0., 100., false), (ClipId(2), 90., 50., false)];
         assert_eq!(
             clip_at(&clips, 95., MIDDLE, HEIGHT).map(|(id, _)| id),
             Some(ClipId(2))

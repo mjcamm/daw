@@ -9,13 +9,12 @@
 //! drop is one undo step (`clip_edit::land`). The rules live in
 //! `clip_edit.rs`; this file is the hand on the mouse.
 
-use crate::clip_edit::{self, AnyClip, Grab, Held, Landing, Plan};
+use crate::clip_edit::{self, Grab, Held, Landing, Plan};
 use crate::project::ProjectView;
 use crate::scroll::{self, Extent};
 use crate::slider::Axis;
-use crate::theme::{ContentColor, Theme};
+use crate::theme::Theme;
 use crate::tree::{self, display_order};
-use crate::waveform;
 use crate::zoom::Zoom;
 use daw_engine::{ClipId, Command, Edit, MidiClip, Node, NodeId, NodeKind, Ticks};
 use gpui::{AnyElement, FontWeight, Modifiers, MouseDownEvent, Pixels, Point, div, prelude::*, px};
@@ -366,6 +365,33 @@ impl ProjectView {
         self.press_clip(id, grab, event);
     }
 
+    /// Each held clip as it would land, painted as the clip will look (a
+    /// loop's repeats and cycle lines included), outlined in the warning
+    /// colour where it can't go.
+    pub(crate) fn drag_ghosts(
+        &self,
+        held: &[Held],
+        plan: &Plan,
+        theme: &Theme,
+    ) -> Vec<crate::clip_paint::Painted> {
+        let snapshot = self.session.snapshot();
+        plan.places
+            .iter()
+            .zip(held)
+            .map(|((_, clip), held)| {
+                let source = snapshot.node(held.node);
+                let colors = source.map_or(theme.content(0), |n| theme.content(n.color));
+                let label = source.map_or("", |n| n.name.as_str());
+                let mut ghost = self.clip_look(held.id, clip, label, colors, true, false, theme);
+                ghost.loop_icon = false;
+                if !plan.allowed {
+                    ghost.outline = theme.record;
+                }
+                ghost
+            })
+            .collect()
+    }
+
     /// The drag's preview over the lanes: receiving rows lit, ghosts where
     /// the clips would land, the grabbed one labelled with its bar and beat.
     /// `row_tops` gives each row's top; one past the last is the new-node
@@ -374,7 +400,6 @@ impl ProjectView {
         let Some((drag, plan)) = self.clip_plan() else {
             return Vec::new();
         };
-        let snapshot = self.session.snapshot();
         let zoom = self.arrange_view.zoom;
         let row_of = |node: Option<NodeId>| match node {
             None => drag.rows.len(),
@@ -407,14 +432,10 @@ impl ProjectView {
                     .into_any_element()
             })
             .collect();
-        for (index, ((node, clip), held)) in plan.places.iter().zip(&drag.held).enumerate() {
-            let source = snapshot.node(held.node);
-            let colors = source.map_or(theme.content(0), |n| theme.content(n.color));
-            let label = source.map_or("", |n| n.name.as_str());
-            let mut ghost = self.clip_body(clip, label, colors, true, theme);
-            if !plan.allowed {
-                ghost = ghost.border_color(warn);
-            }
+        let ghosts = self.drag_ghosts(&drag.held, &plan, theme);
+        for (index, (((node, clip), _), ghost)) in
+            plan.places.iter().zip(&drag.held).zip(ghosts).enumerate()
+        {
             let top = top_of(row_of(*node));
             // A solid backing, so the ghost reads as replacing what it
             // covers rather than mixing with it.
@@ -434,7 +455,13 @@ impl ProjectView {
                     .top(px(top))
                     .h(px(zoom.row_height))
                     .child(backing)
-                    .child(ghost)
+                    .child(
+                        crate::clip_paint::clips_canvas(vec![ghost])
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                    )
                     .into_any_element(),
             );
             if index == drag.grabbed {
@@ -481,68 +508,6 @@ impl ProjectView {
     }
 }
 
-impl ProjectView {
-    /// A clip's look: soft fill, outline (accent when selected), its label,
-    /// and its notes or waveform.
-    fn clip_body(
-        &self,
-        clip: &AnyClip,
-        label: &str,
-        color: ContentColor,
-        selected: bool,
-        theme: &Theme,
-    ) -> gpui::Div {
-        let zoom = self.arrange_view.zoom;
-        match clip {
-            AnyClip::Midi(c) => clip_body(c, label, color, zoom, selected, theme),
-            AnyClip::Audio(c) => {
-                let snapshot = self.session.snapshot();
-                let bpm = snapshot.tempo_bpm;
-                let sample = snapshot.samples.iter().find(|s| s.id == c.sample);
-                let name = sample.map_or(label, |s| s.name.as_str());
-                // The tag says when the clip is being stretched.
-                let tag = if c.ratio(bpm) == 1.0 {
-                    name.to_owned()
-                } else {
-                    format!("{name} · {} BPM", format_bpm(c.bpm))
-                };
-                // One run of the file per repeat of a loop.
-                let wave: Vec<gpui::Div> = sample
-                    .and_then(|s| s.peaks.clone())
-                    .map(|peaks| {
-                        c.pieces(bpm)
-                            .into_iter()
-                            .map(|piece| {
-                                div()
-                                    .absolute()
-                                    .left(px(zoom.beat_to_x((piece.start - c.start).as_beats())))
-                                    .w(px(zoom.beat_to_x(piece.length.as_beats())))
-                                    .top(px(CLIP_LABEL_HEIGHT))
-                                    .bottom(px(2.))
-                                    .child(waveform::waveform(
-                                        peaks.clone(),
-                                        waveform::Reading::of(&piece, bpm, zoom.pixels_per_beat),
-                                        color.detail,
-                                    ))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                frame_body(
-                    c.start.as_beats(),
-                    c.length.as_beats(),
-                    &tag,
-                    color,
-                    zoom,
-                    selected,
-                    theme,
-                )
-                .children(wave)
-            }
-        }
-    }
-}
-
 /// A tempo as typed: whole numbers plain, else to two places.
 pub(crate) fn format_bpm(bpm: f64) -> String {
     if bpm.fract().abs() < 1e-9 {
@@ -572,71 +537,6 @@ pub(crate) fn note_bars(clip: &MidiClip, color: gpui::Hsla, zoom: Zoom) -> Vec<c
             radius: 1.,
         })
         .collect()
-}
-
-/// A MIDI clip's look: its frame and its notes.
-fn clip_body(
-    clip: &MidiClip,
-    label: &str,
-    color: ContentColor,
-    zoom: Zoom,
-    selected: bool,
-    theme: &Theme,
-) -> gpui::Div {
-    // Every note in one drawing.
-    let notes = crate::paint::bars(note_bars(clip, color.detail, zoom))
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full();
-    frame_body(
-        clip.start.as_beats(),
-        clip.length.as_beats(),
-        label,
-        color,
-        zoom,
-        selected,
-        theme,
-    )
-    .child(notes)
-}
-
-/// Any clip's frame: placed in song time, soft fill, outline (accent when
-/// selected) and its label.
-fn frame_body(
-    start_beats: f64,
-    length_beats: f64,
-    label: &str,
-    color: ContentColor,
-    zoom: Zoom,
-    selected: bool,
-    theme: &Theme,
-) -> gpui::Div {
-    div()
-        .absolute()
-        .left(px(zoom.beat_to_x(start_beats)))
-        .top(px(CLIP_INSET))
-        .w(px(zoom.beat_to_x(length_beats)))
-        .h(px(zoom.row_height - 2. * CLIP_INSET))
-        .rounded(px(5.))
-        .bg(color.fill)
-        .border_1()
-        .border_color(if selected {
-            theme.accent
-        } else {
-            color.outline
-        })
-        .when(selected, |d| d.border_2())
-        .overflow_hidden()
-        .child(
-            div()
-                .px(px(6.))
-                .pt(px(2.))
-                .text_size(px(10.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(color.detail)
-                .child(label.to_owned()),
-        )
 }
 
 #[cfg(test)]

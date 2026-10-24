@@ -17,7 +17,7 @@ Loops are expanded when the project is compiled, so the audio thread is unchange
 
 ## Arrange
 
-- **The same gesture as blocks** (`core-loop-ui.md`): the top quarter of a clip's right edge, and a loop icon there (shown on hover or when selected), drag out repeats; the rest of the edge still trims. Dragging adds or removes whole repeats; dragging back stops at the clip itself, and with every repeat gone (and the loop starting at its beginning) the clip is plain again.
+- **The same gesture as blocks** (`core-loop-ui.md`): the top quarter of a clip's right edge, and a loop icon there (shown on hover or when selected), drag out repeats; the rest of the edge still trims a plain clip. **On a looped clip the whole right end only drags repeats** (the user's call, 2026-10-24: top to bottom, on the outline and just past it; its start still trims), so a loop always ends on a whole repeat. While dragging, the ghost shows the repeats and cycle lines as they will land. Dragging adds or removes whole repeats; dragging back stops at the clip itself, and with every repeat gone (and the loop starting at its beginning) the clip is plain again.
 - **Repeats draw softer**, with a line where each cycle ends: clip, clip, clip.
 - **Edges are windows**, as before: trimming the start moves the phase so the content stays put; trimming the end changes only the length. Cutting with the scissors leaves two looped clips, the right one's phase carrying on. Moving and copying are unchanged. Clips never overlap.
 - An audio clip's BPM change scales its cycle and phase with its length.

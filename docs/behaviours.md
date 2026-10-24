@@ -36,6 +36,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Drag a clip's edge to resize (trim and reveal for audio); a press on its outline or up to 4 px past it takes the end, so narrow clips resize too | `arrange::dragging_from_just_past_a_clips_end_resizes_it` |
 | The cursor on the lanes follows the clips as they are: right after a drag lands or an undo (pointer still), moving away and back after a drag, and a resize cursor holds through the whole drag, off the row too | `arrange::the_resize_cursor_follows_the_clip_after_a_drag`, `arrange::after_a_drag_moving_away_and_back_shows_the_right_cursor` |
 | Drag the top of a clip's right end (or its loop icon, shown on hover or selection) to loop it: whole repeats, linked; repeats softer with a line at each cycle end (`clip-loops.md`) | `arrange::dragging_the_top_of_a_clips_end_loops_it` |
+| A looped clip's right end only drags repeats (top to bottom, on its outline and just past it), never resizes; its start still trims | `arrange::a_looped_clips_end_drags_repeats_never_resizes` |
+| While dragging, the clip shows as it will land: a loop's repeats softer with their cycle lines | `arrange::dragging_out_a_loop_shows_its_repeats` |
 | Dropping clips below the last row makes a new node of their kind | – |
 | A dropped or resized clip cuts what it lands on (clips never overlap on a node) | – |
 | Rows that can't take the clip refuse: red ghost, "Can't go here" | – |

@@ -34,12 +34,6 @@ impl Reading {
     }
 }
 
-/// The waveform filling its parent, centred, in `color`: both sides of the
-/// audio together.
-pub fn waveform(peaks: Arc<Peaks>, reading: Reading, color: Hsla) -> impl IntoElement {
-    channel(peaks, reading, None, color)
-}
-
 /// One side of the audio (`Some(channel)`), or all of them (`None`).
 pub fn channel(
     peaks: Arc<Peaks>,
