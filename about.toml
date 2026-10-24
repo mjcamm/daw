@@ -1,0 +1,35 @@
+# Settings for `cargo about`, which writes licenses/NOTICES.md: every
+# library in the app with its licence and copyright notice. Regenerate with
+# ./scripts/licenses.sh after changing dependencies.
+# In order of preference: where a library offers a choice, the first
+# listed is used (MIT has no NOTICE-file duty, unlike Apache-2.0).
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+    "0BSD",
+    "Unlicense",
+    "NCSA",
+    "MPL-2.0",
+    "LGPL-3.0",
+]
+# The platforms the app is built for.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+# Only what ships in the app: not build tools or test-only libraries.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+# Our own crates (publish = false) are covered by LICENSE-MIT / LICENSE-APACHE.
+private = { ignore = true }
