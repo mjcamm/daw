@@ -43,6 +43,7 @@ pub fn all_clips(snapshot: &Snapshot) -> Vec<PlacedClip> {
 
 /// The blocks for a node's lane: the clips of every node below it, merged
 /// where they overlap or touch.
+#[cfg(test)]
 pub fn combined_blocks(snapshot: &Snapshot, node: NodeId) -> Vec<CombinedBlock> {
     combined_blocks_of(snapshot, node, &all_clips(snapshot))
 }
@@ -243,26 +244,6 @@ impl ProjectView {
         let moving: Vec<ClipId> = drag.clips.iter().map(|(_, id, _)| *id).collect();
         let (edit, _) = clip_edit::land(self.session.snapshot(), &landings, &moving, Vec::new());
         Some(edit)
-    }
-
-    /// Deletes the selected block's clips; false if no block is selected.
-    pub(crate) fn delete_combined(&mut self) -> bool {
-        let Some((node, start)) = self.selected_combined.take() else {
-            return false;
-        };
-        let Some(block) = combined_blocks(self.session.snapshot(), node)
-            .into_iter()
-            .find(|b| b.start == start)
-        else {
-            return false;
-        };
-        let edits = block
-            .clips
-            .iter()
-            .map(|(_, id)| Edit::RemoveClip { id: *id })
-            .collect();
-        self.session.apply(Command::Edit(Edit::Batch(edits)));
-        true
     }
 
     /// A parent's combined blocks, with the notes below in their nodes'

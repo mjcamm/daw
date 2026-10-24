@@ -31,6 +31,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Double-click an audio clip or empty audio lane: the audio panel opens | – |
 | Double-click a combined block on a parent: the editor opens on the parent there | – |
 | Click a clip selects it; Shift+click adds or removes; a press on empty lane clears | – |
+| A parent's combined (inherited) block moves its children's clips; Delete leaves it, and the parent | `arrange::delete_leaves_an_inherited_block_and_its_parent` |
+| Delete (and every shortcut) shows at once, with no mouse move after the key | `arrange::delete_shows_at_once` |
 | On Arrange, clicking a clip selects its track; a parent's combined block selects that parent | `arrange::clicking_a_clip_selects_its_track` |
 | A click on empty space on Arrange (a lane where no clip is, below the lanes, below the nodes) clears the selection (node, clips, block) and closes the bottom panel | `arrange::clicking_empty_space_clears_the_selection_and_closes_the_panel` |
 | With the bottom panel open, a single click on a clip shows it there (piano roll or audio panel) and selects its node; switching between the two swaps in place, at the same height, without sliding up again | `arrange::with_the_panel_open_a_click_on_a_clip_shows_it`, `arrange::the_piano_roll_takes_the_audio_panels_place_without_sliding` |

@@ -522,3 +522,77 @@ fn clicking_a_clip_selects_its_track() {
         "the parent the block shows on"
     );
 }
+
+/// docs/behaviours.md: "Delete removes what is selected ...": shown at
+/// once, with no mouse move after the key.
+#[test]
+fn delete_shows_at_once() {
+    let mut h = Harness::new("delete-at-once");
+    let lane = h.arrange_lane(FIRST_NODE);
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    h.click(point(lane.left() + px(ppb), lane.center().y), 1);
+    // The key alone, drawing only what the app asks for.
+    h.cx.simulate_keystrokes("delete");
+    h.cx.run_until_parked();
+    let shown = h.view.read_with(h.cx, |v, _| {
+        v.session()
+            .snapshot()
+            .node(FIRST_NODE)
+            .expect("the synth")
+            .clips
+            .len()
+    });
+    assert_eq!(shown, 0, "the clip is gone from what the view shows");
+    let drawn = h.view.read_with(h.cx, |v, _| v.drawn_revision);
+    let current = h
+        .view
+        .read_with(h.cx, |v, _| v.session().snapshot().revision);
+    assert_eq!(drawn, current, "the panes redrew for it");
+}
+
+/// docs/behaviours.md: "A parent's combined (inherited) block moves its
+/// children's clips; Delete leaves it, and the parent".
+#[test]
+fn delete_leaves_an_inherited_block_and_its_parent() {
+    use daw_engine::{Command, Edit, Node, NodeId};
+    let mut h = Harness::new("delete-inherited");
+    let group = NodeId(600);
+    h.view.update(h.cx, |v, _| {
+        v.session.apply_or_panic(Command::Edit(Edit::AddNode {
+            id: group,
+            parent: NodeId::ROOT,
+            index: 0,
+            node: Node::new("Group", 4),
+        }));
+        v.session.apply_or_panic(Command::Edit(Edit::MoveNode {
+            id: FIRST_NODE,
+            parent: group,
+            index: 0,
+        }));
+        v.row_motion = Default::default();
+    });
+    h.redraw_all();
+    let lane = h.arrange_lane(group);
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    // The starter clip, shown on the group's lane.
+    h.click(point(lane.left() + px(ppb), lane.center().y), 1);
+    h.view.read_with(h.cx, |v, _| {
+        assert!(
+            v.selected_combined.is_some(),
+            "the inherited block is selected"
+        );
+        assert_eq!(v.selected_node, Some(group));
+    });
+    h.keys("delete");
+    let snapshot = h.snapshot();
+    assert!(snapshot.node(group).is_some(), "the parent stays");
+    assert_eq!(
+        snapshot.node(FIRST_NODE).expect("the synth").clips.len(),
+        1,
+        "the child's clip stays"
+    );
+}

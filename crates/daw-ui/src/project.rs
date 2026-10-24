@@ -238,6 +238,9 @@ pub struct ProjectView {
     pub(crate) param_picker: Option<(Entity<ParamPicker>, Subscription)>,
     /// File → Export…, while open.
     pub(crate) export: Option<(Entity<ExportDialog>, Subscription)>,
+    /// Redraws after every keystroke, once its shortcut (Delete, Undo...)
+    /// has run: key listeners never see a keystroke a shortcut took.
+    _keystrokes: Subscription,
     /// The export settings chosen last; the dialog opens with them.
     export_settings: daw_host::export::ExportSettings,
     /// The browser's side the user chose last; it opens there.
@@ -255,7 +258,7 @@ pub struct ProjectView {
     /// The cached parts of the window; made on the first render.
     panes: Option<Panes>,
     /// The song revision the panes last drew.
-    drawn_revision: u64,
+    pub(crate) drawn_revision: u64,
     /// Where each pane is on screen, for sending input to the right one.
     pane_bounds: PaneBounds,
     /// The pane the pointer was last over.
@@ -316,7 +319,9 @@ impl ProjectView {
     pub fn new(session: Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus);
+        let keystrokes = cx.observe_keystrokes(|this: &mut Self, _, _, cx| this.input(None, cx));
         Self {
+            _keystrokes: keystrokes,
             session,
             page: Page::Arrange,
             loop_drag: None,

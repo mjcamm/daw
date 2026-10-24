@@ -1213,11 +1213,15 @@ impl ProjectView {
             return;
         }
         if self.page == Page::Arrange {
+            // A parent's combined block shows its children's clips: it
+            // moves them, but is not deleted (nor is the parent under it).
+            if self.selected_combined.is_some() {
+                return;
+            }
             // Selected notes in the editor go first, then selected clips;
             // with neither, the selected node.
             if !self.delete_notes()
                 && !self.delete_clips()
-                && !self.delete_combined()
                 && let Some(id) = self.selected_node
             {
                 self.delete_node(id);
