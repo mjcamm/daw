@@ -584,7 +584,7 @@ impl Render for ProjectView {
         if busy {
             // A notes signal's settings in the inspector preview on the
             // page's lanes too.
-            let everywhere = self.notes_drag.is_some();
+            let everywhere = self.notes_drag.is_some() || self.block_setting_drag();
             match self.pressed_pane.filter(|_| self.dragging() && !everywhere) {
                 Some(kind) => self.invalidate(kind, cx),
                 None => self.invalidate_all(cx),

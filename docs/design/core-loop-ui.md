@@ -7,7 +7,7 @@ Decisions behind the Parameters page and the shared timeline frame. Gesture logi
 | Gesture | Result |
 |---|---|
 | Double-click empty lane | New block: one bar, flat on the centre line, starting on the grid, shortened to fit before the next block |
-| Click a block | Select: accent outline, points shown, settings bar at the bottom |
+| Click a block | Select: accent outline, points shown; its settings in the inspector, which opens (2026-10-25, the user's call: depth and fades on sliders, repeat and nudge dragged sideways, invert a switch; the bottom settings bar and its hint line are gone) |
 | Drag the body | Move, snapped, never overlapping neighbours |
 | Drag the left edge, or the right edge below its top quarter | Resize as a **window**: contents stay put in song time (below) |
 | Drag the top quarter of the right edge, or the loop icon beside it | Loop: adds or removes repeats only. Dragging back stops at the block itself; with every repeat gone it is a plain block again |
@@ -24,7 +24,7 @@ Decisions behind the Parameters page and the shared timeline frame. Gesture logi
 
 ## Snap
 
-Header control (magnet): Snap or Slide, grid 1 bar to 1/64, default 1/4. Alt during a drag flips it. Snap also sets the step for time values in the settings bar. A UI preference, not saved in the project.
+Header control (magnet): Snap or Slide, grid 1 bar to 1/64, default 1/4. Alt during a drag flips it. Snap also sets the step for the block's time values in the inspector. A UI preference, not saved in the project.
 
 ## Lanes and rows
 

@@ -33,11 +33,11 @@ const MAX_TIME_BEATS: f64 = 4.;
 /// Pixels of sideways drag per semitone on a pitch value.
 const PIXELS_PER_SEMITONE: f32 = 6.;
 const ENVELOPE_HEIGHT: f32 = 64.;
-const VALUE_WIDTH: f32 = 64.;
+pub(crate) const VALUE_WIDTH: f32 = 64.;
 const LABEL_WIDTH: f32 = 56.;
 const GROUP_MARGIN: f32 = 10.;
 const ROW_PADDING: f32 = 12.;
-const SLIDER_GAP: f32 = 10.;
+pub(crate) const SLIDER_GAP: f32 = 10.;
 
 /// A notes signal setting in the inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +268,7 @@ impl ProjectView {
         self.inspected_signal()
             .is_some_and(|s| matches!(s.source, SignalSource::Notes(_)))
             || self.strip_node().is_some()
+            || self.inspected_block().is_some()
     }
 
     /// The node whose strip the panel shows: the selection on Arrange.
@@ -427,15 +428,26 @@ impl ProjectView {
                 .child(handle)
                 .into_any_element();
         }
-        let body = match self.inspected_signal() {
-            Some(signal) => match &signal.source {
-                SignalSource::Notes(source) => self
-                    .notes_settings(signal, source, theme, cx)
-                    .into_any_element(),
-                SignalSource::Drawn(_) => empty(theme, "A drawn signal has no settings here yet."),
+        // A selected block first: its settings (Parameters and Signals).
+        let body = match self.block_settings(theme, cx) {
+            Some(block) => block.into_any_element(),
+            None => match self.inspected_signal() {
+                Some(signal) => match &signal.source {
+                    SignalSource::Notes(source) => self
+                        .notes_settings(signal, source, theme, cx)
+                        .into_any_element(),
+                    SignalSource::Drawn(_) => {
+                        empty(theme, "Select a block of this signal to see its settings.")
+                    }
+                },
+                None if self.page == Page::Arrange => {
+                    empty(theme, "Select a node to see its strip.")
+                }
+                None if self.page == Page::Parameters => {
+                    empty(theme, "Select a block to see its settings.")
+                }
+                None => empty(theme, "Select a signal or a block to see its settings."),
             },
-            None if self.page == Page::Arrange => empty(theme, "Select a node to see its strip."),
-            None => empty(theme, "Select a signal to see its settings."),
         };
         div()
             .w(px(self.inspector_width))
@@ -723,13 +735,13 @@ impl ProjectView {
 /// How long a setting's slider is in a panel `width` wide: what the row
 /// leaves after the group's margins and border, the row's padding, the
 /// label, the value and the gaps between them.
-fn slider_length(width: f32) -> f32 {
+pub(crate) fn slider_length(width: f32) -> f32 {
     const FIXED: f32 =
         2. * GROUP_MARGIN + 2. + 2. * ROW_PADDING + LABEL_WIDTH + VALUE_WIDTH + 2. * SLIDER_GAP;
     (width - FIXED).max(40.)
 }
 
-fn empty(theme: &Theme, text: &'static str) -> AnyElement {
+pub(crate) fn empty(theme: &Theme, text: &'static str) -> AnyElement {
     div()
         .p(px(16.))
         .text_size(px(12.))
@@ -765,6 +777,12 @@ pub(crate) fn group(theme: &Theme) -> Div {
 
 /// A row in a group, labelled; `separated` draws the hairline above it.
 fn setting_row(field: NotesField, separated: bool, theme: &Theme) -> Div {
+    labeled_row(field.label(), separated, theme)
+}
+
+/// A row in a group with `label` at its left; `separated` draws the
+/// hairline above it.
+pub(crate) fn labeled_row(label: &'static str, separated: bool, theme: &Theme) -> Div {
     div()
         .min_h(px(34.))
         .px(px(ROW_PADDING))
@@ -777,7 +795,7 @@ fn setting_row(field: NotesField, separated: bool, theme: &Theme) -> Div {
                 .w(px(LABEL_WIDTH))
                 .flex_none()
                 .text_size(px(12.))
-                .child(field.label()),
+                .child(label),
         )
 }
 

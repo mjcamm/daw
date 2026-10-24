@@ -125,3 +125,102 @@ fn after_a_drag_moving_away_and_back_shows_the_right_cursor() {
     h.hover(to);
     assert_eq!(shown(&mut h), Some(CursorKind::Resize), "and back again");
 }
+
+/// Clicks the block (a beat in, low on the lane) and returns its settings'
+/// controls on screen once the inspector shows them.
+fn select_block(h: &mut Harness, lane: Bounds<Pixels>, ppb: f32) {
+    h.click(point(lane.left() + px(ppb), lane.bottom() - px(10.)), 1);
+    h.redraw_all();
+}
+
+/// docs/behaviours.md: "Selecting a block opens the inspector with its
+/// settings: depth and fades on sliders, repeat and nudge dragged
+/// sideways, invert".
+#[test]
+fn a_selected_blocks_settings_are_in_the_inspector() {
+    let (mut h, lane, ppb) = page_with("block-inspector", block(4., None));
+    h.view.update(h.cx, |v, _| v.inspector_open = false);
+    select_block(&mut h, lane, ppb);
+    assert!(h.view.read_with(h.cx, |v, _| v.inspector_open), "opens");
+
+    // Depth: from full, a quarter of the slider's travel left is 75%.
+    let depth = h.bounds("block-depth");
+    let travel = depth.size.width / px(1.) - 9.;
+    let from = point(depth.right() - px(4.5), depth.center().y);
+    let to = point(from.x - px(travel / 4.), from.y);
+    h.press(from);
+    h.move_held(to);
+    let heard = h.view.read_with(h.cx, |v, _| {
+        let param = v
+            .session()
+            .engine()
+            .project()
+            .param(VOLUME)
+            .expect("volume");
+        param.layers[0].1.blocks[0].1.depth
+    });
+    assert!((heard - 0.75).abs() < 1e-3, "heard as it moves: {heard}");
+    h.release(to);
+    assert!((the_block(&mut h).depth - 0.75).abs() < 1e-3);
+    h.keys("ctrl-z");
+    assert_eq!(the_block(&mut h).depth, 1., "one undo step");
+
+    // Fade in: halfway along is half the block, on the beat grid.
+    let fade = h.bounds("block-fade-in");
+    let travel = fade.size.width / px(1.) - 9.;
+    let from = point(fade.left() + px(4.5), fade.center().y);
+    h.drag(from, point(from.x + px(travel / 2.), from.y), 4);
+    assert_eq!(the_block(&mut h).fade_in, beats(2.));
+
+    // Repeat, dragged sideways to the left: the block repeats.
+    let repeat = h.bounds("block-repeat").center();
+    h.drag(repeat, point(repeat.x - px(40.), repeat.y), 4);
+    assert!(the_block(&mut h).cycle.is_some(), "repeats");
+
+    let invert = h.bounds("block-invert").center();
+    h.click(invert, 1);
+    assert!(the_block(&mut h).invert);
+}
+
+/// docs/behaviours.md: "... a window on a listening layer has no repeat".
+#[test]
+fn a_windows_settings_have_no_repeat() {
+    use daw_engine::{Signal, SignalId, SignalSource};
+    let mut h = Harness::new("window-inspector");
+    h.view.update(h.cx, |view, _| {
+        view.session.apply_or_panic(Command::Edit(Edit::AddSignal {
+            id: SignalId(1),
+            signal: Signal {
+                name: "Wobble".into(),
+                color: 1,
+                source: SignalSource::Drawn(Vec::new()),
+            },
+            listeners: Vec::new(),
+        }));
+        let mut layer = Layer::new(BlendMode::Add).listening(SignalId(1));
+        layer.blocks.push((BlockId(1), block(4., None)));
+        view.session.apply_or_panic(Command::Edit(Edit::AddLayer {
+            param: VOLUME,
+            id: LayerId(1),
+            index: 0,
+            layer,
+        }));
+        view.selected_node = Some(FIRST_NODE);
+        view.page = Page::Parameters;
+    });
+    h.redraw_all();
+    let lane = h.bounds("layer-lane-1");
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.parameters_view.zoom.pixels_per_beat);
+    select_block(&mut h, lane, ppb);
+    assert!(
+        h.cx.debug_bounds("block-depth").is_some(),
+        "its settings show"
+    );
+    assert!(h.cx.debug_bounds("block-nudge").is_some());
+    assert!(
+        h.cx.debug_bounds("block-repeat").is_none(),
+        "the signal decides what plays through a window"
+    );
+}

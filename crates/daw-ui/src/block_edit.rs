@@ -639,14 +639,6 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Self; 5] = [
-        Self::Depth,
-        Self::FadeIn,
-        Self::FadeOut,
-        Self::Cycle,
-        Self::Nudge,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             Self::Depth => "Depth",
@@ -655,6 +647,37 @@ impl Setting {
             Self::Cycle => "Repeat",
             Self::Nudge => "Nudge",
         }
+    }
+
+    /// Where a setting with a slider (depth, the fades) sits on it,
+    /// `0..=1`; `None` for those dragged sideways (repeat, nudge).
+    pub fn position(self, block: &Block) -> Option<f64> {
+        let share = |t: Ticks| t.0 as f64 / block.length.0.max(1) as f64;
+        match self {
+            Self::Depth => Some(block.depth),
+            Self::FadeIn => Some(share(block.fade_in)),
+            Self::FadeOut => Some(share(block.fade_out)),
+            Self::Cycle | Self::Nudge => None,
+        }
+    }
+
+    /// `original` with this setting's slider at `at`: depth from none to
+    /// full, a fade from none to the whole block, on the grid of `snap`.
+    pub fn at_position(self, original: &Block, at: f64, snap: Snap) -> Block {
+        let at = at.clamp(0., 1.);
+        let step = snap.min_length().0.max(1) as f64;
+        let length = |share: f64| {
+            let ticks = share * original.length.0 as f64;
+            Ticks(((ticks / step).round() * step) as i64).min(original.length)
+        };
+        let mut block = original.clone();
+        match self {
+            Self::Depth => block.depth = at,
+            Self::FadeIn => block.fade_in = length(at),
+            Self::FadeOut => block.fade_out = length(at),
+            Self::Cycle | Self::Nudge => {}
+        }
+        block
     }
 
     /// The setting's value on `block`, for display.
@@ -1199,6 +1222,46 @@ mod tests {
         assert_eq!(repeated.cycle, Some(beats(1)));
         assert_eq!(scrub(&b, Setting::Cycle, 36., BEATS).cycle, None);
         assert_eq!(scrub(&b, Setting::Nudge, -12., BEATS).nudge, Ticks(-BEAT.0));
+    }
+
+    #[test]
+    fn depth_and_fades_have_sliders_over_their_range() {
+        let b = Block {
+            depth: 0.8,
+            fade_in: beats(1),
+            ..block(0, 4)
+        };
+        assert_eq!(Setting::Depth.position(&b), Some(0.8));
+        assert_eq!(
+            Setting::FadeIn.position(&b),
+            Some(0.25),
+            "a quarter of the block"
+        );
+        assert_eq!(Setting::FadeOut.position(&b), Some(0.));
+        assert_eq!(
+            Setting::Cycle.position(&b),
+            None,
+            "dragged sideways instead"
+        );
+        assert_eq!(Setting::Nudge.position(&b), None);
+        assert_eq!(Setting::Depth.at_position(&b, 0.25, BEATS).depth, 0.25);
+        // Fades land on the grid, or anywhere when sliding.
+        assert_eq!(
+            Setting::FadeOut.at_position(&b, 0.5, BEATS).fade_out,
+            beats(2)
+        );
+        assert_eq!(
+            Setting::FadeIn.at_position(&b, 0.3, BEATS).fade_in,
+            beats(1),
+            "1.2 beats: the nearest beat"
+        );
+        let slid = Setting::FadeIn.at_position(&b, 0.3, SLIDE).fade_in;
+        assert!((slid.as_beats() - 1.2).abs() < 0.02, "{slid:?}");
+        assert_eq!(
+            Setting::FadeIn.at_position(&b, 1.5, BEATS).fade_in,
+            beats(4),
+            "in range"
+        );
     }
 
     #[test]

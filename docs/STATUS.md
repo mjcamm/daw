@@ -57,7 +57,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - **Menu bar:** File → Export… (Ctrl+E) as well.
 - **Header:** song name menu (Save, Rename, Back to projects) with "4/4 · Saved" under it, page tabs (Arrange, Parameters, Signals, Mixer), the pointer / scissors tool and snap control, transport (back, play/stop, loop, position) and **tempo** (click to type, Enter applies, Escape cancels; 20 to 999 BPM, two decimals), CPU meter.
 - **Arrange:** the node list (colour, name, meter, signal button, M/S) with the nesting map and toolbar, and clips on the timeline. Click the ruler to locate; click a node to select it (this enables Parameters and points the bottom panel at it). Double-click a clip, or an empty lane, to open the bottom panel: the piano roll for MIDI, the audio panel for audio.
-- **Parameters:** per device, "+ Add Parameter" makes a result row with its layers. Layers: drag to reorder, rename, blend mode (Add or Multiply, both centred), mix, show/hide, delete. Block editing on the lanes, settings bar, resting-value slider.
+- **Parameters:** per device, "+ Add Parameter" makes a result row with its layers. Layers: drag to reorder, rename, blend mode (Add or Multiply, both centred), mix, show/hide, delete. Block editing on the lanes, the selected block's settings in the inspector, resting-value slider.
 - **Signals:** "+ Add Signal" makes a drawn signal; draw on its lane like a layer. Colour bar picks a colour, double-click renames, × deletes, the uses chip lists listening layers with go-to icons. Click a row to select it; a notes signal's settings are in the inspector.
 - **Mixer:** strips with instruments and effect slots ("+ Instrument" and "+ Effect" open the device browser), pan, fader, meters, M/S; the nesting map along the bottom.
 - **Inspector:** the tray icon at the far right lights up when the selection has settings; click to open or close, drag the panel's left edge to resize.
@@ -131,7 +131,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - Plugin hosting: starting the host process and creating instances happens on the control (UI) thread, so the first plugin in a song pauses the UI briefly; Windows only (macOS and Linux report "unsupported"); no delay compensation yet; plugins always run in realtime mode (offline exports should set up `kOffline`).
 - One built-in effect (Filter) and two instruments (Synth, SingleSampler). Effects are added on the mixer; their settings show only on Parameters for now.
 - Recording, MIDI keyboard input, MIDI file import and more instruments are Phase 9.
-- The inspector shows nothing on Parameters, for drawn signals, or for a selected effect or instrument.
+- The inspector shows nothing for a selected effect or instrument (on Parameters and Signals it shows the selected block's settings, 2026-10-25).
 - Parameters update every 32 samples (gains ramp, others step); revisit if anything sounds zippery.
 - Reference WAVs (`crates/*/tests/references/`) total about 4 MB; keep new ones short.
 - `docs/gpui-notes.md` holds hard-won GPUI knowledge; add to it.

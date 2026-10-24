@@ -50,7 +50,6 @@ const DEVICE_HEIGHT: f32 = 30.;
 /// Starting zoom: result rows and layer rows are all one lane height.
 pub(crate) const DEFAULT_ZOOM: Zoom = Zoom::new(PIXELS_PER_BEAT, 56.);
 const ADD_HEIGHT: f32 = 26.;
-const SETTINGS_HEIGHT: f32 = 34.;
 /// Gap between a lane's edges and its blocks.
 const BLOCK_MARGIN: f32 = 3.;
 /// From a lane's top to the top of a block's drawing box: the margin plus
@@ -303,15 +302,18 @@ pub(crate) enum CursorKind {
 const CURSOR_ICON: f32 = 16.;
 
 /// What a drag changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DragKind {
     /// Part of a block on its lane.
     Block(Hit),
     /// A point sitting on an edge: the first movement decides which one is
     /// dragged (sideways: the edge; up or down: the point).
     Undecided { point: usize, edge: Hit },
-    /// A setting in the settings bar.
+    /// A setting dragged sideways in the inspector (repeat, nudge).
     Setting(Setting),
+    /// A setting's slider in the inspector (depth, the fades), `length`
+    /// pixels long.
+    Slider { setting: Setting, length: f32 },
 }
 
 /// A block being dragged. The engine is untouched until the mouse is
@@ -577,8 +579,6 @@ impl ProjectView {
                     .border_color(theme.hairline),
             );
 
-        let settings = self.selected_settings(theme, cx);
-
         div()
             .flex_1()
             .min_h_0()
@@ -614,7 +614,6 @@ impl ProjectView {
                     cx,
                 ),
             )
-            .children(settings)
             .into_any_element()
     }
 
@@ -628,18 +627,6 @@ impl ProjectView {
         find_block(snapshot, id)
             .filter(|(lane, _)| lane.page() == self.page)
             .map(|(lane, block)| (id, lane, block))
-    }
-
-    /// The selected block's settings bar, if one is selected on this page.
-    pub(crate) fn selected_settings(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<Div> {
-        let snapshot = self.session.snapshot();
-        let (id, lane, block) = self.selected_block(snapshot)?;
-        let shown = match &self.block_drag {
-            Some(drag) if drag.id == id => &drag.preview,
-            _ => block,
-        };
-        let windows = listened_signal(snapshot, lane).is_some();
-        Some(self.settings_bar(id, shown, windows, theme, cx))
     }
 
     /// Shows a layer on the Parameters page: scrolled into view and
@@ -731,7 +718,7 @@ impl ProjectView {
                 .and_then(|kind| match kind {
                     DragKind::Block(hit) => kind_of(hit),
                     DragKind::Undecided { .. } => Some(CursorKind::Move),
-                    DragKind::Setting(_) => None,
+                    DragKind::Setting(_) | DragKind::Slider { .. } => None,
                 })
                 .map(at);
         }
@@ -850,6 +837,8 @@ impl ProjectView {
                 };
                 self.session.apply(Command::Edit(edit));
                 self.selected_block = Some(id);
+                // Its settings are in the inspector.
+                self.inspector_open = true;
             }
             return;
         };
@@ -861,6 +850,8 @@ impl ProjectView {
         };
         let room = room_around(blocks, Some(id), block.start);
         self.selected_block = Some(id);
+        // Its settings are in the inspector.
+        self.inspector_open = true;
         // Windows have no points: the signal decides what plays through.
         if !windows
             && !beside
@@ -919,14 +910,53 @@ impl ProjectView {
         }
     }
 
-    /// Begins dragging a setting in the settings bar.
-    fn start_scrub(&mut self, id: BlockId, setting: Setting, origin: Point<Pixels>) {
+    /// The block selected on this page as shown (a drag's preview), and
+    /// whether it is a window on a listening layer: what the inspector shows.
+    pub(crate) fn inspected_block(&self) -> Option<(BlockId, Block, bool)> {
+        let snapshot = self.session.snapshot();
+        let (id, lane, block) = self.selected_block(snapshot)?;
+        let shown = match &self.block_drag {
+            Some(drag) if drag.id == id => drag.preview.clone(),
+            _ => block.clone(),
+        };
+        Some((id, shown, listened_signal(snapshot, lane).is_some()))
+    }
+
+    /// The block setting being dragged in the inspector, if one is.
+    pub(crate) fn dragged_block_setting(&self) -> Option<Setting> {
+        match self.block_drag.as_ref()?.kind {
+            DragKind::Setting(setting) | DragKind::Slider { setting, .. } => Some(setting),
+            _ => None,
+        }
+    }
+
+    /// Whether a block's setting is being dragged in the inspector: the
+    /// lanes show the change, so every pane redraws.
+    pub(crate) fn block_setting_drag(&self) -> bool {
+        self.block_drag
+            .as_ref()
+            .is_some_and(|d| matches!(d.kind, DragKind::Setting(_) | DragKind::Slider { .. }))
+    }
+
+    /// Begins dragging a block's setting in the inspector: sideways for
+    /// repeat and nudge, along a slider `length` long for the others.
+    pub(crate) fn start_block_setting(
+        &mut self,
+        id: BlockId,
+        setting: Setting,
+        origin: Point<Pixels>,
+        slider_length: Option<f32>,
+    ) {
         let Some((_, block)) = find_block(self.session.snapshot(), id) else {
             return;
         };
+        let kind = match slider_length {
+            Some(length) => DragKind::Slider { setting, length },
+            None => DragKind::Setting(setting),
+        };
         self.block_drag = Some(BlockDrag {
             id,
-            kind: DragKind::Setting(setting),
+            kind,
             origin,
             original: block.clone(),
             preview: block.clone(),
@@ -991,6 +1021,11 @@ impl ProjectView {
             }
             DragKind::Block(hit) => drag_block(original, hit, dx, ppb, snap, drag.room),
             DragKind::Setting(setting) => scrub(original, setting, dx, snap),
+            DragKind::Slider { setting, length } => {
+                let start = setting.position(original).unwrap_or(0.);
+                let at = slider::dragged(start, dx, length, modifiers.shift);
+                setting.at_position(original, at, snap)
+            }
             DragKind::Undecided { .. } => original.clone(),
         };
     }
@@ -1193,112 +1228,6 @@ impl ProjectView {
             self.selected_block = None;
             self.session.apply(Command::Edit(Edit::RemoveBlock { id }));
         }
-    }
-
-    /// The selected block's settings: drag a value sideways to change it.
-    /// A window (on a listening layer) has no repeat: the signal decides
-    /// what plays through it.
-    fn settings_bar(
-        &self,
-        id: BlockId,
-        block: &Block,
-        windows: bool,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let hover = theme.hover;
-        let settings = Setting::ALL
-            .into_iter()
-            .filter(|s| !(windows && *s == Setting::Cycle));
-        let fields = settings.map(|setting| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .text_color(theme.text_secondary)
-                        .child(setting.label()),
-                )
-                .child(
-                    div()
-                        .id(("block-setting", setting as usize))
-                        .min_w(px(58.))
-                        .px(px(6.))
-                        .py(px(1.))
-                        .rounded(px(4.))
-                        .bg(theme.control)
-                        .hover(move |s| s.bg(hover))
-                        .cursor_ew_resize()
-                        .font_family(MONO_FONT)
-                        .text_size(px(11.))
-                        .child(setting.format(block))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                                this.start_scrub(id, setting, event.position);
-                            }),
-                        ),
-                )
-        });
-        let inverted = block.invert;
-        let mut active = theme.accent;
-        active.a = 0.18;
-        let invert = div()
-            .id("block-invert")
-            .px(px(8.))
-            .py(px(1.))
-            .rounded(px(4.))
-            .bg(if inverted { active } else { theme.control })
-            .hover(move |s| s.bg(hover))
-            .text_color(if inverted {
-                theme.accent
-            } else {
-                theme.text_secondary
-            })
-            .child("Invert")
-            .on_click(cx.listener(move |this, _, _, _| {
-                if let Some((_, block)) = find_block(this.session.snapshot(), id) {
-                    let block = Block {
-                        invert: !block.invert,
-                        ..block.clone()
-                    };
-                    this.session
-                        .apply(Command::Edit(Edit::SetBlock { id, block }));
-                }
-            }));
-
-        div()
-            .h(px(SETTINGS_HEIGHT))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(18.))
-            .px(px(12.))
-            .bg(theme.sidebar)
-            .border_t_1()
-            .border_color(theme.edge)
-            .text_size(px(12.))
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text_tertiary)
-                    .child("BLOCK"),
-            )
-            .children(fields)
-            .child(invert)
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(theme.text_tertiary)
-                    .child(if windows {
-                        "A window onto the signal · Alt flips snap"
-                    } else {
-                        "Double-click to add a point · right-click to remove · Alt flips snap"
-                    }),
-            )
     }
 
     fn left_cell(

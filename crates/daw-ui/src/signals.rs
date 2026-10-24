@@ -437,7 +437,6 @@ impl ProjectView {
                 theme,
                 cx,
             ))
-            .children(self.selected_settings(theme, cx))
     }
 
     /// A signal in the list: colour, name and source, uses, delete.
