@@ -112,6 +112,11 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - Say when their eyes or ears are needed ("Try it", "Listen now").
 - On Windows, a running app blocks rebuilding `daw.exe` ("failed to remove file"). `check.sh` still works; ask them to close the app to run it.
 
+## Before a release (checklist)
+
+- **Licence notices** (`THIRD-PARTY-LICENSES.md`): run `./scripts/licenses.sh` so `licenses/NOTICES.md` matches the shipped dependencies, then ship `LICENSE-MIT`, `LICENSE-APACHE`, `THIRD-PARTY-LICENSES.md` and the `licenses/` folder with the app (in the installer or beside the executable).
+- **MP3 / LAME (LGPL):** decide whether to keep LAME compiled in, link it as a DLL, or build WAV-only (`docs/design/export.md`, Licence).
+
 ## Known gaps
 
 - **TODO (user, 2026-10-19): audio file types beyond WAV** (MP3, FLAC, AIFF; `symphonia` is the likely crate) for samples and audio clips. Reading files in the background, too.
