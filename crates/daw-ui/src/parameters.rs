@@ -1601,7 +1601,7 @@ impl ProjectView {
             });
 
         // What the layer is: drawn, or listening to a signal (fixed when the
-        // layer was added). Hover explains; the arrow shows the signal.
+        // layer was added): the signal's name, in full on hover.
         let source: AnyElement = match layer
             .signal
             .and_then(|s| self.session.snapshot().signals.iter().find(|x| x.id == s))
@@ -1641,12 +1641,9 @@ impl ProjectView {
                             .bg(colors.fill)
                             .text_size(px(11.))
                             .text_color(colors.detail)
-                            .child(icon(Icon::Inbound, colors.detail, 11.))
                             .child(div().max_w(px(72.)).truncate().child(signal.name.clone()))
-                            .tooltip(tooltip::text(format!(
-                                "Listens to {}: each block is a window that lets the signal through, at its depth, flipped by invert.",
-                                signal.name
-                            ))),
+                            // The name in full, as the chip may cut it short.
+                            .tooltip(tooltip::text(signal.name.clone())),
                     )
                     .child(
                         small_button(("layer-go-to-signal", id.0), theme)
