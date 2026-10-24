@@ -1148,6 +1148,7 @@ impl ProjectView {
         };
         // Every clip as shown this frame, for the parents' combined blocks.
         let shown_clips = self.shown_clips();
+        self.arrange_shown_part.set(None);
         let mut row_top = 0.;
         let lanes: Vec<_> = rows
             .iter()
@@ -1169,27 +1170,28 @@ impl ProjectView {
                 let takes_clips = node.takes_midi();
                 let audio = node.kind == NodeKind::Audio && node.parent.is_some();
                 // The lane's clips near the screen, painted in one drawing.
-                let painted: Vec<crate::clip_paint::Painted> = crate::clip_edit::node_clips(node)
-                    .filter(|_| row_near)
-                    .filter(|(_, clip)| {
-                        near(
-                            clip.start().as_beats(),
-                            (clip.start() + clip.length()).as_beats(),
-                        )
-                    })
-                    .map(|(cid, clip)| {
-                        // A clip moves with its block while dragged.
-                        let shown = match &clip {
-                            crate::clip_edit::AnyClip::Midi(midi) => self
-                                .combined_drag
-                                .as_ref()
-                                .and_then(|d| d.shifted(cid, midi))
-                                .map_or(clip, crate::clip_edit::AnyClip::Midi),
-                            crate::clip_edit::AnyClip::Audio(_) => clip,
-                        };
-                        self.painted_clip(cid, &shown, &node.name, color, theme)
-                    })
-                    .collect();
+                let mut painted: Vec<crate::clip_paint::Painted> =
+                    crate::clip_edit::node_clips(node)
+                        .filter(|_| row_near)
+                        .filter(|(_, clip)| {
+                            near(
+                                clip.start().as_beats(),
+                                (clip.start() + clip.length()).as_beats(),
+                            )
+                        })
+                        .map(|(cid, clip)| {
+                            // A clip moves with its block while dragged.
+                            let shown = match &clip {
+                                crate::clip_edit::AnyClip::Midi(midi) => self
+                                    .combined_drag
+                                    .as_ref()
+                                    .and_then(|d| d.shifted(cid, midi))
+                                    .map_or(clip, crate::clip_edit::AnyClip::Midi),
+                                crate::clip_edit::AnyClip::Audio(_) => clip,
+                            };
+                            self.painted_clip(cid, &shown, &node.name, color, theme)
+                        })
+                        .collect();
                 // Where each clip is, for presses and the cursor.
                 let spans: Vec<(daw_engine::ClipId, f32, f32)> =
                     painted.iter().map(|c| (c.id, c.left, c.width)).collect();
@@ -1198,17 +1200,36 @@ impl ProjectView {
                 let clip_height = zoom.row_height - 2. * crate::clip_paint::CLIP_INSET;
                 let lanes = self.arrange_lanes_bounds.get();
                 let dragging = self.clip_drag.as_ref().filter(|d| d.started());
+                // The clip and part under the pointer, against the clips as
+                // drawn now (not as they were at the last move).
+                let pointed = self
+                    .arrange_pointer
+                    .filter(|_| self.arrange_tool == ArrangeTool::Pointer)
+                    .and_then(|at| {
+                        let x = (at.x - lanes.left()) / px(1.);
+                        let y = (at.y - lanes.top()) / px(1.) - top;
+                        (0.0..zoom.row_height).contains(&y).then(|| {
+                            let y = y - crate::clip_paint::CLIP_INSET;
+                            crate::clip_paint::clip_at(&spans, x, y, clip_height)
+                                .map(|(clip, grab)| (clip, grab, at))
+                        })?
+                    });
+                if dragging.is_none()
+                    && let Some((clip, _, _)) = pointed
+                {
+                    crate::clip_paint::show_loop_icon(&mut painted, clip);
+                }
                 let part = match dragging {
                     Some(drag) => drag
                         .held()
                         .iter()
                         .any(|h| h.node == id)
                         .then_some((drag.grab(), drag.pointer())),
-                    None => self
-                        .arrange_hover
-                        .filter(|(n, _, _)| *n == id && self.arrange_tool == ArrangeTool::Pointer)
-                        .map(|(_, _, grab)| (grab, self.arrange_pointer.unwrap_or_default())),
+                    None => pointed.map(|(_, grab, at)| (grab, at)),
                 };
+                if let Some((grab, _)) = part {
+                    self.arrange_shown_part.set(Some((id, grab)));
+                }
                 let resize_cursor = matches!(part, Some((Grab::Start | Grab::End, _)));
                 // GPUI has no loop cursor: hide it and draw the icon there.
                 let loop_cursor = part.filter(|(grab, _)| *grab == Grab::Loop).map(|(_, at)| {
@@ -1249,8 +1270,9 @@ impl ProjectView {
                             let hover = crate::clip_paint::clip_at(&spans, x, y, clip_height)
                                 .map(|(clip, grab)| (id, clip, grab));
                             let on_loop = matches!(hover, Some((_, _, Grab::Loop)));
-                            let was_on_loop = this.arrange_pointer.is_some();
-                            this.arrange_pointer = on_loop.then_some(event.position);
+                            let was_on_loop =
+                                matches!(this.arrange_hover, Some((_, _, Grab::Loop)));
+                            this.arrange_pointer = Some(event.position);
                             if hover != this.arrange_hover || on_loop || was_on_loop {
                                 this.arrange_hover = hover;
                                 this.hover_changed(cx);

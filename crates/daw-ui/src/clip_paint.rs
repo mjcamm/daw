@@ -154,7 +154,6 @@ impl ProjectView {
     ) -> Painted {
         let zoom = self.arrange_view.zoom;
         let selected = self.selected_clips.contains(&id);
-        let hovered = self.arrange_hover.is_some_and(|(_, c, _)| c == id);
         let moving = self
             .clip_drag
             .as_ref()
@@ -240,8 +239,16 @@ impl ProjectView {
             seams,
             repeat_wash: faint(repeat_wash, moving),
             seam_color: faint(seam_color, moving),
-            loop_icon: (selected || hovered) && width >= 3. * EDGE,
+            // Hovered clips show it too (the lanes set that, `show_loop_icon`).
+            loop_icon: selected && width >= 3. * EDGE,
         }
+    }
+}
+
+/// Shows the loop icon on the hovered clip, where it fits.
+pub fn show_loop_icon(clips: &mut [Painted], hovered: ClipId) {
+    for clip in clips.iter_mut().filter(|c| c.id == hovered) {
+        clip.loop_icon = clip.width >= 3. * EDGE;
     }
 }
 

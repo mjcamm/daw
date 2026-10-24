@@ -137,6 +137,16 @@ impl Harness {
         self.redraw();
     }
 
+    /// Moves the pointer with no button held.
+    pub fn move_to(&mut self, to: Point<Pixels>) {
+        self.cx.simulate_event(gpui::MouseMoveEvent {
+            position: to,
+            modifiers: Modifiers::none(),
+            pressed_button: None,
+        });
+        self.redraw();
+    }
+
     /// Moves the pointer with the left button held (after [`Self::press`]).
     pub fn move_held(&mut self, to: Point<Pixels>) {
         self.cx.simulate_event(gpui::MouseMoveEvent {

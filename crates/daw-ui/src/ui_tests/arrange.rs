@@ -89,3 +89,52 @@ fn dragging_from_just_past_a_clips_end_resizes_it() {
     assert_eq!(clip.start, start, "the start stays");
     assert_eq!(clip.length, length + Ticks::from_beats(4), "a bar longer");
 }
+
+/// docs/behaviours.md: "The cursor on Arrange's lanes follows the clips as
+/// they are: right after a drag lands, and through the whole drag".
+#[test]
+fn the_resize_cursor_follows_the_clip_after_a_drag() {
+    use crate::clip_edit::Grab;
+    let mut h = Harness::new("arrange-cursor-after-drag");
+    let lane = h.arrange_lane(FIRST_NODE);
+    let (start, length) = h.view.read_with(h.cx, |v, _| {
+        let node = v.session().snapshot().node(FIRST_NODE).unwrap().clone();
+        let clip = &node.clips[0].1;
+        (clip.start, clip.length)
+    });
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    let end_x = lane.left() + px((start + length).as_beats() as f32 * ppb);
+    let grab = point(end_x - px(2.), lane.bottom() - px(12.));
+    let shown = |h: &mut Harness| h.view.read_with(h.cx, |v, _| v.arrange_shown_part.get());
+    h.move_to(grab);
+    assert_eq!(
+        shown(&mut h),
+        Some((FIRST_NODE, Grab::End)),
+        "hovering the end"
+    );
+
+    // Drag the end a bar on, straying down off the row as hands do.
+    let to = point(grab.x + px(4. * ppb), grab.y + px(40.));
+    h.press(grab);
+    h.move_held(to);
+    assert_eq!(
+        h.view.read_with(h.cx, |v, _| v.drag_cursor()),
+        Some(gpui::CursorStyle::ResizeLeftRight),
+        "the resize cursor holds off the row"
+    );
+    // Back onto the row and let go, without moving after.
+    let back = point(to.x, grab.y);
+    h.move_held(back);
+    h.release(back);
+    assert_eq!(
+        shown(&mut h),
+        Some((FIRST_NODE, Grab::End)),
+        "the pointer is on the clip's new end"
+    );
+
+    // Undo puts the end back under a still pointer: no resize cursor left.
+    h.keys("ctrl-z");
+    assert_eq!(shown(&mut h), None, "nothing under the pointer now");
+}

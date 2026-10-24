@@ -191,6 +191,15 @@ impl ProjectView {
         Some((drag, plan))
     }
 
+    /// The cursor for the whole window while a clip's end is held, so it
+    /// stays a resize cursor when the pointer strays off the row.
+    pub(crate) fn drag_cursor(&self) -> Option<gpui::CursorStyle> {
+        match self.clip_drag.as_ref()?.grab() {
+            Grab::Start | Grab::End => Some(gpui::CursorStyle::ResizeLeftRight),
+            Grab::Body | Grab::Loop => None,
+        }
+    }
+
     /// Ends a clip drag: lands the clips as one edit if they can go there.
     pub(crate) fn finish_clip_drag(&mut self) {
         let landing = self.clip_drag_landing();
