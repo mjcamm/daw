@@ -33,7 +33,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Click a clip selects it; Shift+click adds or removes; a press on empty lane clears | – |
 | Drag clips to move (snapped, between rows); Ctrl copies; Alt flips snap; Escape cancels | – |
 | A clip drag is heard as it moves; Escape puts it back | `live_drags::a_clip_drag_is_heard_as_it_moves_and_escape_puts_it_back` |
-| Drag a clip's edge to resize (trim and reveal for audio) | – |
+| Drag a clip's edge to resize (trim and reveal for audio); a press on its outline or up to 4 px past it takes the end, so narrow clips resize too | `arrange::dragging_from_just_past_a_clips_end_resizes_it` |
 | Drag the top of a clip's right end (or its loop icon, shown on hover or selection) to loop it: whole repeats, linked; repeats softer with a line at each cycle end (`clip-loops.md`) | `arrange::dragging_the_top_of_a_clips_end_loops_it` |
 | Dropping clips below the last row makes a new node of their kind | – |
 | A dropped or resized clip cuts what it lands on (clips never overlap on a node) | – |

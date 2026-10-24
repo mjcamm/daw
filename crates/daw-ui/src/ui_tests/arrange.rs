@@ -65,3 +65,27 @@ fn dragging_the_top_of_a_clips_end_loops_it() {
         "looped on its own length"
     );
 }
+
+/// docs/behaviours.md: "Drag a clip's edge to resize ... a press on its
+/// outline or just past it takes the end".
+#[test]
+fn dragging_from_just_past_a_clips_end_resizes_it() {
+    let mut h = Harness::new("arrange-resize-outside");
+    let lane = h.arrange_lane(FIRST_NODE);
+    let (start, length) = h.view.read_with(h.cx, |v, _| {
+        let node = v.session().snapshot().node(FIRST_NODE).unwrap().clone();
+        let clip = &node.clips[0].1;
+        (clip.start, clip.length)
+    });
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    let end_x = lane.left() + px((start + length).as_beats() as f32 * ppb);
+    // Two pixels past the outline, low on the clip (clear of the loop zone).
+    let grab = point(end_x + px(2.), lane.bottom() - px(12.));
+    h.drag(grab, point(grab.x + px(4. * ppb), grab.y), 6);
+    let snapshot = h.snapshot();
+    let clip = &snapshot.node(FIRST_NODE).unwrap().clips[0].1;
+    assert_eq!(clip.start, start, "the start stays");
+    assert_eq!(clip.length, length + Ticks::from_beats(4), "a bar longer");
+}

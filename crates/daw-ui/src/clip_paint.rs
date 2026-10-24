@@ -29,8 +29,11 @@ use std::sync::Arc;
 pub const CLIP_INSET: f32 = 4.;
 /// Height of a clip's label strip.
 pub const CLIP_LABEL_HEIGHT: f32 = 16.;
-/// Width of the resize zone at each end of a clip.
+/// Width of the resize zone at each end of a clip, inside it.
 pub const EDGE: f32 = 6.;
+/// How far past each end a press still takes that end (where no other clip
+/// is): the outline is what the eye aims at.
+pub const OUTSIDE: f32 = 4.;
 
 /// What a clip shows under its label.
 #[derive(Clone)]
@@ -69,8 +72,37 @@ pub struct Painted {
 /// from the clips' top (`height` tall). Later clips win, as they were drawn
 /// on top. The ends resize when the clip is wide enough for both zones and
 /// its middle; the top quarter of the right end, and the loop icon beside
-/// it, drag out repeats (as on blocks).
+/// it, drag out repeats (as on blocks). Just outside a clip, its nearest
+/// end resizes (any clip, however narrow).
 pub fn clip_at(
+    clips: &[(ClipId, f32, f32)],
+    x: f32,
+    y: f32,
+    height: f32,
+) -> Option<(ClipId, Grab)> {
+    inside_clip(clips, x, y, height).or_else(|| beside_clip(clips, x))
+}
+
+/// The end of a clip just outside it, the nearest if two are close.
+fn beside_clip(clips: &[(ClipId, f32, f32)], x: f32) -> Option<(ClipId, Grab)> {
+    clips
+        .iter()
+        .rev()
+        .filter_map(|&(id, left, width)| {
+            let right = left + width;
+            if (right..right + OUTSIDE).contains(&x) {
+                Some((x - right, (id, Grab::End)))
+            } else if (left - OUTSIDE..left).contains(&x) {
+                Some((left - x, (id, Grab::Start)))
+            } else {
+                None
+            }
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, hit)| hit)
+}
+
+fn inside_clip(
     clips: &[(ClipId, f32, f32)],
     x: f32,
     y: f32,
@@ -355,6 +387,40 @@ mod tests {
             Some((ClipId(1), Grab::Start)),
             "the left edge never loops"
         );
+    }
+
+    #[test]
+    fn a_press_just_outside_an_end_still_grabs_it() {
+        // The outline is what the eye aims at: a press on it or a little
+        // past it takes that end, not the empty lane.
+        let clips = [(ClipId(1), 50., 100.)];
+        let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
+        assert_eq!(at(150. + OUTSIDE - 1.), Some((ClipId(1), Grab::End)));
+        assert_eq!(at(50. - OUTSIDE + 1.), Some((ClipId(1), Grab::Start)));
+        assert_eq!(at(150. + OUTSIDE + 1.), None, "further out is empty lane");
+        assert_eq!(
+            clip_at(&clips, 151., 2., HEIGHT),
+            Some((ClipId(1), Grab::End)),
+            "outside, the top of the end resizes too"
+        );
+    }
+
+    #[test]
+    fn a_clip_too_narrow_for_edges_resizes_from_just_outside() {
+        let clips = [(ClipId(1), 100., 10.)];
+        let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
+        assert_eq!(at(105.), Some((ClipId(1), Grab::Body)), "inside moves it");
+        assert_eq!(at(111.), Some((ClipId(1), Grab::End)));
+        assert_eq!(at(98.), Some((ClipId(1), Grab::Start)));
+    }
+
+    #[test]
+    fn where_clips_meet_inside_wins_over_outside() {
+        // Back to back: just past the first's end is the second's start.
+        let clips = [(ClipId(1), 0., 100.), (ClipId(2), 100., 100.)];
+        let at = |x| clip_at(&clips, x, MIDDLE, HEIGHT);
+        assert_eq!(at(99.), Some((ClipId(1), Grab::End)));
+        assert_eq!(at(101.), Some((ClipId(2), Grab::Start)));
     }
 
     #[test]
