@@ -145,14 +145,14 @@ pub struct NoteEditor {
     pub height: f32,
     /// Where the grid's content was drawn: its top-left is the clip start
     /// at pitch 127, and it moves as the grid scrolls.
-    grid: Rc<Cell<Bounds<Pixels>>>,
+    pub(crate) grid: Rc<Cell<Bounds<Pixels>>>,
     velocity: Rc<Cell<Bounds<Pixels>>>,
     fitted: bool,
     drag: Option<NoteDrag>,
     /// Notes as the drag would leave them.
     preview: Option<(Vec<MidiNote>, Selection)>,
     /// Opened at, for the slide-up.
-    opened: Instant,
+    pub(crate) opened: Instant,
     /// Where the grid's content was when the drag began. Drags measure in
     /// that frame, so scrolling while dragging (auto-scroll near the edges)
     /// moves the notes with the view.
@@ -182,10 +182,11 @@ pub struct NoteEditor {
     pub folded: Option<bool>,
     /// Where the pointer is over the grid, for the pen's preview note.
     hover: Option<Point<Pixels>>,
-    /// What the pointer shows at `hover`: the pen's cell (snapped start and
-    /// pitch) and whether it is on a note's end. A redraw happens only when
-    /// it changes.
-    hover_key: Option<(Ticks, u8, bool)>,
+    /// What the grid drew for the pointer at `hover`: the pen's cell
+    /// (snapped start and pitch) and whether it is on a note's end. A move
+    /// that finds another redraws (compared with what was drawn, so it is
+    /// right after a drag or an edit moves notes under a still pointer).
+    pub(crate) hover_key: Cell<Option<(Ticks, u8, bool)>>,
 }
 
 impl NoteEditor {
@@ -212,7 +213,7 @@ impl NoteEditor {
             rows: Rows::all(),
             folded: None,
             hover: None,
-            hover_key: None,
+            hover_key: Cell::new(None),
         }
     }
 
@@ -1383,6 +1384,11 @@ impl ProjectView {
         )
         .absolute()
         .size_full();
+        // What this drawing shows for the pointer, for the next move to
+        // compare with.
+        editor
+            .hover_key
+            .set(editor.hover.and_then(|at| self.roll_hover_key(at)));
         // Over a note's end (as `note_edit::hit` finds it, the same rule
         // presses use) the pointer shows it resizes.
         let over_edge = edges
@@ -1458,7 +1464,7 @@ impl ProjectView {
                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                         if !hovered && let Some(editor) = &mut this.note_editor {
                             editor.hover = None;
-                            editor.hover_key = None;
+                            editor.hover_key.set(None);
                             this.hover_changed(cx);
                         }
                     }))
@@ -1468,8 +1474,7 @@ impl ProjectView {
                         let key = this.roll_hover_key(event.position);
                         if let Some(editor) = &mut this.note_editor {
                             editor.hover = Some(event.position);
-                            if editor.hover_key != key {
-                                editor.hover_key = key;
+                            if editor.hover_key.get() != key {
                                 this.hover_changed(cx);
                             }
                         }

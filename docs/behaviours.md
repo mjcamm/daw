@@ -15,7 +15,7 @@ Test names are in `ui_tests/<file>.rs`. A dash means untested.
 The dashes below are the backlog. To cover one:
 
 1. Tag what the test presses with `.debug_selector(|| format!("<page>-<thing>-{}", id.0))` in the view (it does nothing in normal builds).
-2. Add a test to `crates/daw-ui/src/ui_tests/<page>.rs` (one file per page; register new files in `ui_tests/mod.rs`). `Harness::new("<name>")` opens the starter song (a Synth node, one clip over bars 1–4) headless; `h.bounds(..)` / `h.arrange_lane(..)` find things, `h.click(at, clicks)` presses, `h.snapshot()` reads the engine, `h.view.read_with(h.cx, ..)` reads view state (selection, open panels). Add harness helpers (drags, keys via `h.cx.simulate_keystrokes("ctrl-z")`) as tests need them. `h.redraw()` (and helpers that call it) rebuilds every pane, which hides bugs in cached panes; for hover looks and cursors, move with `h.hover(at)`, which draws only what the app asks to redraw, as a real move does.
+2. Add a test to `crates/daw-ui/src/ui_tests/<page>.rs` (one file per page; register new files in `ui_tests/mod.rs`). `Harness::new("<name>")` opens the starter song (a Synth node, one clip over bars 1–4) headless; `h.bounds(..)` / `h.arrange_lane(..)` find things, `h.click(at, clicks)` presses, `h.snapshot()` reads the engine, `h.view.read_with(h.cx, ..)` reads view state (selection, open panels). Add harness helpers (drags, keys via `h.cx.simulate_keystrokes("ctrl-z")`) as tests need them. `h.redraw()` (and helpers that call it) rebuilds every pane, which hides bugs in cached panes; for hover looks and cursors, move with `h.hover(at)`, which draws only what the app asks to redraw, as a real move does. Bottom panels slide up in real time when they open: set the editor's `opened` back a second before pointing at it.
 3. Assert the result in the engine (clips, notes, nodes) and in view state, not pixels.
 4. Check it catches the bug: break the behaviour briefly and see the test fail.
 5. Put the test's name on the behaviour's line here.
@@ -58,6 +58,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Behaviour | Test |
 |---|---|
 | Select tool (1): click, Shift+click, box select; drag to move, edges to resize, Ctrl copies | – |
+| The resize cursor follows the notes as they are: after a resize, moving away and back (a resize lands even if notes were heard during it) | `piano_roll::after_a_note_resize_moving_away_and_back_shows_the_right_cursor` |
 | Double-click empty grid adds a note one grid step long; double-click a note deletes it | – |
 | Pen tool (2): click to add and drag its length; click a note to delete | – |
 | Scissors tool (3): click a note to split it | – |
@@ -90,6 +91,9 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Learn beside a plugin's + Add Parameter opens its window and adds the next knob turned there, with a drawn layer; clicking again stops | `plugin_params::learn_opens_the_plugin_and_waits_for_a_knob_until_stopped` |
 | Double-click empty layer lane: a one-bar flat block | – |
 | Drag a block to move; edges resize as a window; top of the right edge loops | – |
+| Block edges grab from their outline and up to 4 px past them (Signals lanes too) | `parameters::dragging_from_just_past_a_blocks_end_resizes_it` |
+| A looped block's right end only drags repeats (never shorter than one cycle); its first cycle's end still sets the cycle; windows on listening layers still resize | `parameters::a_looped_blocks_end_drags_repeats_never_resizes` |
+| The cursor on Parameters and Signals lanes follows the blocks as they are: after a drag, moving away and back; a resize cursor holds through an edge drag, off the lane too | `parameters::after_a_drag_moving_away_and_back_shows_the_right_cursor` |
 | Drag a point; double-click adds a point; right-click removes one | – |
 | Delete removes the selected block | – |
 | Layer rows: drag to reorder, rename, blend mode, mix, show/hide, delete | – |

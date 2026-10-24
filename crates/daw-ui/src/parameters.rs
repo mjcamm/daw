@@ -291,11 +291,11 @@ struct LaneCursor {
 pub(crate) struct LaneHover {
     lane: Lane,
     block: Option<BlockId>,
-    kind: Option<CursorKind>,
+    pub(crate) kind: Option<CursorKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CursorKind {
+pub(crate) enum CursorKind {
     Loop,
     Move,
     /// An edge or a cycle end: the system's sideways cursor.
@@ -425,6 +425,8 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let pointer = window.mouse_position();
+        // Set again by the lane under the pointer as it draws.
+        self.lane_hover.set(None);
         let snapshot = self.session.snapshot();
         let Some(node) = self.shown_node() else {
             return div().into_any_element();
@@ -714,7 +716,6 @@ impl ProjectView {
         pointer: Point<Pixels>,
     ) -> Option<LaneCursor> {
         let lanes = self.lanes_bounds.get();
-        let zoom = self.lane_zoom();
         let x = (pointer.x - lanes.origin.x) / px(1.);
         let y = (pointer.y - lanes.origin.y) / px(1.) - top;
         let kind_of = |hit: Hit| match hit {
@@ -740,24 +741,73 @@ impl ProjectView {
         if !(0.0..height).contains(&y) {
             return None;
         }
-        let (id, block) = blocks.iter().find(|(_, b)| {
-            let left = zoom.beat_to_x(b.start.as_beats());
-            (left..left + zoom.beat_to_x(b.length.as_beats())).contains(&x)
-        })?;
-        let local_x = x - zoom.beat_to_x(block.start.as_beats());
-        let hit = if windows {
-            window_hit_test(block, local_x, zoom.pixels_per_beat)
-        } else {
-            hit_test(
-                block,
-                local_x,
-                y - BLOCK_INSET,
-                zoom.pixels_per_beat,
-                height - 2. * BLOCK_INSET,
-                self.selected_block == Some(*id),
-            )
-        };
-        kind_of(hit).map(at)
+        let grabbed = self.lane_grab(blocks, windows, x, y - BLOCK_INSET, height)?;
+        kind_of(grabbed.hit).map(at)
+    }
+
+    /// What the pointer at `at` shows over `lane` (a row `top` pixels down,
+    /// `height` tall): the block under it and its cursor.
+    fn lane_hover_at(
+        &self,
+        lane: Lane,
+        blocks: &[(BlockId, Block)],
+        windows: bool,
+        top: f32,
+        height: f32,
+        at: Point<Pixels>,
+    ) -> LaneHover {
+        let zoom = self.lane_zoom();
+        let x = (at.x - self.lanes_bounds.get().origin.x) / px(1.);
+        let block = blocks
+            .iter()
+            .find(|(_, b)| {
+                let left = zoom.beat_to_x(b.start.as_beats());
+                (left..left + zoom.beat_to_x(b.length.as_beats())).contains(&x)
+            })
+            .map(|(id, _)| *id);
+        let kind = self
+            .lane_cursor(blocks, windows, top, height, at)
+            .map(|c| c.kind);
+        LaneHover { lane, block, kind }
+    }
+
+    /// The cursor for the whole window while a block's edge is held, so it
+    /// stays a resize cursor when the pointer strays off the lane.
+    pub(crate) fn block_drag_cursor(&self) -> Option<gpui::CursorStyle> {
+        match self.block_drag.as_ref()?.kind {
+            DragKind::Block(Hit::Start | Hit::End | Hit::CycleEnd) => {
+                Some(gpui::CursorStyle::ResizeLeftRight)
+            }
+            _ => None,
+        }
+    }
+
+    /// What a press at lane `x` and `y` (from the top of the blocks' box)
+    /// would take on a lane `height` tall: a block's part, or an end just
+    /// outside one. `windows` on a listening layer.
+    fn lane_grab(
+        &self,
+        blocks: &[(BlockId, Block)],
+        windows: bool,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> Option<crate::block_edit::Grabbed> {
+        let ppb = self.lane_zoom().pixels_per_beat;
+        crate::block_edit::lane_grab(blocks, x, ppb, windows, |id, block, local_x| {
+            if windows {
+                window_hit_test(block, local_x, ppb)
+            } else {
+                hit_test(
+                    block,
+                    local_x,
+                    y,
+                    ppb,
+                    height - 2. * BLOCK_INSET,
+                    self.selected_block == Some(id),
+                )
+            }
+        })
     }
 
     /// The snap to use with `modifiers` held: Alt flips snap and slide.
@@ -786,9 +836,10 @@ impl ProjectView {
         let box_top = lanes.origin.y + px(top + BLOCK_INSET);
         let box_height = height - 2. * BLOCK_INSET;
 
-        let Some((id, block)) = blocks
-            .iter()
-            .find(|(_, b)| b.start <= at && at < b.end())
+        let local_y = (event.position.y - box_top) / px(1.);
+        let grabbed = self.lane_grab(blocks, windows, x, local_y, height);
+        let Some((id, block)) = grabbed
+            .and_then(|g| blocks.iter().find(|(id, _)| *id == g.id))
             .cloned()
         else {
             self.selected_block = None;
@@ -807,17 +858,19 @@ impl ProjectView {
         };
 
         let local_x = x - zoom.beat_to_x(block.start.as_beats());
-        let local_y = (event.position.y - box_top) / px(1.);
         let was_selected = self.selected_block == Some(id);
-        let hit = if windows {
-            window_hit_test(&block, local_x, ppb)
-        } else {
-            hit_test(&block, local_x, local_y, ppb, box_height, was_selected)
+        let Some(crate::block_edit::Grabbed { hit, beside, .. }) = grabbed else {
+            return;
         };
         let room = room_around(blocks, Some(id), block.start);
         self.selected_block = Some(id);
         // Windows have no points: the signal decides what plays through.
-        if !windows && event.click_count >= 2 && was_selected && !matches!(hit, Hit::Point(_)) {
+        if !windows
+            && !beside
+            && event.click_count >= 2
+            && was_selected
+            && !matches!(hit, Hit::Point(_))
+        {
             let at = phase_at(&block, local_x, ppb);
             let (shape, _) = add_point(&block.shape, at, y_to_value(local_y, box_height));
             self.session.apply(Command::Edit(Edit::SetBlock {
@@ -2144,26 +2197,16 @@ impl ProjectView {
         let height = zoom.row_height;
         let blocks = previewed_blocks(self.block_drag.as_ref(), blocks);
         let cursor = self.lane_cursor(&blocks, signal.is_some(), top, height, pointer);
-        // What the pointer shows over this lane: redraw only when it
-        // changes, or always while a drawn cursor icon follows it.
+        // What the pointer shows over this lane, as drawn: a move that finds
+        // something else redraws (and always while a drawn cursor icon
+        // follows the pointer).
         let hover_blocks = blocks.to_vec();
         let windows = signal.is_some();
-        let hover = move |this: &mut ProjectView, at: Point<Pixels>| -> LaneHover {
-            let zoom = this.lane_zoom();
-            let lanes = this.lanes_bounds.get();
-            let x = (at.x - lanes.origin.x) / px(1.);
-            let block = hover_blocks
-                .iter()
-                .find(|(_, b)| {
-                    let left = zoom.beat_to_x(b.start.as_beats());
-                    (left..left + zoom.beat_to_x(b.length.as_beats())).contains(&x)
-                })
-                .map(|(id, _)| *id);
-            let kind = this
-                .lane_cursor(&hover_blocks, windows, top, height, at)
-                .map(|c| c.kind);
-            LaneHover { lane, block, kind }
-        };
+        let lanes_top = self.lanes_bounds.get().origin.y;
+        if (0.0..height).contains(&((pointer.y - lanes_top) / px(1.) - top)) {
+            let shown = self.lane_hover_at(lane, &hover_blocks, windows, top, height, pointer);
+            self.lane_hover.set(Some(shown));
+        }
         // Only blocks near the screen get elements (`paint::visible_x`).
         let near_x = crate::paint::visible_x(match self.page {
             Page::Signals => &self.signals_view.x,
@@ -2178,95 +2221,101 @@ impl ProjectView {
         let window = signal.map(|id| (self.compiled_signals(), id));
         // The centre line: no effect.
         let centre = BLOCK_INSET + value_to_y(0.5, height - 2. * BLOCK_INSET);
-        cell.border_b_2()
-            .border_color(theme.edge)
-            .child(
+        cell.debug_selector(move || match lane {
+            Lane::Layer(id) => format!("layer-lane-{}", id.0),
+            Lane::Signal(id) => format!("signal-lane-{}", id.0),
+        })
+        .border_b_2()
+        .border_color(theme.edge)
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px(centre - 0.5))
+                .h(px(1.))
+                .bg(theme.grid),
+        )
+        .child({
+            // Every block near the screen, painted in one drawing.
+            let lanes = self.lanes_bounds.get();
+            let (pointer_x, pointer_y) = (
+                (pointer.x - lanes.origin.x) / px(1.),
+                (pointer.y - lanes.origin.y) / px(1.) - top,
+            );
+            let painted: Vec<PaintedBlock> = blocks
+                .iter()
+                .filter(|(_, block)| near(block))
+                .map(|(id, block)| {
+                    let left = zoom.beat_to_x(block.start.as_beats());
+                    let right = left + zoom.beat_to_x(block.length.as_beats());
+                    let hovered =
+                        (0.0..height).contains(&pointer_y) && (left..right).contains(&pointer_x);
+                    painted_block(
+                        block,
+                        colors,
+                        self.selected_block == Some(*id),
+                        hovered,
+                        mix,
+                        zoom,
+                        height - 2. * BLOCK_INSET,
+                        window.clone(),
+                        theme,
+                    )
+                })
+                .collect();
+            canvas(
+                |_, _, _| {},
+                move |bounds, (), window, cx| {
+                    for block in &painted {
+                        paint_block(block, bounds, window, cx);
+                    }
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        })
+        .on_mouse_move(
+            cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
+                let now =
+                    this.lane_hover_at(lane, &hover_blocks, windows, top, height, event.position);
+                let follows = matches!(now.kind, Some(CursorKind::Loop | CursorKind::Move));
+                // Against what is drawn, not the last move: a drag or an
+                // edit may have moved the blocks since.
+                if follows || this.lane_hover.get() != Some(now) {
+                    this.hover_changed(cx);
+                }
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                this.lane_mouse_down(lane, top, height, event);
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                this.lane_right_click(top, height, event);
+            }),
+        )
+        .when_some(cursor, |d, cursor| {
+            // The system cursor is hidden; this icon takes its place.
+            let (glyph, tint) = match cursor.kind {
+                CursorKind::Loop => (Icon::Loop, theme.accent),
+                CursorKind::Move => (Icon::Move, colors.detail),
+                CursorKind::Resize => return d.cursor_ew_resize(),
+            };
+            d.cursor_none(gpui::CursorStyle::Arrow).child(
                 div()
                     .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(px(centre - 0.5))
-                    .h(px(1.))
-                    .bg(theme.grid),
+                    .left(px(cursor.x - CURSOR_ICON / 2.))
+                    .top(px(cursor.y - CURSOR_ICON / 2.))
+                    .child(icon(glyph, tint, CURSOR_ICON)),
             )
-            .child({
-                // Every block near the screen, painted in one drawing.
-                let lanes = self.lanes_bounds.get();
-                let (pointer_x, pointer_y) = (
-                    (pointer.x - lanes.origin.x) / px(1.),
-                    (pointer.y - lanes.origin.y) / px(1.) - top,
-                );
-                let painted: Vec<PaintedBlock> = blocks
-                    .iter()
-                    .filter(|(_, block)| near(block))
-                    .map(|(id, block)| {
-                        let left = zoom.beat_to_x(block.start.as_beats());
-                        let right = left + zoom.beat_to_x(block.length.as_beats());
-                        let hovered = (0.0..height).contains(&pointer_y)
-                            && (left..right).contains(&pointer_x);
-                        painted_block(
-                            block,
-                            colors,
-                            self.selected_block == Some(*id),
-                            hovered,
-                            mix,
-                            zoom,
-                            height - 2. * BLOCK_INSET,
-                            window.clone(),
-                            theme,
-                        )
-                    })
-                    .collect();
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, (), window, cx| {
-                        for block in &painted {
-                            paint_block(block, bounds, window, cx);
-                        }
-                    },
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-            })
-            .on_mouse_move(
-                cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
-                    let now = hover(this, event.position);
-                    let follows = matches!(now.kind, Some(CursorKind::Loop | CursorKind::Move));
-                    if follows || this.lane_hover != Some(now) {
-                        this.lane_hover = Some(now);
-                        this.hover_changed(cx);
-                    }
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                    this.lane_mouse_down(lane, top, height, event);
-                }),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                    this.lane_right_click(top, height, event);
-                }),
-            )
-            .when_some(cursor, |d, cursor| {
-                // The system cursor is hidden; this icon takes its place.
-                let (glyph, tint) = match cursor.kind {
-                    CursorKind::Loop => (Icon::Loop, theme.accent),
-                    CursorKind::Move => (Icon::Move, colors.detail),
-                    CursorKind::Resize => return d.cursor_ew_resize(),
-                };
-                d.cursor_none(gpui::CursorStyle::Arrow).child(
-                    div()
-                        .absolute()
-                        .left(px(cursor.x - CURSOR_ICON / 2.))
-                        .top(px(cursor.y - CURSOR_ICON / 2.))
-                        .child(icon(glyph, tint, CURSOR_ICON)),
-                )
-            })
+        })
     }
 }
 

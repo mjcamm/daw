@@ -116,3 +116,20 @@ fn a_rejected_edit_still_ends_the_drag() {
     assert_eq!(engine.project().tempo_bpm, 120.0);
     assert!(!engine.snapshot().can_undo);
 }
+
+#[test]
+fn front_ends_see_the_song_without_the_preview_whatever_else_happens() {
+    // A command during a drag (a note heard, play, locate) brings a new
+    // snapshot: it must still show the song as it was before the drag,
+    // or the drag's release finds nothing to change.
+    let (mut engine, _processor) = engine();
+    engine.apply(Command::Preview(tempo(150.0))).unwrap();
+    engine.apply(Command::Play).unwrap();
+    assert_eq!(engine.snapshot_without_preview().tempo_bpm, 120.0);
+    assert!(engine.snapshot_without_preview().playing);
+    // The drag still sounds, and lands as usual.
+    assert_eq!(engine.project().tempo_bpm, 150.0);
+    engine.apply(Command::Edit(tempo(150.0))).unwrap();
+    assert_eq!(engine.snapshot_without_preview().tempo_bpm, 150.0);
+    assert!(engine.snapshot().can_undo);
+}

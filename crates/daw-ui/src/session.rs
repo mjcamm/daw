@@ -146,7 +146,10 @@ impl Session {
     pub fn tick(&mut self) {
         self.engine.maintain();
         if self.engine.revision() != self.snapshot.revision {
-            let current = std::mem::replace(&mut self.snapshot, self.engine.snapshot());
+            // Never with a drag's preview: views draw their own, and work out
+            // the drag's edit against the song as it was.
+            let current =
+                std::mem::replace(&mut self.snapshot, self.engine.snapshot_without_preview());
             self.previous = Some(current);
         }
         for (node, peak) in self.engine.take_meters() {

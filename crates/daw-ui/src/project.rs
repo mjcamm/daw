@@ -139,7 +139,7 @@ pub struct ProjectView {
     /// pointer redraws. Plain moves redraw nothing otherwise.
     pub(crate) hover_changed: bool,
     /// What the pointer shows over a layer or signal lane.
-    pub(crate) lane_hover: Option<crate::parameters::LaneHover>,
+    pub(crate) lane_hover: Cell<Option<crate::parameters::LaneHover>>,
     /// The pointer over the lanes while the scissors are out.
     pub(crate) scissors_at: Option<gpui::Point<Pixels>>,
     /// Whether the pointer is over the piano roll panel: tool keys go to it.
@@ -340,7 +340,7 @@ impl ProjectView {
             arrange_hover: Cell::new(None),
             arrange_pointer: None,
             hover_changed: false,
-            lane_hover: None,
+            lane_hover: Cell::new(None),
             roll_hovered: false,
             note_editor: None,
             audio_editor: None,

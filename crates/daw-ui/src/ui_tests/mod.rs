@@ -9,7 +9,9 @@ mod export;
 mod live_drags;
 mod loop_strip;
 mod menus;
+mod parameters;
 mod perf;
+mod piano_roll;
 mod plugin_params;
 mod transport;
 
@@ -156,6 +158,9 @@ impl Harness {
             pressed_button: None,
         });
         self.cx.run_until_parked();
+        // A pane told to redraw while a frame was being drawn draws on the
+        // next frame: draw it, reusing every pane not told to.
+        self.animation_frame();
     }
 
     /// Moves the pointer with the left button held (after [`Self::press`]).

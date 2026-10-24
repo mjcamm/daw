@@ -765,9 +765,22 @@ impl Engine {
     /// their state (a call to their host process each).
     pub fn to_file(&mut self) -> ProjectFile {
         // The song without a drag's preview, which is not part of it yet.
+        self.without_preview(Self::file)
+    }
+
+    /// The song as front ends should draw it: without a drag's preview,
+    /// which they show themselves (and compute the drag's edit against).
+    /// [`Self::snapshot`] includes it.
+    pub fn snapshot_without_preview(&mut self) -> Snapshot {
+        self.without_preview(|engine| engine.snapshot())
+    }
+
+    /// Runs `f` with any preview taken out of the song, then puts it back.
+    /// Nothing is sent to the audio side: it plays on as it was.
+    fn without_preview<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         let preview = self.preview.as_ref().map(|p| p.edit.clone());
         self.drop_preview();
-        let file = self.file();
+        let result = f(self);
         if let Some(edit) = preview {
             let inverse = self
                 .project
@@ -775,7 +788,7 @@ impl Engine {
                 .expect("a preview applies again where it applied before");
             self.preview = Some(Preview { edit, inverse });
         }
-        file
+        result
     }
 
     fn file(&mut self) -> ProjectFile {

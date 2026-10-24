@@ -229,6 +229,8 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let pointer = window.mouse_position();
+        // Set again by the lane under the pointer as it draws.
+        self.lane_hover.set(None);
         let snapshot = self.session.snapshot();
         let zoom = self.signals_view.zoom;
         let bars = timeline_bars(crate::project::song_clips(snapshot), snapshot.loop_range);

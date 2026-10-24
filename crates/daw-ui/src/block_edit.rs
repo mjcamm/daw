@@ -239,8 +239,80 @@ pub fn hit_test(
 pub fn window_hit_test(block: &Block, x: f32, pixels_per_beat: f32) -> Hit {
     match edge_at(block, x, pixels_per_beat) {
         Some(Hit::CycleEnd) | None => Hit::Body,
+        Some(Hit::Loop) => Hit::End,
         Some(edge) => edge,
     }
+}
+
+/// How far past a block's ends a press still takes that end (where no
+/// block is): the outline is what the eye aims at.
+pub const OUTSIDE: f32 = 4.;
+
+/// What a press on a lane takes: a block and the part of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grabbed {
+    pub id: BlockId,
+    pub hit: Hit,
+    /// Just outside the block, past one of its ends.
+    pub beside: bool,
+}
+
+/// What a press `x` pixels along a lane takes: inside a block, the part
+/// `inside` finds (given the block's id, the block and its local x); just past a block's end or
+/// before its start (within [`OUTSIDE`]), that end. A looped block's end
+/// loops, except on a listening layer (`windows`), where nothing loops.
+pub fn lane_grab(
+    blocks: &[(BlockId, Block)],
+    x: f32,
+    pixels_per_beat: f32,
+    windows: bool,
+    inside: impl Fn(BlockId, &Block, f32) -> Hit,
+) -> Option<Grabbed> {
+    let span = |b: &Block| {
+        let left = beats_to_px(b.start, pixels_per_beat);
+        (left, left + beats_to_px(b.length, pixels_per_beat))
+    };
+    let within = blocks.iter().find(|(_, b)| {
+        let (left, right) = span(b);
+        (left..right).contains(&x)
+    });
+    if let Some((id, block)) = within {
+        let (left, _) = span(block);
+        return Some(Grabbed {
+            id: *id,
+            hit: inside(*id, block, x - left),
+            beside: false,
+        });
+    }
+    blocks
+        .iter()
+        .filter_map(|(id, b)| {
+            let (left, right) = span(b);
+            let end = if is_looped(b) && !windows {
+                Hit::Loop
+            } else {
+                Hit::End
+            };
+            if (right..right + OUTSIDE).contains(&x) {
+                Some((x - right, *id, end))
+            } else if (left - OUTSIDE..left).contains(&x) {
+                Some((left - x, *id, Hit::Start))
+            } else {
+                None
+            }
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, id, hit)| Grabbed {
+            id,
+            hit,
+            beside: true,
+        })
+}
+
+/// Whether a block repeats (a cycle shorter than itself; older blocks may
+/// hold one as long as themselves, which doesn't loop).
+pub fn is_looped(block: &Block) -> bool {
+    block.cycle.is_some_and(|c| c < block.length)
 }
 
 /// The top part of the right edge that loops rather than resizes.
@@ -264,7 +336,12 @@ pub fn edge_at(block: &Block, x: f32, pixels_per_beat: f32) -> Option<Hit> {
     if x < edge {
         Some(Hit::Start)
     } else if x >= width - edge {
-        Some(Hit::End)
+        // A looped block's end only adds or takes away whole repeats.
+        Some(if is_looped(block) {
+            Hit::Loop
+        } else {
+            Hit::End
+        })
     } else if cycle_end_x(block, pixels_per_beat).is_some_and(|end| (x - end).abs() <= CYCLE_EDGE) {
         Some(Hit::CycleEnd)
     } else {
@@ -937,6 +1014,50 @@ mod tests {
             Hit::Loop,
             "the loop icon"
         );
+    }
+
+    #[test]
+    fn a_looped_blocks_end_only_loops() {
+        // As on Arrange: the whole right end drags repeats, never resizes,
+        // so a loop always ends on a whole repeat. The start still trims,
+        // and the first cycle's end still sets the cycle.
+        let b = looped(0, 2, 2); // 96 px wide, the first cycle ends at 48
+        let h = 40.;
+        for y in [4., 20., 38.] {
+            assert_eq!(hit_test(&b, 94., y, PPB, h, false), Hit::Loop, "at {y}");
+        }
+        assert_eq!(hit_test(&b, 2., 20., PPB, h, false), Hit::Start);
+        assert_eq!(hit_test(&b, 48., 20., PPB, h, false), Hit::CycleEnd);
+        // Windows don't loop: theirs still resizes.
+        assert_eq!(window_hit_test(&b, 94., PPB), Hit::End);
+    }
+
+    #[test]
+    fn a_press_just_past_a_blocks_ends_takes_that_end() {
+        let blocks = lane(&[(1, block(2, 4)), (2, looped(8, 1, 2))]);
+        // Blocks at 48..144 and 192..240 px.
+        let inside = |_, b: &Block, x: f32| hit_test(b, x, 20., PPB, 40., false);
+        let at = |x| lane_grab(&blocks, x, PPB, false, inside).map(|g| (g.id.0, g.hit, g.beside));
+        assert_eq!(at(100.), Some((1, Hit::Body, false)), "inside");
+        assert_eq!(at(144. + OUTSIDE - 1.), Some((1, Hit::End, true)));
+        assert_eq!(at(48. - OUTSIDE + 1.), Some((1, Hit::Start, true)));
+        assert_eq!(at(144. + OUTSIDE + 1.), None, "further out is empty lane");
+        assert_eq!(at(241.), Some((2, Hit::Loop, true)), "a looped end loops");
+        // On a listening layer, windows resize from outside too.
+        let windows = |_, b: &Block, x: f32| window_hit_test(b, x, PPB);
+        assert_eq!(
+            lane_grab(&blocks, 241., PPB, true, windows).map(|g| g.hit),
+            Some(Hit::End)
+        );
+    }
+
+    #[test]
+    fn where_blocks_meet_inside_wins() {
+        let blocks = lane(&[(1, block(0, 4)), (2, block(4, 4))]);
+        let inside = |_, b: &Block, x: f32| hit_test(b, x, 20., PPB, 40., false);
+        let at = |x| lane_grab(&blocks, x, PPB, false, inside).map(|g| (g.id.0, g.hit));
+        assert_eq!(at(95.), Some((1, Hit::End)));
+        assert_eq!(at(97.), Some((2, Hit::Start)));
     }
 
     #[test]
