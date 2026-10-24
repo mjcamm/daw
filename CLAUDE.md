@@ -16,6 +16,7 @@ cargo run -p daw-player -- play --compare    # hear the demo live; verifies live
 cargo run -p daw-player -- render out.wav    # render the demo to a file
 cargo run -p daw-player -- plugins           # scan the VST3 folders and list what is found
 cargo run -p daw-ui                          # the app
+./scripts/licenses.sh                        # regenerate licenses/NOTICES.md after dependency changes
 ```
 
 Checks run locally. Run `./scripts/check.sh` before every commit.
