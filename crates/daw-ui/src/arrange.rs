@@ -181,6 +181,9 @@ impl ProjectView {
         let row_height = self.arrange_view.zoom.row_height;
         div()
             .w(px(NODE_LIST_WIDTH))
+            // The page's full height, so the space below the nodes is there
+            // to click.
+            .h_full()
             .flex_none()
             .flex()
             .flex_col()
@@ -211,8 +214,9 @@ impl ProjectView {
                 // Clicking the empty space below the nodes clears the selection.
                 div()
                     .id("node-list-space")
+                    .debug_selector(|| "node-list-space".into())
                     .flex_1()
-                    .on_click(cx.listener(|this, _, _, _| this.selected_node = None)),
+                    .on_click(cx.listener(|this, _, _, _| this.press_empty_space())),
             )
     }
 
@@ -979,6 +983,17 @@ impl ProjectView {
         }
     }
 
+    /// A press on Arrange where there is no clip, block or node: nothing
+    /// stays selected and the bottom panel closes.
+    pub(crate) fn press_empty_space(&mut self) {
+        self.selected_node = None;
+        self.selected_clips.clear();
+        self.selected_combined = None;
+        self.clear_note_selection();
+        self.close_note_editor();
+        self.close_audio_editor();
+    }
+
     /// Deletes a node and everything under it (undo brings it back).
     pub(crate) fn delete_node(&mut self, id: NodeId) {
         if id == NodeId::ROOT {
@@ -1294,8 +1309,7 @@ impl ProjectView {
                                 this.press_painted_clip(clip, grab, audio, event);
                                 return;
                             }
-                            this.selected_clips.clear();
-                            this.selected_combined = None;
+                            this.press_empty_space();
                             if event.click_count >= 2 && takes_clips {
                                 this.add_clip_at(id, event.position);
                             } else if event.click_count >= 2 && audio {
@@ -1379,6 +1393,20 @@ impl ProjectView {
                     }))
                     .children(grid_lines(zoom, bars, theme))
                     .children(lanes)
+                    // Below the last lane: empty space, which clears the
+                    // selection and closes the bottom panel.
+                    .child(
+                        div()
+                            .id("arrange-lanes-space")
+                            .debug_selector(|| "arrange-lanes-space".into())
+                            .flex_1()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseDownEvent, _, _| {
+                                    this.press_empty_space();
+                                }),
+                            ),
+                    )
                     .children(overlay)
                     .children(self.scissors_layer(&scissor_rows, theme, cx))
                     .child(playhead),

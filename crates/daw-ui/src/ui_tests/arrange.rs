@@ -274,3 +274,151 @@ fn dragging_out_a_loop_shows_its_repeats() {
     assert_eq!(seams, 2, "three cycles: a line at the end of the first two");
     h.release(grab);
 }
+
+/// Opens the piano roll on the starter clip, with its node and clip
+/// selected, already slid up.
+fn editing_the_starter_clip(h: &mut Harness) -> daw_engine::ClipId {
+    let id = h.view.read_with(h.cx, |v, _| {
+        v.session()
+            .snapshot()
+            .node(FIRST_NODE)
+            .expect("the synth")
+            .clips[0]
+            .0
+    });
+    h.view.update(h.cx, |v, _| {
+        v.selected_node = Some(FIRST_NODE);
+        v.selected_clips.insert(id);
+        v.open_note_editor(id);
+        if let Some(editor) = &mut v.note_editor {
+            editor.opened = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap_or(editor.opened);
+        }
+    });
+    h.redraw_all();
+    id
+}
+
+/// docs/behaviours.md: "A click on empty space on Arrange clears the
+/// selection (node, clips, block) and closes the bottom panel".
+#[test]
+fn clicking_empty_space_clears_the_selection_and_closes_the_panel() {
+    for place in ["lane", "below the lanes", "node list"] {
+        let mut h = Harness::new(&format!("arrange-empty-{place}"));
+        editing_the_starter_clip(&mut h);
+        h.view.read_with(h.cx, |v, _| {
+            assert!(v.note_editor.is_some() && !v.selected_clips.is_empty());
+        });
+        let at = match place {
+            // Bar 6 of the synth's lane: no clip there.
+            "lane" => {
+                let lane = h.arrange_lane(FIRST_NODE);
+                let ppb = h
+                    .view
+                    .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+                point(lane.left() + px(20. * ppb + 2.), lane.center().y)
+            }
+            "below the lanes" => h.bounds("arrange-lanes-space").center(),
+            _ => h.bounds("node-list-space").center(),
+        };
+        h.click(at, 1);
+        h.view.read_with(h.cx, |v, _| {
+            assert_eq!(v.selected_node, None, "{place}: no node");
+            assert!(v.selected_clips.is_empty(), "{place}: no clips");
+            assert!(v.note_editor.is_none(), "{place}: the panel closes");
+        });
+    }
+}
+
+/// docs/behaviours.md: "With the bottom panel open, a click on a clip
+/// shows it there".
+#[test]
+fn with_the_panel_open_a_click_on_a_clip_shows_it() {
+    use daw_engine::{Command, Edit, MidiClip, MidiNote, Node, NodeId, Ticks};
+    let mut h = Harness::new("arrange-click-switches");
+    // A second synth with a clip of its own.
+    let other = NodeId(400);
+    h.view.update(h.cx, |v, _| {
+        let device = crate::tree::next_device_id(v.session().snapshot());
+        v.session.apply_or_panic(Command::Edit(Edit::AddNode {
+            id: other,
+            parent: NodeId::ROOT,
+            index: 1,
+            node: Node::new("Synth 2", 3).with_instrument(device),
+        }));
+        v.session.apply_or_panic(Command::Edit(Edit::AddClip {
+            node: other,
+            id: daw_engine::ClipId(400),
+            clip: MidiClip {
+                start: Ticks::from_beats(4),
+                length: Ticks::from_beats(4),
+                notes: vec![MidiNote {
+                    start: Ticks::ZERO,
+                    length: Ticks::from_beats(1),
+                    pitch: 64,
+                    velocity: 100,
+                }],
+                looping: None,
+            },
+        }));
+    });
+    h.redraw_all();
+    editing_the_starter_clip(&mut h);
+    let lane = h.arrange_lane(other);
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.arrange_view.zoom.pixels_per_beat);
+    h.click(point(lane.left() + px(6. * ppb), lane.center().y), 1);
+    h.view.read_with(h.cx, |v, _| {
+        let editor = v.note_editor.as_ref().expect("still open");
+        assert_eq!(editor.target, other, "showing the clicked clip's node");
+        assert_eq!(v.selected_node, Some(other), "its node selected");
+        assert!(v.selected_clips.contains(&daw_engine::ClipId(400)));
+    });
+}
+
+/// docs/behaviours.md: "A click on empty lane on Parameters or Signals
+/// clears the selected block".
+#[test]
+fn clicking_an_empty_layer_lane_clears_the_selected_block() {
+    use daw_engine::{
+        BlendMode, Block, BlockId, Command, DeviceRef, Edit, Layer, LayerId, ParamId, Shape,
+        devices::channel,
+    };
+    let mut h = Harness::new("params-empty-click");
+    h.view.update(h.cx, |v, _| {
+        let mut layer = Layer::named("Layer 1", BlendMode::Add);
+        layer.blocks.push((
+            BlockId(1),
+            Block::new(Ticks::ZERO, Ticks::from_beats(4), Shape::constant(0.25)),
+        ));
+        v.session.apply_or_panic(Command::Edit(Edit::AddLayer {
+            param: ParamId {
+                node: FIRST_NODE,
+                device: DeviceRef::Channel,
+                index: channel::VOLUME,
+            },
+            id: LayerId(1),
+            index: 0,
+            layer,
+        }));
+        v.selected_node = Some(FIRST_NODE);
+        v.page = crate::project::Page::Parameters;
+    });
+    h.redraw_all();
+    let lane = h.bounds("layer-lane-1");
+    let ppb = h
+        .view
+        .read_with(h.cx, |v, _| v.parameters_view.zoom.pixels_per_beat);
+    h.click(point(lane.left() + px(2. * ppb), lane.center().y), 1);
+    assert!(
+        h.view.read_with(h.cx, |v, _| v.selected_block.is_some()),
+        "selected"
+    );
+    h.click(point(lane.left() + px(12. * ppb), lane.center().y), 1);
+    h.view.read_with(h.cx, |v, _| {
+        assert!(v.selected_block.is_none(), "cleared");
+        assert_eq!(v.selected_node, Some(FIRST_NODE), "the page stays");
+    });
+}

@@ -31,6 +31,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Double-click an audio clip or empty audio lane: the audio panel opens | – |
 | Double-click a combined block on a parent: the editor opens on the parent there | – |
 | Click a clip selects it; Shift+click adds or removes; a press on empty lane clears | – |
+| A click on empty space on Arrange (a lane where no clip is, below the lanes, below the nodes) clears the selection (node, clips, block) and closes the bottom panel | `arrange::clicking_empty_space_clears_the_selection_and_closes_the_panel` |
+| With the bottom panel open, a single click on a clip shows it there (piano roll or audio panel) and selects its node | `arrange::with_the_panel_open_a_click_on_a_clip_shows_it` |
 | Drag clips to move (snapped, between rows); Ctrl copies; Alt flips snap; Escape cancels | – |
 | A clip drag is heard as it moves; Escape puts it back | `live_drags::a_clip_drag_is_heard_as_it_moves_and_escape_puts_it_back` |
 | Drag a clip's edge to resize (trim and reveal for audio); a press on its outline or up to 4 px past it takes the end, so narrow clips resize too | `arrange::dragging_from_just_past_a_clips_end_resizes_it` |
@@ -91,6 +93,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Learn beside a plugin's + Add Parameter opens its window and adds the next knob turned there, with a drawn layer; clicking again stops | `plugin_params::learn_opens_the_plugin_and_waits_for_a_knob_until_stopped` |
 | Double-click empty layer lane: a one-bar flat block | – |
 | Drag a block to move; edges resize as a window; top of the right edge loops | – |
+| A click on empty lane on Parameters or Signals clears the selected block; the node stays (the page shows it) | `arrange::clicking_an_empty_layer_lane_clears_the_selected_block` |
 | Block edges grab from their outline and up to 4 px past them (Signals lanes too) | `parameters::dragging_from_just_past_a_blocks_end_resizes_it` |
 | A looped block's right end only drags repeats (never shorter than one cycle); its first cycle's end still sets the cycle; windows on listening layers still resize | `parameters::a_looped_blocks_end_drags_repeats_never_resizes` |
 | The cursor on Parameters and Signals lanes follows the blocks as they are: after a drag, moving away and back; a resize cursor holds through an edge drag, off the lane too | `parameters::after_a_drag_moving_away_and_back_shows_the_right_cursor` |

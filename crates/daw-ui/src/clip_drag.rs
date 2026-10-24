@@ -202,9 +202,29 @@ impl ProjectView {
     }
 
     /// Ends a clip drag: lands the clips as one edit if they can go there.
+    /// A press that never moved is a click: with the bottom panel open, it
+    /// shows the clicked clip, and its node is the one selected (the panel
+    /// follows the selected node).
     pub(crate) fn finish_clip_drag(&mut self) {
         let landing = self.clip_drag_landing();
+        let clicked = self
+            .clip_drag
+            .as_ref()
+            .filter(|drag| !drag.started)
+            .map(|drag| {
+                let held = &drag.held[drag.grabbed];
+                (held.id, held.node, held.clip.kind())
+            });
         self.clip_drag = None;
+        if let Some((id, node, kind)) = clicked
+            && (self.note_editor.is_some() || self.audio_editor.is_some())
+        {
+            self.selected_node = Some(node);
+            match kind {
+                NodeKind::Midi => self.open_note_editor(id),
+                NodeKind::Audio => self.open_audio_clip(id),
+            }
+        }
         if let Some((edit, landed)) = landing {
             self.session.apply(Command::Edit(edit));
             // The clips just placed (copies included) are the selection.
