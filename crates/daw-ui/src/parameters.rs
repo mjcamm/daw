@@ -280,9 +280,6 @@ fn previewed_layers<'a>(
 #[derive(Debug, Clone, Copy)]
 struct LaneCursor {
     kind: CursorKind,
-    /// Pointer position within the lane's row.
-    x: f32,
-    y: f32,
 }
 
 /// What the pointer shows over a lane: the block under it (its loop
@@ -724,7 +721,7 @@ impl ProjectView {
             Hit::Start | Hit::End | Hit::CycleEnd => Some(CursorKind::Resize),
             Hit::Body => None,
         };
-        let at = |kind| LaneCursor { kind, x, y };
+        let at = |kind| LaneCursor { kind };
         // While dragging, the cursor stays what the drag began as.
         if let Some(drag) = &self.block_drag {
             return blocks
@@ -2310,12 +2307,16 @@ impl ProjectView {
                 CursorKind::Move => (Icon::Move, colors.detail),
                 CursorKind::Resize => return d.cursor_ew_resize(),
             };
+            // On top of everything (other lanes, the playhead), right at
+            // the pointer, as on Arrange.
+            let corner = point(px(CURSOR_ICON / 2.), px(CURSOR_ICON / 2.));
             d.cursor_none(gpui::CursorStyle::Arrow).child(
-                div()
-                    .absolute()
-                    .left(px(cursor.x - CURSOR_ICON / 2.))
-                    .top(px(cursor.y - CURSOR_ICON / 2.))
-                    .child(icon(glyph, tint, CURSOR_ICON)),
+                gpui::deferred(gpui::anchored().position(pointer - corner).child(icon(
+                    glyph,
+                    tint,
+                    CURSOR_ICON,
+                )))
+                .with_priority(2),
             )
         })
     }

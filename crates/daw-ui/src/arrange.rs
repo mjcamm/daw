@@ -1164,6 +1164,10 @@ impl ProjectView {
         // Every clip as shown this frame, for the parents' combined blocks.
         let shown_clips = self.shown_clips();
         self.arrange_hover.set(None);
+        // Where the drawn loop cursor goes, in the window: drawn on top of
+        // everything (the lanes, the drag's ghosts, the playhead), right at
+        // the pointer even as the lanes scroll under it.
+        let mut loop_cursor_at: Option<gpui::Point<gpui::Pixels>> = None;
         let mut row_top = 0.;
         let lanes: Vec<_> = rows
             .iter()
@@ -1247,16 +1251,11 @@ impl ProjectView {
                 };
                 let resize_cursor = matches!(part, Some((Grab::Start | Grab::End, _)));
                 // GPUI has no loop cursor: hide it and draw the icon there.
-                let loop_cursor = part.filter(|(grab, _)| *grab == Grab::Loop).map(|(_, at)| {
-                    let x = (at.x - lanes.left()) / px(1.);
-                    let y = (at.y - lanes.top()) / px(1.) - top;
-                    div()
-                        .absolute()
-                        .left(px(x - LOOP_CURSOR / 2.))
-                        .top(px(y - LOOP_CURSOR / 2.))
-                        .child(icon(Icon::Loop, theme.accent, LOOP_CURSOR))
-                });
-                let hide_cursor = loop_cursor.is_some();
+                let on_loop = part.filter(|(grab, _)| *grab == Grab::Loop);
+                if let Some((_, at)) = on_loop {
+                    loop_cursor_at = Some(at);
+                }
+                let hide_cursor = on_loop.is_some();
                 let press_spans = spans.clone();
                 let lane = div()
                     .debug_selector(|| format!("arrange-lane-{}", id.0))
@@ -1330,9 +1329,7 @@ impl ProjectView {
                             .top_0()
                             .left_0()
                             .size_full(),
-                    )
-                    // The drawn loop cursor last, above the clips.
-                    .children(loop_cursor);
+                    );
                 animated(layout, zoom.row_height, lane).into_any_element()
             })
             .collect();
@@ -1409,7 +1406,19 @@ impl ProjectView {
                     )
                     .children(overlay)
                     .children(self.scissors_layer(&scissor_rows, theme, cx))
-                    .child(playhead),
+                    .child(playhead)
+                    // The drawn loop cursor, above everything on the lanes.
+                    .children(loop_cursor_at.map(|at| {
+                        let corner = gpui::point(px(LOOP_CURSOR / 2.), px(LOOP_CURSOR / 2.));
+                        gpui::deferred(
+                            gpui::anchored().position(at - corner).child(
+                                div()
+                                    .debug_selector(|| "arrange-loop-cursor".into())
+                                    .child(icon(Icon::Loop, theme.accent, LOOP_CURSOR)),
+                            ),
+                        )
+                        .with_priority(2)
+                    })),
             )
     }
 

@@ -328,7 +328,8 @@ impl ProjectView {
     }
 
     /// Opens the editor on a node at `beat` (song time), or points the
-    /// open editor there without sliding it up again.
+    /// open editor there without sliding it up again. In place of an open
+    /// audio panel it takes the panel's place and height, already up.
     pub(crate) fn open_node_editor(&mut self, node: NodeId, beat: f64) {
         let mut editor = NoteEditor::new(node, DEFAULT_HEIGHT);
         if let Some(open) = &self.note_editor {
@@ -336,7 +337,11 @@ impl ProjectView {
             editor.tool = open.tool;
             editor.opened = open.opened;
             editor.folded = open.folded;
+        } else if let Some(audio) = &self.audio_editor {
+            editor.height = audio.height;
+            editor.opened = audio.opened;
         }
+        self.close_audio_editor();
         editor.target = self.default_target(node);
         editor.scroll_to = Some(beat);
         self.note_editor = Some(editor);

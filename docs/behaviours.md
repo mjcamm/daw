@@ -32,7 +32,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Double-click a combined block on a parent: the editor opens on the parent there | – |
 | Click a clip selects it; Shift+click adds or removes; a press on empty lane clears | – |
 | A click on empty space on Arrange (a lane where no clip is, below the lanes, below the nodes) clears the selection (node, clips, block) and closes the bottom panel | `arrange::clicking_empty_space_clears_the_selection_and_closes_the_panel` |
-| With the bottom panel open, a single click on a clip shows it there (piano roll or audio panel) and selects its node | `arrange::with_the_panel_open_a_click_on_a_clip_shows_it` |
+| With the bottom panel open, a single click on a clip shows it there (piano roll or audio panel) and selects its node; switching between the two swaps in place, at the same height, without sliding up again | `arrange::with_the_panel_open_a_click_on_a_clip_shows_it`, `arrange::the_piano_roll_takes_the_audio_panels_place_without_sliding` |
+| The drawn loop cursor sits at the pointer, on top of everything, through a whole loop drag (Parameters and Signals draw theirs the same way) | `arrange::the_loop_cursor_follows_the_pointer_through_a_loop_drag` |
 | Drag clips to move (snapped, between rows); Ctrl copies; Alt flips snap; Escape cancels | – |
 | A clip drag is heard as it moves; Escape puts it back | `live_drags::a_clip_drag_is_heard_as_it_moves_and_escape_puts_it_back` |
 | Drag a clip's edge to resize (trim and reveal for audio); a press on its outline or up to 4 px past it takes the end, so narrow clips resize too | `arrange::dragging_from_just_past_a_clips_end_resizes_it` |

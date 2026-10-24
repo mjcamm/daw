@@ -362,6 +362,8 @@ fn with_the_panel_open_a_click_on_a_clip_shows_it() {
                 looping: None,
             },
         }));
+        // The new row shows at once, not sliding open while the test clicks.
+        v.row_motion = Default::default();
     });
     h.redraw_all();
     editing_the_starter_clip(&mut h);
@@ -420,5 +422,74 @@ fn clicking_an_empty_layer_lane_clears_the_selected_block() {
     h.view.read_with(h.cx, |v, _| {
         assert!(v.selected_block.is_none(), "cleared");
         assert_eq!(v.selected_node, Some(FIRST_NODE), "the page stays");
+    });
+}
+
+/// docs/behaviours.md: "Drag the top of a clip's right end ... to loop it":
+/// the drawn loop cursor follows the pointer through the drag, drawn last
+/// on the lanes so the clip's ghost never covers it.
+#[test]
+fn the_loop_cursor_follows_the_pointer_through_a_loop_drag() {
+    let mut h = Harness::new("arrange-loop-cursor");
+    let (end_x, lane, cycle, ppb) = looped_starter(&mut h);
+    let grab = point(
+        end_x - px(2.),
+        lane.top() + px(crate::clip_paint::CLIP_INSET + 2.),
+    );
+    h.press(grab);
+    for to in [
+        point(grab.x + px(cycle.as_beats() as f32 * ppb / 8.), grab.y),
+        // Off the clip's row: still drawn where the pointer is.
+        point(
+            grab.x + px(cycle.as_beats() as f32 * ppb / 4.),
+            grab.y + px(90.),
+        ),
+    ] {
+        h.move_held(to);
+        let cursor = h.bounds("arrange-loop-cursor").center();
+        assert!(
+            (cursor.x - to.x).abs() < px(1.) && (cursor.y - to.y).abs() < px(1.),
+            "at the pointer: {cursor:?} vs {to:?}"
+        );
+    }
+    h.release(grab);
+}
+
+/// docs/behaviours.md: "With the bottom panel open, a click on a clip
+/// shows it there ...": from the audio panel to the piano roll, the panel
+/// swaps in place, without sliding up again.
+#[test]
+fn the_piano_roll_takes_the_audio_panels_place_without_sliding() {
+    use daw_engine::{Command, Edit, Node, NodeId, NodeKind};
+    let mut h = Harness::new("audio-to-roll");
+    let audio = NodeId(500);
+    let clip = h.view.update(h.cx, |v, _| {
+        v.session.apply_or_panic(Command::Edit(Edit::AddNode {
+            id: audio,
+            parent: NodeId::ROOT,
+            index: 1,
+            node: Node::new("Audio", 2).with_kind(NodeKind::Audio),
+        }));
+        v.open_audio_editor(audio, 0.);
+        let editor = v.audio_editor.as_mut().expect("the audio panel");
+        editor.opened = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or(editor.opened);
+        editor.height = 333.;
+        v.session()
+            .snapshot()
+            .node(FIRST_NODE)
+            .expect("the synth")
+            .clips[0]
+            .0
+    });
+    h.redraw_all();
+    h.view.update(h.cx, |v, _| v.open_note_editor(clip));
+    h.redraw_all();
+    h.view.read_with(h.cx, |v, _| {
+        assert!(v.audio_editor.is_none(), "the audio panel goes");
+        let editor = v.note_editor.as_ref().expect("the piano roll");
+        assert_eq!(crate::piano_roll::slide(editor.opened), 1., "already up");
+        assert_eq!(editor.height, 333., "at the panel's height");
     });
 }
