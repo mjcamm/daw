@@ -10,6 +10,7 @@ mod clip_drag;
 mod clip_edit;
 mod clip_paint;
 mod combined;
+mod export_dialog;
 mod frame;
 mod frame_log;
 mod gpu;
@@ -53,9 +54,9 @@ use gpui::{
     px, size,
 };
 use project::{
-    CancelDrag, CopyNotes, DeleteSelection, NudgeDown, NudgeLeft, NudgeRight, NudgeUp, OctaveDown,
-    OctaveUp, PasteNotes, Quantize, Redo, Save, SelectAll, TogglePlay, ToolPen, ToolScissors,
-    ToolSelect, Undo,
+    CancelDrag, CopyNotes, DeleteSelection, ExportSong, NudgeDown, NudgeLeft, NudgeRight, NudgeUp,
+    OctaveDown, OctaveUp, PasteNotes, Quantize, Redo, Save, SelectAll, TogglePlay, ToolPen,
+    ToolScissors, ToolSelect, Undo,
 };
 use theme::Theme;
 
@@ -70,6 +71,7 @@ fn key_bindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("space", TogglePlay, not_typing),
         KeyBinding::new("secondary-s", Save, project),
+        KeyBinding::new("secondary-e", ExportSong, project),
         KeyBinding::new("secondary-z", Undo, not_typing),
         KeyBinding::new("secondary-shift-z", Redo, not_typing),
         KeyBinding::new("secondary-q", Quit, None),

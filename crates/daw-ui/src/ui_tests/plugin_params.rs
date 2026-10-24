@@ -1,10 +1,12 @@
 //! A plugin's parameters on the Parameters page: picked from a searchable
 //! list in the plugin's groups, then given layers like any other.
+//! Also opening a plugin's window, and Learn.
 
 use super::Harness;
 use crate::project::Page;
 use daw_engine::{
-    Command, DeviceId, DeviceRef, Edit, Effect, FIRST_NODE, PluginParamInfo, PluginSpec, TestPlugin,
+    Command, DeviceId, DeviceRef, Edit, Effect, FIRST_NODE, PluginParamInfo, PluginSnapshot,
+    PluginSpec, PluginWindow, TestPlugin,
 };
 
 const PLUGIN: DeviceId = DeviceId(900);
@@ -17,6 +19,7 @@ fn param(id: u32, name: &str, group: &str, value: f64) -> PluginParamInfo {
         unit: String::new(),
         steps: 0,
         value,
+        bypass: false,
     }
 }
 
@@ -142,4 +145,59 @@ fn the_plugin_parameter_list_works_from_the_keys_and_closes() {
     h.view.read_with(h.cx, |v, _| {
         assert_eq!(v.pending_param, None, "nothing picked")
     });
+}
+
+fn plugin_of(h: &mut Harness) -> PluginSnapshot {
+    let snapshot = h.snapshot();
+    snapshot
+        .node(FIRST_NODE)
+        .and_then(|n| {
+            n.devices
+                .iter()
+                .find(|d| d.device == DeviceRef::Effect(PLUGIN))
+        })
+        .and_then(|d| d.plugin.clone())
+        .expect("the plugin")
+}
+
+/// docs/behaviours.md: "Learn beside a plugin's + Add Parameter opens its
+/// window and adds the next knob turned there; clicking again stops".
+#[test]
+fn learn_opens_the_plugin_and_waits_for_a_knob_until_stopped() {
+    let mut h = page_with_plugin("plugin-learn");
+    let learn = h.bounds("learn-effect-900").center();
+    h.click(learn, 1);
+    let plugin = plugin_of(&mut h);
+    assert!(plugin.learning, "learning");
+    // Tests run no plugin host, so the window can't open; it was asked for.
+    assert_ne!(
+        plugin.window,
+        PluginWindow::Closed,
+        "the window was asked for"
+    );
+    let learn = h.bounds("learn-effect-900").center();
+    h.click(learn, 1);
+    assert!(!plugin_of(&mut h).learning, "clicking again stops");
+}
+
+/// docs/behaviours.md: "Double-click a plugin's slot on a strip to open its
+/// window".
+#[test]
+fn double_clicking_a_plugin_slot_opens_its_window() {
+    let mut h = page_with_plugin("plugin-window");
+    h.view.update(h.cx, |view, _| view.page = Page::Mixer);
+    h.redraw_all();
+    let slot = h.bounds("slot-900").center();
+    h.click(slot, 1);
+    assert_eq!(
+        plugin_of(&mut h).window,
+        PluginWindow::Closed,
+        "one click selects"
+    );
+    h.click(slot, 2);
+    assert_eq!(
+        plugin_of(&mut h).window,
+        PluginWindow::Failed("no plugin host is set up".into()),
+        "asked for (tests run no plugin host)"
+    );
 }

@@ -4,11 +4,16 @@
 #![allow(dead_code, reason = "each test binary uses some of these")]
 #![allow(clippy::unwrap_used, reason = "tests fail on error")]
 
+#[cfg(windows)]
+pub mod windows;
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// The test plugin's effect ("Test Gain"), in Steinberg's text form.
 pub const GAIN_CID: &str = "444157544741494E0000000000000001";
+/// The test plugin's instrument ("Test Synth").
+pub const SYNTH_CID: &str = "4441575453594E540000000000000002";
 
 /// The test plugin's DLL, built into its own target folder (a nested build
 /// there never waits on the outer one's lock).

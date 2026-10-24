@@ -7,10 +7,15 @@
 //! takes a moment the first time a song needs one.
 
 use crate::audio::{AudioMsg, CHUNK_FRAMES};
+use crate::compensation::PluginFacts;
 use crate::project::Project;
 use daw_plugins::block::{BlockStats, DawBlock, Layout};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
-use daw_protocol::{DeviceId, EffectKind, PluginData, PluginParamInfo, PluginSpec, PluginState};
+use daw_plugins::control::HostEvent;
+use daw_protocol::{
+    DeviceId, EffectKind, InstrumentKind, PluginData, PluginParamInfo, PluginSpec, PluginState,
+    PluginWindow,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -42,6 +47,35 @@ pub(crate) struct Plugins {
     /// Parameter lists shown for plugins that are not running, for front
     /// ends' tests (which run no host).
     shown_params: BTreeMap<DeviceId, Arc<Vec<PluginParamInfo>>>,
+    /// What compensation last took about each running plugin.
+    facts: BTreeMap<DeviceId, PluginFacts>,
+    /// Plugin windows open, or why one couldn't open (absent: closed).
+    windows: BTreeMap<DeviceId, PluginWindow>,
+    /// Windows asked for and not answered yet, by call.
+    opening: BTreeMap<u64, DeviceId>,
+    /// Where each plugin effect's window was last, saved with the song.
+    places: BTreeMap<DeviceId, (i32, i32)>,
+    /// The title each window was given.
+    titles: BTreeMap<DeviceId, String>,
+}
+
+/// What host processes reported since last asked.
+#[derive(Debug, Default)]
+pub(crate) struct HostNews {
+    /// Knobs moved in plugin windows, by device.
+    pub edits: Vec<(DeviceId, WindowEdit)>,
+    /// A window opened, failed to or closed.
+    pub changed: bool,
+    /// Plugins asking to be restarted, with their `RestartFlags`.
+    pub restarts: Vec<(DeviceId, i32)>,
+}
+
+/// Something the user did in a plugin's window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum WindowEdit {
+    Begin(u32),
+    Value(u32, f64),
+    End(u32),
 }
 
 #[derive(Debug)]
@@ -51,6 +85,8 @@ struct Instance {
     stats: Arc<BlockStats>,
     /// Its automatable parameters, asked once it starts.
     params: Arc<Vec<PluginParamInfo>>,
+    /// How late its sound comes out, in frames.
+    latency: u32,
 }
 
 impl Plugins {
@@ -76,6 +112,7 @@ impl Plugins {
             .map(|(id, _)| *id)
             .collect();
         for id in gone {
+            self.windows.remove(&id);
             if let Some(instance) = self.running.remove(&id) {
                 self.keep_state(id, instance.id);
                 // An effect that now runs another plugin plays nothing until
@@ -85,6 +122,7 @@ impl Plugins {
             }
         }
         self.failed.retain(|id, _| wanted.contains_key(id));
+        self.windows.retain(|id, _| wanted.contains_key(id));
 
         for (id, spec) in wanted {
             if self.running.contains_key(&id) || self.failed.contains_key(&id) {
@@ -130,11 +168,13 @@ impl Plugins {
         let block = host
             .activate(id, LAYOUT, f64::from(sample_rate))
             .map_err(|e| e.to_string())?;
+        let latency = host.latency(id).unwrap_or(0);
         let instance = Instance {
             id,
             spec: spec.clone(),
             stats: block.stats(),
             params: Arc::new(params),
+            latency,
         };
         Ok((instance, Box::new(block)))
     }
@@ -176,13 +216,18 @@ impl Plugins {
     pub(crate) fn replace_song(
         &mut self,
         states: BTreeMap<DeviceId, PluginData>,
+        places: BTreeMap<DeviceId, (i32, i32)>,
         outbox: &mut VecDeque<AudioMsg>,
     ) {
+        self.places = places;
+        self.titles.clear();
+        self.opening.clear();
         for (effect, instance) in std::mem::take(&mut self.running) {
             outbox.push_back(AudioMsg::DetachPlugin(effect));
             self.ending.insert(instance.id);
         }
         self.failed.clear();
+        self.windows.clear();
         self.saved = states;
     }
 
@@ -211,6 +256,8 @@ impl Plugins {
         self.running.clear();
         self.failed.clear();
         self.ending.clear();
+        self.windows.clear();
+        self.opening.clear();
         self.sync(project, sample_rate, outbox);
     }
 
@@ -226,6 +273,7 @@ impl Plugins {
             for (id, instance) in &mut self.running {
                 if let Ok(block) = host.activate(instance.id, LAYOUT, f64::from(sample_rate)) {
                     instance.stats = block.stats();
+                    instance.latency = host.latency(instance.id).unwrap_or(instance.latency);
                     outbox.push_back(AudioMsg::AttachPlugin {
                         effect: *id,
                         block: Box::new(block),
@@ -234,6 +282,208 @@ impl Plugins {
             }
         }
         self.sync(project, sample_rate, outbox);
+    }
+
+    /// Asks for a plugin effect's window titled `title` (or for it to come
+    /// to the front) without waiting: some plugins take a second or two.
+    /// The answer arrives in [`Plugins::window_edits`]; why it can't open
+    /// shows in [`Plugins::window`].
+    pub(crate) fn open_window(&mut self, effect: DeviceId, title: &str) {
+        let started = match self.running.get(&effect) {
+            Some(instance) => {
+                let id = instance.id;
+                let at = self.places.get(&effect).copied();
+                self.host().and_then(|host| {
+                    host.start_open_editor(id, title, at)
+                        .map_err(|e| e.to_string())
+                })
+            }
+            None => Err(self
+                .failed
+                .get(&effect)
+                .cloned()
+                .unwrap_or_else(|| "the plugin isn't running".into())),
+        };
+        match started {
+            Ok(call) => {
+                self.opening.insert(call, effect);
+                self.titles.insert(effect, title.to_owned());
+            }
+            Err(why) => {
+                self.windows.insert(effect, PluginWindow::Failed(why));
+            }
+        }
+    }
+
+    /// Renames a plugin effect's window if it is open and its title
+    /// changed (its node was renamed).
+    pub(crate) fn retitle(&mut self, effect: DeviceId, title: &str) {
+        let open = matches!(self.windows.get(&effect), Some(PluginWindow::Open))
+            || self.opening.values().any(|e| *e == effect);
+        if !open || self.titles.get(&effect).is_some_and(|t| t == title) {
+            return;
+        }
+        if let Some(instance) = self.running.get(&effect).map(|i| i.id)
+            && let Some(host) = self.host.as_mut().filter(|h| h.is_alive())
+            && host.retitle_editor(instance, title).is_ok()
+        {
+            self.titles.insert(effect, title.to_owned());
+        }
+    }
+
+    /// Plugin effects whose windows are open or opening.
+    pub(crate) fn open_windows(&self) -> Vec<DeviceId> {
+        let mut open: Vec<DeviceId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| matches!(w, PluginWindow::Open))
+            .map(|(e, _)| *e)
+            .chain(self.opening.values().copied())
+            .collect();
+        open.sort();
+        open.dedup();
+        open
+    }
+
+    /// Where the project's plugin windows were last, to save with it.
+    pub(crate) fn places(&self, project: &Project) -> BTreeMap<DeviceId, (i32, i32)> {
+        let wanted = plugin_effects(project);
+        self.places
+            .iter()
+            .filter(|(id, _)| wanted.contains_key(id))
+            .map(|(id, at)| (*id, *at))
+            .collect()
+    }
+
+    pub(crate) fn window(&self, effect: DeviceId) -> PluginWindow {
+        self.windows.get(&effect).cloned().unwrap_or_default()
+    }
+
+    /// What the user did in plugin windows since last asked, by effect,
+    /// and whether any window opened, failed to or closed.
+    pub(crate) fn window_edits(&mut self) -> HostNews {
+        let Some(host) = self.host.as_mut().filter(|h| h.is_alive()) else {
+            return HostNews::default();
+        };
+        let events = host.take_events();
+        let mut changed = false;
+        for (call, result) in host.take_replies() {
+            if let Some(effect) = self.opening.remove(&call) {
+                let window = match result {
+                    Ok(_) => PluginWindow::Open,
+                    Err(why) => PluginWindow::Failed(why),
+                };
+                self.windows.insert(effect, window);
+                changed = true;
+            }
+        }
+        let effect_of = |instance: u64| {
+            self.running
+                .iter()
+                .find(|(_, i)| i.id == instance)
+                .map(|(effect, _)| *effect)
+        };
+        let mut edits = Vec::new();
+        let mut closed = Vec::new();
+        let mut restarts = Vec::new();
+        for event in events {
+            match event {
+                HostEvent::EditBegin { instance, id } => {
+                    edits.extend(effect_of(instance).map(|e| (e, WindowEdit::Begin(id))));
+                }
+                HostEvent::EditValue {
+                    instance,
+                    id,
+                    value,
+                } => edits.extend(effect_of(instance).map(|e| (e, WindowEdit::Value(id, value)))),
+                HostEvent::EditEnd { instance, id } => {
+                    edits.extend(effect_of(instance).map(|e| (e, WindowEdit::End(id))));
+                }
+                HostEvent::EditorClosed { instance } => closed.extend(effect_of(instance)),
+                HostEvent::Restart { instance, flags } => {
+                    restarts.extend(effect_of(instance).map(|e| (e, flags)));
+                }
+                HostEvent::EditorMoved { instance, at } => {
+                    if let Some(effect) = effect_of(instance) {
+                        self.places.insert(effect, at);
+                    }
+                }
+            }
+        }
+        changed |= !closed.is_empty();
+        for effect in closed {
+            self.windows.remove(&effect);
+        }
+        HostNews {
+            edits,
+            changed,
+            restarts,
+        }
+    }
+
+    /// A plugin asked to be restarted (`restartComponent`): for a new
+    /// latency, buses or a reload it is activated again (a fresh channel;
+    /// its latency read again); for new parameter names or values its list
+    /// is read again. Returns whether its list changed.
+    pub(crate) fn restart(
+        &mut self,
+        device: DeviceId,
+        flags: i32,
+        sample_rate: u32,
+        outbox: &mut VecDeque<AudioMsg>,
+    ) -> bool {
+        use daw_plugins::control::restart;
+        let reactivate = restart::RELOAD | restart::IO | restart::LATENCY;
+        let relist = restart::PARAM_VALUES | restart::PARAM_TITLES | restart::PARAM_IDS;
+        let Some(instance) = self.running.get_mut(&device) else {
+            return false;
+        };
+        let Some(host) = self.host.as_mut().filter(|h| h.is_alive()) else {
+            return false;
+        };
+        if flags & reactivate != 0
+            && let Ok(block) = host.activate(instance.id, LAYOUT, f64::from(sample_rate))
+        {
+            instance.stats = block.stats();
+            instance.latency = host.latency(instance.id).unwrap_or(instance.latency);
+            outbox.push_back(AudioMsg::AttachPlugin {
+                effect: device,
+                block: Box::new(block),
+            });
+        }
+        if flags & relist != 0
+            && let Ok(params) = host.params(instance.id)
+        {
+            instance.params = Arc::new(params);
+            return true;
+        }
+        false
+    }
+
+    /// What compensation needs about a plugin: its latency (0 unless it
+    /// runs: one that can't run is silent) and its own bypass parameter.
+    pub(crate) fn facts(&self, device: DeviceId) -> PluginFacts {
+        self.running
+            .get(&device)
+            .map(|i| PluginFacts {
+                latency: i.latency,
+                bypass: i.params.iter().find(|p| p.bypass).map(|p| p.id),
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether any plugin's facts changed since last asked (one started,
+    /// ended or was restarted).
+    pub(crate) fn take_facts_changed(&mut self) -> bool {
+        let now: BTreeMap<DeviceId, PluginFacts> = self
+            .running
+            .keys()
+            .map(|id| (*id, self.facts(*id)))
+            .filter(|(_, f)| *f != PluginFacts::default())
+            .collect();
+        let changed = now != self.facts;
+        self.facts = now;
+        changed
     }
 
     /// A running plugin's automatable parameters; none for anything else.
@@ -266,13 +516,19 @@ impl Plugins {
     }
 }
 
-/// The project's plugin effects and which plugin each runs.
+/// The project's plugin effects and instruments (device ids are
+/// project-wide) and which plugin each runs.
 fn plugin_effects(project: &Project) -> BTreeMap<DeviceId, PluginSpec> {
-    project
-        .nodes()
-        .into_iter()
+    let nodes = project.nodes();
+    let effects = nodes
+        .iter()
         .flat_map(|entry| entry.node.effects.iter())
         .filter(|(_, effect)| effect.kind == EffectKind::Plugin)
-        .filter_map(|(id, effect)| Some((*id, effect.plugin.clone()?)))
-        .collect()
+        .filter_map(|(id, effect)| Some((*id, effect.plugin.clone()?)));
+    let instruments = nodes
+        .iter()
+        .flat_map(|entry| entry.node.instruments.iter())
+        .filter(|(_, instrument)| instrument.kind == InstrumentKind::Plugin)
+        .filter_map(|(id, instrument)| Some((*id, instrument.plugin.clone()?)));
+    effects.chain(instruments).collect()
 }

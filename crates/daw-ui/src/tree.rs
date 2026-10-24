@@ -325,6 +325,29 @@ fn copy_params(params: &[daw_engine::ParamSnapshot], ids: &mut FreshIds) -> Vec<
         .collect()
 }
 
+/// A device's parameters, copied with fresh ids: by position for a
+/// built-in device, by the plugin's ids for a plugin.
+fn split_plugin_params(
+    device: &daw_engine::DeviceSnapshot,
+    ids: &mut FreshIds,
+) -> (Vec<ParamState>, Vec<daw_engine::PluginParam>) {
+    let params = copy_params(&device.params, ids);
+    if device.plugin.is_none() {
+        return (params, Vec::new());
+    }
+    let plugin_params = device
+        .params
+        .iter()
+        .zip(params)
+        .map(|(p, state)| daw_engine::PluginParam {
+            id: p.id.index,
+            name: p.name.clone(),
+            state,
+        })
+        .collect();
+    (Vec::new(), plugin_params)
+}
+
 fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> Node {
     let mut copy = Node::new(&node.name, node.color).with_kind(node.kind);
     copy.muted = node.muted;
@@ -333,12 +356,15 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
         match device.device {
             DeviceRef::Instrument(_) => {
                 if let Some(kind) = device.instrument {
+                    let (params, plugin_params) = split_plugin_params(device, ids);
                     let instrument = Instrument {
                         kind,
                         enabled: device.enabled,
-                        params: copy_params(&device.params, ids),
+                        params,
                         sample: device.sample,
                         note: device.trigger,
+                        plugin: device.plugin.as_ref().map(|p| p.spec.clone()),
+                        plugin_params,
                     };
                     copy.instruments
                         .push((DeviceId(FreshIds::next(&mut ids.device)), instrument));
@@ -347,23 +373,7 @@ fn copy_node(snapshot: &Snapshot, node: &NodeSnapshot, ids: &mut FreshIds) -> No
             DeviceRef::Channel => copy.channel = copy_params(&device.params, ids),
             DeviceRef::Effect(_) => {
                 if let Some(kind) = device.effect {
-                    let params = copy_params(&device.params, ids);
-                    // A plugin's parameters go by the plugin's ids.
-                    let (params, plugin_params) = if device.plugin.is_some() {
-                        let plugin_params = device
-                            .params
-                            .iter()
-                            .zip(params)
-                            .map(|(p, state)| daw_engine::PluginParam {
-                                id: p.id.index,
-                                name: p.name.clone(),
-                                state,
-                            })
-                            .collect();
-                        (Vec::new(), plugin_params)
-                    } else {
-                        (params, Vec::new())
-                    };
+                    let (params, plugin_params) = split_plugin_params(device, ids);
                     let effect = Effect {
                         kind,
                         enabled: device.enabled,

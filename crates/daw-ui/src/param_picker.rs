@@ -284,6 +284,7 @@ mod tests {
             unit: String::new(),
             steps: 0,
             value: 0.0,
+            bypass: false,
         }
     }
 

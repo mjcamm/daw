@@ -31,7 +31,7 @@ use crate::tooltip;
 use crate::zoom::Zoom;
 use daw_automation::{Automation, CompiledBlock, Signals};
 use daw_engine::{
-    BlendMode, Block, BlockId, Command, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId,
+    BlendMode, Block, BlockId, Command, DeviceId, DeviceRef, DeviceSnapshot, Edit, Layer, LayerId,
     NodeSnapshot, ParamId, ParamSnapshot, ParamState, PluginParam, SignalId, SignalSource,
     Snapshot, Ticks,
 };
@@ -1343,25 +1343,40 @@ impl ProjectView {
                 let device_ref = device.device;
                 // A plugin's parameters come in a searchable list.
                 let plugin = device.plugin.is_some().then(|| (*device).clone());
-                let button = quiet_action(
-                    cell.pl(px(16.)),
-                    ("add-param", index),
-                    "Add Parameter",
-                    theme,
-                )
-                .debug_selector(move || format!("add-param-{}", device_selector(device_ref)))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| match &plugin {
-                        Some(device) => {
-                            // The project would take focus back from the
-                            // list's search.
-                            cx.stop_propagation();
-                            this.open_param_picker(device, window, cx);
-                        }
-                        None => this.toggle_menu(OpenMenu::AddParam(device_ref)),
-                    }),
-                );
+                let learn = device
+                    .plugin
+                    .as_ref()
+                    .map(|p| (p.learning, device.name.clone()));
+                let add = |base: Div| {
+                    quiet_action(base, ("add-param", index), "Add Parameter", theme)
+                        .debug_selector(move || {
+                            format!("add-param-{}", device_selector(device_ref))
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| match &plugin {
+                                Some(device) => {
+                                    // The project would take focus back from
+                                    // the list's search.
+                                    cx.stop_propagation();
+                                    this.open_param_picker(device, window, cx);
+                                }
+                                None => this.toggle_menu(OpenMenu::AddParam(device_ref)),
+                            }),
+                        )
+                };
+                let button: AnyElement = match (learn, device_ref) {
+                    (
+                        Some((learning, name)),
+                        DeviceRef::Effect(effect) | DeviceRef::Instrument(effect),
+                    ) => cell
+                        .pl(px(16.))
+                        .gap(px(16.))
+                        .child(add(div().flex().items_center()))
+                        .child(self.learn_button(effect, index, learning, &name, theme, cx))
+                        .into_any_element(),
+                    _ => add(cell.pl(px(16.))).into_any_element(),
+                };
                 div()
                     .relative()
                     .flex()
@@ -1371,6 +1386,64 @@ impl ProjectView {
                     .into_any_element()
             }
         }
+    }
+
+    /// Learn, beside a plugin's "+ Add Parameter": opens the plugin's
+    /// window, and the next knob turned there joins the song with a layer.
+    /// While learning it says so; clicking again stops.
+    fn learn_button(
+        &self,
+        effect: DeviceId,
+        index: usize,
+        learning: bool,
+        plugin: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let color = if learning {
+            theme.accent
+        } else {
+            theme.text_tertiary
+        };
+        let hover = theme.text;
+        let label: SharedString = if learning {
+            format!("Learning: turn a knob in {plugin}").into()
+        } else {
+            "Learn".into()
+        };
+        div()
+            .id(("learn-param", index))
+            .debug_selector(move || format!("learn-effect-{}", effect.0))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_size(px(12.))
+            .text_color(color)
+            .when(!learning, |d| d.hover(move |s| s.text_color(hover)))
+            .child(icon(Icon::Learn, color, 12.))
+            .child(label)
+            .tooltip(tooltip::text(if learning {
+                "Click to stop learning"
+            } else {
+                "Opens the plugin; the next knob you turn there is added"
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if learning {
+                        this.session
+                            .apply(Command::LearnPluginParam { device: None });
+                    } else {
+                        this.session
+                            .apply(Command::OpenPluginWindow { device: effect });
+                        this.session.apply(Command::LearnPluginParam {
+                            device: Some(effect),
+                        });
+                    }
+                    this.invalidate_all(cx);
+                }),
+            )
     }
 
     /// Name, blend mode, on/off and delete for one layer.
@@ -1839,7 +1912,7 @@ pub(crate) fn device_selector(device: DeviceRef) -> String {
 /// The edit adding a plugin's parameter to the song, resting where the
 /// plugin holds it, if it is a plugin parameter not in the song yet.
 fn plugin_param_to_add(snapshot: &Snapshot, param: ParamId) -> Option<Edit> {
-    let DeviceRef::Effect(effect) = param.device else {
+    let (DeviceRef::Effect(effect) | DeviceRef::Instrument(effect)) = param.device else {
         return None;
     };
     let device = snapshot
@@ -1857,7 +1930,7 @@ fn plugin_param_to_add(snapshot: &Snapshot, param: ParamId) -> Option<Edit> {
         .iter()
         .find(|p| p.id == param.index)?;
     Some(Edit::AddPluginParam {
-        effect,
+        device: effect,
         param: PluginParam {
             id: info.id,
             name: info.name.clone(),

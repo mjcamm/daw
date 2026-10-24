@@ -10,7 +10,7 @@ use common::{GAIN_CID, install};
 use daw_engine::AudioProcessor;
 use daw_engine::{
     ClipId, Command, DeviceId, DeviceRef, Edit, Effect, Engine, EngineConfig, FIRST_NODE, MidiClip,
-    MidiNote, PluginData, PluginSpec, ProjectFile, Ticks,
+    MidiNote, ParamId, PluginData, PluginSpec, PluginWindow, ProjectFile, Ticks,
 };
 use daw_plugins::block::{Context, Layout, Outcome, ParamChange};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
@@ -145,7 +145,15 @@ fn a_vst3_effect_lists_its_automatable_parameters_with_their_groups() {
     // The read-only Meter is not offered.
     assert_eq!(
         listed,
-        [(0, "Gain", "", "x", 0.25), (7, "Tilt", "Tone", "dB", 0.0)]
+        [
+            (0, "Gain", "", "x", 0.25),
+            (7, "Tilt", "Tone", "dB", 0.0),
+            (11, "Bypass", "", "", 0.0)
+        ]
+    );
+    assert!(
+        params[2].bypass && !params[0].bypass,
+        "its own bypass is marked"
     );
     host.destroy(id).unwrap();
 }
@@ -258,5 +266,254 @@ fn a_plugins_state_is_saved_in_the_song_and_survives_undo() {
         play(&mut loaded, &mut processor).samples,
         half(&plain_again),
         "an effect brought back by undo keeps its state"
+    );
+}
+
+/// Gain and Tilt as the song has them: (id, resting value, layers).
+fn song_params(engine: &Engine) -> Vec<(u32, f64, usize)> {
+    let snapshot = engine.snapshot();
+    let device = snapshot
+        .node(FIRST_NODE)
+        .and_then(|n| {
+            n.devices
+                .iter()
+                .find(|d| d.device == DeviceRef::Effect(EFFECT))
+        })
+        .cloned()
+        .unwrap();
+    device
+        .params
+        .iter()
+        .map(|p| (p.id.index, p.base, p.layers.len()))
+        .collect()
+}
+
+fn plugin_of(engine: &Engine) -> daw_engine::PluginSnapshot {
+    engine
+        .snapshot()
+        .node(FIRST_NODE)
+        .and_then(|n| {
+            n.devices
+                .iter()
+                .find(|d| d.device == DeviceRef::Effect(EFFECT))
+        })
+        .and_then(|d| d.plugin.clone())
+        .unwrap()
+}
+
+#[test]
+fn learn_and_knob_turns_in_a_plugins_window_change_the_song() {
+    use common::windows::{click, plugin_windows, view_of, wait_for};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_CLOSE, WM_LBUTTONDOWN, WM_MBUTTONDOWN};
+    let (_, bundle) = install("vst3-learn");
+    let (mut engine, _processor) = song(Some(gain(&bundle)));
+    engine
+        .apply(Command::OpenPluginWindow { device: EFFECT })
+        .unwrap();
+    // Asked without waiting: it says Open once the host has opened it.
+    wait_for("the window to open", || {
+        engine.maintain();
+        plugin_of(&engine).window == PluginWindow::Open
+    });
+    let node = engine.snapshot().node(FIRST_NODE).unwrap().name.clone();
+    let title = format!("Test Gain — {node}");
+    let found = plugin_windows()
+        .into_iter()
+        .filter(|(_, t)| *t == title)
+        .collect::<Vec<_>>();
+    assert_eq!(found.len(), 1, "titled with the plugin, then its node");
+    let view = view_of(found[0].0);
+
+    // Renaming its node renames the window.
+    engine
+        .apply(Command::Edit(Edit::RenameNode {
+            node: FIRST_NODE,
+            name: "Lead".into(),
+        }))
+        .unwrap();
+    wait_for("the new title", || {
+        plugin_windows()
+            .iter()
+            .any(|(_, t)| t == "Test Gain — Lead")
+    });
+    // Where it is goes into the song, to reopen it there.
+    wait_for("its place", || {
+        engine.maintain();
+        engine.to_file().window_places().contains_key(&EFFECT)
+    });
+
+    // Learn: the first knob turned (a gesture) joins the song with a layer.
+    engine
+        .apply(Command::LearnPluginParam {
+            device: Some(EFFECT),
+        })
+        .unwrap();
+    assert!(plugin_of(&engine).learning);
+    click(view, WM_LBUTTONDOWN);
+    wait_for("Gain to be learned", || {
+        engine.maintain();
+        song_params(&engine) == [(0, 0.75, 1)]
+    });
+    assert!(!plugin_of(&engine).learning, "learning stops");
+
+    // Turning it again moves its resting value: one undo.
+    let gain_param = ParamId {
+        node: FIRST_NODE,
+        device: DeviceRef::Effect(EFFECT),
+        index: 0,
+    };
+    engine
+        .apply(Command::Edit(Edit::SetParam {
+            param: gain_param,
+            value: 0.2,
+        }))
+        .unwrap();
+    click(view, WM_LBUTTONDOWN);
+    wait_for("the turn", || {
+        engine.maintain();
+        song_params(&engine) == [(0, 0.75, 1)]
+    });
+    engine.apply(Command::Undo).unwrap();
+    assert_eq!(song_params(&engine), [(0, 0.2, 1)], "one undo for the turn");
+
+    // A move without begin and end (a mouse wheel) is learned once it
+    // pauses.
+    engine
+        .apply(Command::LearnPluginParam {
+            device: Some(EFFECT),
+        })
+        .unwrap();
+    click(view, WM_MBUTTONDOWN);
+    wait_for("Tilt to be learned", || {
+        engine.maintain();
+        song_params(&engine).len() == 2
+    });
+    assert_eq!(song_params(&engine)[1], (7, 0.3, 1));
+
+    // The user closes the window.
+    click(found[0].0, WM_CLOSE);
+    wait_for("the window to close", || {
+        engine.maintain();
+        plugin_of(&engine).window == PluginWindow::Closed
+    });
+}
+
+/// Gain's resting value as the song has it, or `None` before it is added.
+fn add_gain(engine: &mut Engine, base: f64) {
+    engine
+        .apply(Command::Edit(Edit::AddPluginParam {
+            device: EFFECT,
+            param: daw_engine::PluginParam {
+                id: 0,
+                name: "Gain".into(),
+                state: daw_engine::ParamState {
+                    base,
+                    layers: Vec::new(),
+                },
+            },
+        }))
+        .unwrap();
+}
+
+/// Names the node `name` (so this test's plugin window has a title of its
+/// own while tests run side by side), opens the plugin's window and finds
+/// it.
+fn open_window_named(engine: &mut Engine, name: &str) -> windows_sys::Win32::Foundation::HWND {
+    use common::windows::{plugin_windows, wait_for};
+    engine
+        .apply(Command::Edit(Edit::RenameNode {
+            node: FIRST_NODE,
+            name: name.into(),
+        }))
+        .unwrap();
+    engine
+        .apply(Command::OpenPluginWindow { device: EFFECT })
+        .unwrap();
+    wait_for("the window", || {
+        engine.maintain();
+        plugin_of(engine).window == PluginWindow::Open
+    });
+    let title = format!("Test Gain — {name}");
+    plugin_windows()
+        .into_iter()
+        .find(|(_, t)| *t == title)
+        .unwrap()
+        .0
+}
+
+#[test]
+fn switched_off_a_plugin_with_its_own_bypass_runs_bypassed() {
+    use common::windows::{click, view_of, wait_for};
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN;
+    let (_, bundle) = install("vst3-bypass");
+    let (mut plain, mut plain_processor) = song(None);
+    play(&mut plain, &mut plain_processor);
+    let (mut engine, mut processor) = song(Some(gain(&bundle)));
+    add_gain(&mut engine, 0.25);
+    // The test plugin then claims 64 frames of latency without delaying:
+    // run bypassed, its sound comes out undelayed; stood in for by a delay,
+    // it would come out 64 late.
+    let window = open_window_named(&mut engine, "Bypass");
+    click(view_of(window), WM_KEYDOWN);
+    wait_for("the new latency", || {
+        engine.maintain();
+        render(&mut engine, &mut processor, 512, &[512]);
+        processor.latency() == 64
+    });
+    engine
+        .apply(Command::Edit(Edit::SetDeviceEnabled {
+            id: EFFECT,
+            enabled: false,
+        }))
+        .unwrap();
+    let off = play(&mut engine, &mut processor);
+    let expected = play(&mut plain, &mut plain_processor);
+    // From 10 000 frames in: earlier playing's release tails are gone.
+    let settled = 20_000..expected.samples.len();
+    assert!(
+        off.samples[settled.clone()] == expected.samples[settled.clone()],
+        "run with its own bypass on: untouched, and not delayed"
+    );
+    engine
+        .apply(Command::Edit(Edit::SetDeviceEnabled {
+            id: EFFECT,
+            enabled: true,
+        }))
+        .unwrap();
+    let on = play(&mut engine, &mut processor);
+    assert!(
+        on.samples[settled.clone()]
+            .iter()
+            .zip(&expected.samples[settled])
+            .all(|(a, b)| (a - b * 0.5).abs() < 1e-6),
+        "switched on, its bypass goes off again: halved"
+    );
+}
+
+#[test]
+fn a_plugin_that_changes_its_latency_or_parameters_is_restarted() {
+    use common::windows::{click, view_of, wait_for};
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_KEYDOWN;
+    let (_, bundle) = install("vst3-restart");
+    let (mut engine, mut processor) = song(Some(gain(&bundle)));
+    let window = open_window_named(&mut engine, "Restart");
+    assert_eq!(processor.latency(), 0);
+    // Its window's key: a latency of 64 and Tilt renamed, then a restart.
+    click(view_of(window), WM_KEYDOWN);
+    wait_for("the restart", || {
+        engine.maintain();
+        render(&mut engine, &mut processor, 512, &[512]);
+        processor.latency() == 64
+    });
+    let tilt = plugin_of(&engine)
+        .params
+        .iter()
+        .find(|p| p.id == 7)
+        .map(|p| p.name.clone());
+    assert_eq!(tilt.as_deref(), Some("Tilt (wide)"), "its list read again");
+    assert_eq!(
+        plugin_of(&engine).state,
+        daw_engine::PluginState::Running,
+        "still running after the restart"
     );
 }

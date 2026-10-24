@@ -179,6 +179,7 @@ pub fn instrument_name(kind: InstrumentKind) -> &'static str {
     match kind {
         InstrumentKind::Synth => "Synth",
         InstrumentKind::SingleSampler => "SingleSampler",
+        InstrumentKind::Plugin => "Plugin",
     }
 }
 
@@ -187,6 +188,7 @@ pub fn instrument_description(kind: InstrumentKind) -> &'static str {
     match kind {
         InstrumentKind::Synth => "Saw synth with filter and envelopes",
         InstrumentKind::SingleSampler => "Plays one audio sample for every note",
+        InstrumentKind::Plugin => "A plugin",
     }
 }
 
@@ -197,6 +199,9 @@ pub fn instrument_params(kind: InstrumentKind) -> &'static [ParamInfo] {
     match kind {
         InstrumentKind::Synth => &INSTRUMENT_PARAMS,
         InstrumentKind::SingleSampler => &SAMPLER_PARAMS,
+        // A plugin's parameters come from the plugin, by its ids
+        // (`Instrument::plugin_params`).
+        InstrumentKind::Plugin => &[],
     }
 }
 

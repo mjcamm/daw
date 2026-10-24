@@ -1,6 +1,7 @@
 //! Compiling the project into the flat, time-sorted form the audio side plays.
 
 use crate::clips::ClipRender;
+use crate::compensation::{Compensation, PluginFacts, compensate};
 use crate::project::Project;
 use crate::samples::{SampleData, SamplePool};
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
@@ -17,6 +18,8 @@ pub struct RenderState {
     /// node's bus holds all its children's sound when it renders. The Song
     /// is last.
     pub nodes: Vec<NodeRender>,
+    /// How late the song comes out (plugins' latency), in frames.
+    pub latency: u32,
 }
 
 /// One node, ready to play.
@@ -25,6 +28,8 @@ pub struct NodeRender {
     pub id: NodeId,
     /// Position of the parent in [`RenderState::nodes`]; `None` for the Song.
     pub parent: Option<usize>,
+    /// Its delays, and how late the sound reaches each device.
+    pub comp: Compensation,
     /// False when the node is muted. Muting a folder silences what is under
     /// it, since its output carries their sound.
     pub output_on: bool,
@@ -58,6 +63,8 @@ pub struct InstrumentState {
     pub sample: Option<Arc<SampleData>>,
     /// The notes it plays; others pass it by.
     pub plays: daw_protocol::NoteSet,
+    /// A plugin's parameters in the song, by the plugin's ids.
+    pub plugin_params: Vec<(u32, Automation)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +78,8 @@ pub struct EffectState {
     pub params: Vec<Automation>,
     /// A plugin's parameters in the song, by the plugin's ids.
     pub plugin_params: Vec<(u32, Automation)>,
+    /// A plugin's own bypass parameter, used while it is switched off.
+    pub bypass_param: Option<u32>,
 }
 
 /// A note at an absolute song position, in beats.
@@ -165,6 +174,8 @@ struct Context<'a> {
     project: &'a Project,
     samples: &'a SamplePool,
     sample_rate: u32,
+    comp: &'a BTreeMap<NodeId, Compensation>,
+    facts: &'a dyn Fn(DeviceId) -> PluginFacts,
 }
 
 /// A node's audio clips ready to play, sorted by start. Clips whose audio
@@ -220,6 +231,7 @@ fn compile_node(
     out.push(NodeRender {
         id,
         parent: None,
+        comp: cx.comp.get(&id).cloned().unwrap_or_default(),
         output_on: !node.muted,
         instrument_on: !any_soloed || soloed,
         notes: if node.instruments.is_empty() {
@@ -240,6 +252,11 @@ fn compile_node(
                     cx.samples.get(sample, file).cloned()
                 }),
                 plays: instrument.plays(),
+                plugin_params: instrument
+                    .plugin_params
+                    .iter()
+                    .map(|p| (p.id, Automation::compile_with(&p.state, signals)))
+                    .collect(),
             })
             .collect(),
         effects: node
@@ -255,6 +272,11 @@ fn compile_node(
                     .iter()
                     .map(|p| (p.id, Automation::compile_with(&p.state, signals)))
                     .collect(),
+                bypass_param: if effect.kind == EffectKind::Plugin {
+                    (cx.facts)(*id).bypass
+                } else {
+                    None
+                },
             })
             .collect(),
         channel: compile_params(&node.channel, signals),
@@ -275,19 +297,34 @@ impl RenderState {
     /// The project, with samples' audio from `samples`; audio clips play
     /// their samples as converted to `sample_rate`.
     pub fn compile_with(project: &Project, samples: &SamplePool, sample_rate: u32) -> Self {
+        Self::compile_with_plugins(project, samples, sample_rate, &|_| PluginFacts::default())
+    }
+
+    /// As [`RenderState::compile_with`], lined up for the running
+    /// plugins (`compensation.rs`).
+    pub fn compile_with_plugins(
+        project: &Project,
+        samples: &SamplePool,
+        sample_rate: u32,
+        facts: &dyn Fn(DeviceId) -> PluginFacts,
+    ) -> Self {
         let signals = compile_signals(project);
+        let (comp, total) = compensate(project, facts);
         let cx = Context {
             any_soloed: project.nodes().iter().any(|e| e.node.soloed),
             signals: &signals,
             project,
             samples,
             sample_rate,
+            comp: &comp,
+            facts,
         };
         let mut nodes = Vec::new();
         compile_node(NodeId::ROOT, &project.root, false, &cx, &mut nodes);
         Self {
             tempo_bpm: project.tempo_bpm,
             nodes,
+            latency: total,
         }
     }
 

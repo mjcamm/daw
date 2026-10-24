@@ -83,6 +83,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | + Add Parameter; + Add Layer menu: Manual drawn or Listen to signal › | – |
 | + Add Parameter on a plugin lists its parameters in its groups; search and Enter pick one, then its first layer's type (one undo) | `plugin_params::a_plugin_parameter_is_found_by_search_and_gets_a_layer_in_one_undo` |
 | A plugin's parameter list: arrows move; Escape or a click outside closes; parameters with layers aren't offered | `plugin_params::the_plugin_parameter_list_works_from_the_keys_and_closes` |
+| Learn beside a plugin's + Add Parameter opens its window and adds the next knob turned there, with a drawn layer; clicking again stops | `plugin_params::learn_opens_the_plugin_and_waits_for_a_knob_until_stopped` |
 | Double-click empty layer lane: a one-bar flat block | – |
 | Drag a block to move; edges resize as a window; top of the right edge loops | – |
 | Drag a point; double-click adds a point; right-click removes one | – |
@@ -117,6 +118,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | + Instrument and + Effect open the device browser (Built-in \| Plugins, plugins under vendor headings); search and Enter add a plugin | `browser::a_plugin_effect_is_found_by_search_and_added_with_enter` |
 | The device browser opens on the side used last; arrows and Enter pick; Escape or a click outside closes | `browser::the_browser_remembers_its_side_and_works_from_the_keys` |
 | Effect slots switch and remove | – |
+| Double-click a plugin's slot on a strip to open its window (its tooltip says why if it can't) | `plugin_params::double_clicking_a_plugin_slot_opens_its_window` |
 | SingleSampler chip: Choose sample… | – |
 | SingleSampler panel: Plays note (its trigger note, auto-assigned from C1 among siblings) | – |
 | Map chevrons fold; strip-width slider | – |
@@ -135,6 +137,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Tempo beside the transport: click to type, Enter applies (one undo step) | `transport::typing_a_tempo_sets_the_song_tempo` |
 | Escape, or a tempo outside 20 to 999, leaves it | `transport::escape_or_an_impossible_tempo_leaves_the_tempo` |
 | Ctrl+S saves; Ctrl+Z / Ctrl+Shift+Z undo and redo | – |
+| File → Export… (Ctrl+E, `export.md`): format, quality, range and tail, then a save dialog starting in the project's Exports folder; renders with progress, the app usable around it; Done shows length and peak | `export::ctrl_e_exports_the_song_to_the_chosen_file` |
+| The export dialog closes with Cancel, Escape or a click outside | `export::the_export_dialog_closes_with_cancel_escape_or_a_click_outside` |
 | Snap control: Snap or Slide, grid; Alt flips while dragging | – |
 | Page tabs switch pages | – |
 | Song name menu: Save, Rename, Back to projects | – |

@@ -38,10 +38,16 @@ pub enum Icon {
     Unfold,
     Group,
     Search,
+    Learn,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 29] = [
+const ICONS: [(Icon, &str, &[u8]); 30] = [
+    (
+        Icon::Learn,
+        "icons/crosshair.svg",
+        include_bytes!("../assets/icons/crosshair.svg"),
+    ),
     (
         Icon::Search,
         "icons/search.svg",

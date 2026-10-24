@@ -445,6 +445,18 @@ impl ProjectView {
             device.name.clone()
         };
         let panel_open = self.open_menu == Some(OpenMenu::Sampler(id));
+        // A plugin's slot says how to open its window, or why it can't.
+        let plugin_tip_open = device.plugin.is_some();
+        let plugin_tip = device.plugin.as_ref().map(|p| match (&p.state, &p.window) {
+            (daw_engine::PluginState::Failed(why), _) => {
+                format!("{} can't run: {why}", device.name)
+            }
+            (daw_engine::PluginState::Crashed, _) => format!("{} crashed", device.name),
+            (_, daw_engine::PluginWindow::Failed(why)) => {
+                format!("Couldn't open {}'s window: {why}", device.name)
+            }
+            _ => format!("Double-click to open {}", device.name),
+        });
         let mut selected_bg = theme.accent;
         selected_bg.a = 0.18;
         let dot = div()
@@ -484,6 +496,7 @@ impl ProjectView {
         Some(
             div()
                 .id(("slot", id.0))
+                .debug_selector(move || format!("slot-{}", id.0))
                 .h(px(SLOT_HEIGHT - 2.))
                 .mx(px(4.))
                 .px(px(2.))
@@ -512,6 +525,16 @@ impl ProjectView {
                 .children(remove)
                 .when(sampler && !panel_open, |d| {
                     d.tooltip(tooltip::text("SingleSampler: click to choose its sample"))
+                })
+                .when_some(plugin_tip, |d, tip| d.tooltip(tooltip::text(tip)))
+                // A plugin's window opens with a double-click.
+                .when(plugin_tip_open, |d| {
+                    d.on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        if event.click_count() >= 2 {
+                            this.session.apply(Command::OpenPluginWindow { device: id });
+                            this.invalidate_all(cx);
+                        }
+                    }))
                 })
                 .on_mouse_down(
                     MouseButton::Left,
@@ -772,16 +795,29 @@ impl ProjectView {
 
     /// Adds an instrument as the node's last layer and selects it.
     pub(crate) fn add_instrument(&mut self, node: NodeId, kind: InstrumentKind) {
+        let mut instrument = Instrument::new(kind);
+        if kind == InstrumentKind::SingleSampler {
+            instrument.note = Some(crate::tree::next_trigger_note(
+                self.session.snapshot(),
+                node,
+            ));
+        }
+        self.add_instrument_layer(node, instrument);
+    }
+
+    /// Adds a plugin instrument, layered over the node's others.
+    pub(crate) fn add_plugin_instrument(&mut self, node: NodeId, spec: daw_engine::PluginSpec) {
+        self.add_instrument_layer(node, Instrument::plugin(spec));
+    }
+
+    /// Adds an instrument after the node's others and selects it.
+    fn add_instrument_layer(&mut self, node: NodeId, instrument: Instrument) {
         self.open_menu = None;
         let snapshot = self.session.snapshot();
         let id = crate::tree::next_device_id(snapshot);
         let index = snapshot.node(node).map_or(0, |n| {
             n.devices.iter().filter(|d| d.instrument.is_some()).count()
         });
-        let mut instrument = Instrument::new(kind);
-        if kind == InstrumentKind::SingleSampler {
-            instrument.note = Some(crate::tree::next_trigger_note(snapshot, node));
-        }
         self.session.apply(Command::Edit(Edit::AddInstrument {
             node,
             id,

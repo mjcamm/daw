@@ -13,6 +13,7 @@
 
 mod audio;
 mod clips;
+pub mod compensation;
 pub mod devices;
 mod file;
 mod history;
@@ -32,9 +33,9 @@ pub use daw_protocol::{
     LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip,
     MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId,
     ParamSnapshot, ParamState, Peaks, Piece, PluginData, PluginParam, PluginParamInfo,
-    PluginSnapshot, PluginSpec, PluginState, SEAM_FADE, SampleId, SampleRef, SampleSnapshot,
-    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
-    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
+    PluginSnapshot, PluginSpec, PluginState, PluginWindow, SEAM_FADE, SampleId, SampleRef,
+    SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
+    SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{
@@ -55,7 +56,7 @@ use std::sync::Arc;
 /// delays delivery until the next [`Engine::maintain`].
 const QUEUE_CAPACITY: usize = 1024;
 /// Room for every plugin channel there can be, so returning one never fails.
-const RETIRED_CAPACITY: usize = MAX_NODES * MAX_EFFECTS;
+const RETIRED_CAPACITY: usize = MAX_NODES * (MAX_EFFECTS + MAX_INSTRUMENTS + 2);
 
 /// Shortest allowed loop: a 64th note.
 pub const MIN_LOOP_LENGTH: Ticks = Ticks(TICKS_PER_BEAT / 16);
@@ -110,8 +111,34 @@ pub struct Engine {
     /// Plugin effects' instances, in host processes.
     plugins: plugins::Plugins,
     /// Plugin channels the audio side let go of, to free here.
-    retired: rtrb::Consumer<Box<daw_plugins::block::DawBlock>>,
+    retired: rtrb::Consumer<audio::Leftover>,
+    /// The room each node's delay lines have on the audio side.
+    delay_rooms: BTreeMap<NodeId, audio::Rooms>,
+    /// The plugin effect learning: the next parameter moved in its window
+    /// joins the song.
+    learning: Option<DeviceId>,
+    /// Knobs being turned in plugin windows.
+    turning: BTreeMap<(DeviceId, u32), Turn>,
+    /// Whether render workers run at audio priority (not for exports).
+    realtime_workers: bool,
 }
+
+/// A knob being turned in a plugin's window. A turn of a parameter in the
+/// song moves its resting value as it goes and is one undo step; a turn of
+/// another while learning adds it when the turn ends.
+#[derive(Debug, Clone, Copy)]
+struct Turn {
+    /// The resting value before, for a parameter in the song.
+    before: Option<f64>,
+    value: f64,
+    /// Between begin and end; moves without them (a mouse wheel) end once
+    /// they stop for [`TURN_PAUSE`].
+    held: bool,
+    last: std::time::Instant,
+}
+
+/// How long moves without a begin and end must pause to count as one turn.
+const TURN_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl Engine {
     /// Creates an engine with an empty project, and the processor that renders it.
@@ -120,6 +147,19 @@ impl Engine {
     ///
     /// If `config.channels` or `config.sample_rate` is zero.
     pub fn new(config: EngineConfig) -> (Self, AudioProcessor) {
+        Self::build(config, true)
+    }
+
+    /// An engine for rendering to a file while a live one plays: its
+    /// workers stay at normal priority (live audio always comes first), and
+    /// its processor is offline (plugins take as long as they need).
+    pub fn new_offline(config: EngineConfig) -> (Self, AudioProcessor) {
+        let (engine, mut processor) = Self::build(config, false);
+        processor.set_offline(true);
+        (engine, processor)
+    }
+
+    fn build(config: EngineConfig, realtime_workers: bool) -> (Self, AudioProcessor) {
         assert!(config.channels > 0, "engine needs at least one channel");
         assert!(config.sample_rate > 0, "engine needs a sample rate");
         let project = Project::default();
@@ -131,6 +171,7 @@ impl Engine {
             config.sample_rate,
             usize::from(config.channels),
             config.threads.max(1),
+            realtime_workers,
             Box::new(RenderState::compile(&project)),
             AudioQueues {
                 from_control,
@@ -155,6 +196,10 @@ impl Engine {
             samples: SamplePool::default(),
             plugins: plugins::Plugins::default(),
             retired,
+            learning: None,
+            turning: BTreeMap::new(),
+            delay_rooms: BTreeMap::new(),
+            realtime_workers,
         };
         (engine, processor)
     }
@@ -182,6 +227,7 @@ impl Engine {
             config.sample_rate,
             usize::from(config.channels),
             config.threads.max(1),
+            self.realtime_workers,
             Box::new(RenderState::compile_with(
                 &self.project,
                 &self.samples,
@@ -197,9 +243,7 @@ impl Engine {
         while let Ok(retired) = self.garbage.pop() {
             drop(retired);
         }
-        while let Ok(block) = self.retired.pop() {
-            self.plugins.retired(block);
-        }
+        self.free_retired();
         self.retired = retired;
         self.to_audio = to_audio;
         self.garbage = garbage;
@@ -214,6 +258,10 @@ impl Engine {
         }
         self.plugins
             .reactivate(&self.project, config.sample_rate, &mut self.outbox);
+        // The new processor has no delay lines yet, and latencies may differ
+        // at the new rate.
+        self.delay_rooms.clear();
+        self.publish_state();
         self.revision += 1;
         self.maintain();
         processor
@@ -225,6 +273,11 @@ impl Engine {
 
     /// Applies a command. A rejected command changes nothing.
     pub fn apply(&mut self, command: Command) -> Result<(), CommandError> {
+        // A knob still turning in a plugin window is one step of its own,
+        // before whatever changes the song or its history next.
+        if matches!(command, Command::Edit(_) | Command::Undo | Command::Redo) {
+            self.end_turns();
+        }
         match command {
             Command::Play => {
                 self.playing = true;
@@ -257,6 +310,23 @@ impl Engine {
                 });
             }
             Command::TestTone => self.outbox.push_back(AudioMsg::TestTone),
+            Command::OpenPluginWindow { device: effect } => {
+                let title = self
+                    .window_title(effect)
+                    .ok_or(CommandError::NotAPlugin { id: effect })?;
+                self.plugins.open_window(effect, &title);
+            }
+            Command::LearnPluginParam { device: effect } => {
+                if let Some(device) = effect {
+                    if self.project.device_node(device).is_none() {
+                        return Err(CommandError::UnknownDevice { id: device });
+                    }
+                    if self.plugin_spec(device).is_none() {
+                        return Err(CommandError::NotAPlugin { id: device });
+                    }
+                }
+                self.learning = effect;
+            }
             Command::ReloadPlugins => {
                 self.plugins
                     .reload(&self.project, self.config.sample_rate, &mut self.outbox);
@@ -288,6 +358,12 @@ impl Engine {
                 self.history.redo(&mut self.project)?;
                 self.publish_state();
                 self.content_revision += 1;
+            }
+        }
+        // A renamed node renames its plugins' windows.
+        for effect in self.plugins.open_windows() {
+            if let Some(title) = self.window_title(effect) {
+                self.plugins.retitle(effect, &title);
             }
         }
         self.revision += 1;
@@ -384,10 +460,18 @@ impl Engine {
                 continue;
             };
             for device in &mut node.devices {
-                if let DeviceRef::Effect(id) = device.device
-                    && let Some((_, effect)) = project_node.effect(id)
-                    && let Some(spec) = &effect.plugin
-                {
+                let spec = match device.device {
+                    DeviceRef::Effect(id) => project_node
+                        .effect(id)
+                        .and_then(|(_, e)| e.plugin.as_ref())
+                        .map(|s| (id, s)),
+                    DeviceRef::Instrument(id) => project_node
+                        .instrument(id)
+                        .and_then(|(_, i)| i.plugin.as_ref())
+                        .map(|s| (id, s)),
+                    DeviceRef::Channel => None,
+                };
+                if let Some((id, spec)) = spec {
                     device.plugin = Some(PluginSnapshot {
                         spec: spec.clone(),
                         state: self
@@ -395,6 +479,8 @@ impl Engine {
                             .state(id)
                             .unwrap_or_else(|| PluginState::Failed("not started".into())),
                         params: self.plugins.params(id),
+                        window: self.plugins.window(id),
+                        learning: self.learning == Some(id),
                     });
                 }
             }
@@ -443,14 +529,196 @@ impl Engine {
         while let Ok(retired) = self.garbage.pop() {
             drop(retired);
         }
-        while let Ok(block) = self.retired.pop() {
-            self.plugins.retired(block);
-        }
+        self.free_retired();
+        self.window_edits();
         while let Some(msg) = self.outbox.pop_front() {
             if let Err(rtrb::PushError::Full(msg)) = self.to_audio.push(msg) {
                 self.outbox.push_front(msg);
                 break;
             }
+        }
+    }
+
+    /// Takes what the user did in plugin windows: a turned knob of a
+    /// parameter in the song moves its resting value as it goes (one undo
+    /// step per turn); while learning, the first parameter turned joins
+    /// the song with a drawn layer.
+    fn window_edits(&mut self) {
+        let plugins::HostNews {
+            edits,
+            changed: closed,
+            restarts,
+        } = self.plugins.window_edits();
+        let mut changed = closed;
+        // Plugins whose latency, buses or parameters changed.
+        for (device, flags) in restarts {
+            changed |=
+                self.plugins
+                    .restart(device, flags, self.config.sample_rate, &mut self.outbox);
+        }
+        if self.plugins.take_facts_changed() {
+            self.push_state();
+            changed = true;
+        }
+        let now = std::time::Instant::now();
+        for (effect, edit) in edits {
+            let (id, value, held) = match edit {
+                plugins::WindowEdit::Begin(id) => (id, None, true),
+                plugins::WindowEdit::Value(id, value) => (id, Some(value), false),
+                plugins::WindowEdit::End(id) => {
+                    changed |= self.end_turn(effect, id);
+                    continue;
+                }
+            };
+            let param = self.plugin_param(effect, id);
+            let before = param.and_then(|p| self.project.param(p)).map(|s| s.base);
+            // Only parameters in the song, or any while learning.
+            if before.is_none() && self.learning != Some(effect) {
+                continue;
+            }
+            let turn = self.turning.entry((effect, id)).or_insert(Turn {
+                before,
+                value: before.unwrap_or(0.0),
+                held,
+                last: now,
+            });
+            turn.last = now;
+            turn.held |= held;
+            if let Some(value) = value {
+                turn.value = value;
+                if let Some(param) = param.filter(|_| turn.before.is_some())
+                    && self.project.apply(Edit::SetParam { param, value }).is_ok()
+                {
+                    changed = true;
+                }
+            }
+        }
+        let paused: Vec<(DeviceId, u32)> = self
+            .turning
+            .iter()
+            .filter(|(_, t)| !t.held && now.duration_since(t.last) >= TURN_PAUSE)
+            .map(|(key, _)| *key)
+            .collect();
+        for (effect, id) in paused {
+            changed |= self.end_turn(effect, id);
+        }
+        if changed {
+            self.publish_state();
+            self.revision += 1;
+            self.content_revision += 1;
+        }
+    }
+
+    /// Ends every turn in progress, as if the knobs were let go.
+    fn end_turns(&mut self) {
+        let turning: Vec<(DeviceId, u32)> = self.turning.keys().copied().collect();
+        let mut changed = false;
+        for (effect, id) in turning {
+            changed |= self.end_turn(effect, id);
+        }
+        if changed {
+            self.publish_state();
+            self.revision += 1;
+            self.content_revision += 1;
+        }
+    }
+
+    /// A plugin effect's window title: the plugin, then its node.
+    fn window_title(&self, device: DeviceId) -> Option<String> {
+        let (node, spec) = self.plugin_spec(device)?;
+        Some(format!("{} — {}", spec.name(), node.name))
+    }
+
+    /// A plugin effect's or instrument's node and plugin.
+    fn plugin_spec(&self, device: DeviceId) -> Option<(&Node, &PluginSpec)> {
+        let node = self.project.node(self.project.device_node(device)?)?;
+        let spec = match node.effect(device) {
+            Some((_, effect)) => effect.plugin.as_ref(),
+            None => node.instrument(device)?.1.plugin.as_ref(),
+        }?;
+        Some((node, spec))
+    }
+
+    /// A plugin parameter as the song names it, if its device exists.
+    fn plugin_param(&self, device: DeviceId, id: u32) -> Option<ParamId> {
+        let node = self.project.device_node(device)?;
+        let on = self.project.node(node)?;
+        let device = if on.effect(device).is_some() {
+            DeviceRef::Effect(device)
+        } else {
+            DeviceRef::Instrument(device)
+        };
+        Some(ParamId {
+            node,
+            device,
+            index: id,
+        })
+    }
+
+    /// A turn ended: recorded for undo, or learned. True if the song
+    /// changed.
+    fn end_turn(&mut self, effect: DeviceId, id: u32) -> bool {
+        let Some(turn) = self.turning.remove(&(effect, id)) else {
+            return false;
+        };
+        let Some(param) = self.plugin_param(effect, id) else {
+            return false;
+        };
+        let mut changed = false;
+        if let Some(before) = turn.before
+            && before != turn.value
+        {
+            self.history.record(Edit::SetParam {
+                param,
+                value: before,
+            });
+            changed = true;
+        }
+        // Learning takes a parameter that doesn't show on Parameters yet.
+        let shown = self
+            .project
+            .param(param)
+            .is_some_and(|s| !s.layers.is_empty());
+        if self.learning == Some(effect) && !shown {
+            self.learning = None;
+            self.learn(effect, param, turn.value);
+            changed = true;
+        }
+        changed
+    }
+
+    /// Gives a plugin's parameter a drawn layer so it shows on Parameters,
+    /// adding it to the song first (resting at `value`) if it isn't there.
+    fn learn(&mut self, effect: DeviceId, param: ParamId, value: f64) {
+        let name = self
+            .plugins
+            .params(effect)
+            .iter()
+            .find(|p| p.id == param.index)
+            .map_or_else(|| format!("Parameter {}", param.index), |p| p.name.clone());
+        let mut edits = Vec::new();
+        if self.project.param(param).is_none() {
+            edits.push(Edit::AddPluginParam {
+                device: effect,
+                param: PluginParam {
+                    id: param.index,
+                    name,
+                    state: ParamState {
+                        base: value,
+                        layers: Vec::new(),
+                    },
+                },
+            });
+        }
+        edits.push(Edit::AddLayer {
+            param,
+            id: self.project.next_layer_id(),
+            index: 0,
+            layer: Layer::named("Layer 1", BlendMode::Add),
+        });
+        let edit = Edit::Batch(edits);
+        if let Err(e) = self.history.edit(&mut self.project, edit) {
+            eprintln!("learning a plugin parameter failed: {e}");
         }
     }
 
@@ -467,6 +735,7 @@ impl Engine {
         let mut file = ProjectFile::new(&self.project, self.loop_range);
         file.loop_enabled = self.loop_enabled;
         file.set_plugin_states(&self.plugins.states(&self.project));
+        file.set_window_places(&self.plugins.places(&self.project));
         file
     }
 
@@ -476,10 +745,11 @@ impl Engine {
     pub fn load(&mut self, file: ProjectFile) -> Result<(), LoadError> {
         let loop_enabled = file.loop_enabled;
         let states = file.plugin_states();
+        let places = file.window_places();
         let (project, loop_range) = file.into_project()?;
         self.project = project;
         // Before the new state, so the old song's plugins go quiet first.
-        self.plugins.replace_song(states, &mut self.outbox);
+        self.plugins.replace_song(states, places, &mut self.outbox);
         self.history = History::default();
         self.playing = false;
         self.outbox.push_back(AudioMsg::SetPlaying(false));
@@ -514,16 +784,65 @@ impl Engine {
         self.samples.refresh(&self.project.samples);
         self.samples
             .convert_clips(&self.project, self.config.sample_rate);
-        let state = Box::new(RenderState::compile_with(
-            &self.project,
-            &self.samples,
-            self.config.sample_rate,
-        ));
-        self.outbox.push_back(AudioMsg::SwapState(state));
+        self.push_state();
         // After the state: its plugin effects exist when their channels
         // arrive.
         self.plugins
             .sync(&self.project, self.config.sample_rate, &mut self.outbox);
+        // Plugins that just started may delay their sound: line the song up
+        // for them (after their channels, which keep their places).
+        if self.plugins.take_facts_changed() {
+            self.push_state();
+        }
+    }
+
+    /// Compiles the song, lined up for the plugins' latencies, and sends
+    /// it, with bigger delay lines for nodes that need them.
+    fn push_state(&mut self) {
+        let plugins = &self.plugins;
+        let state = Box::new(RenderState::compile_with_plugins(
+            &self.project,
+            &self.samples,
+            self.config.sample_rate,
+            &|device| plugins.facts(device),
+        ));
+        let nodes: std::collections::BTreeSet<NodeId> = state.nodes.iter().map(|n| n.id).collect();
+        self.delay_rooms.retain(|node, _| nodes.contains(node));
+        let mut grow = Vec::new();
+        for node in state.nodes.iter().filter(|n| n.comp.delays()) {
+            let need = audio::Delays::rooms(&node.comp);
+            let had = self.delay_rooms.get(&node.id);
+            let short = had.is_none_or(|had| had.iter().zip(&need).any(|(h, n)| h < n));
+            if short {
+                // Each line keeps at least the room it had.
+                let mut rooms = need;
+                if let Some(had) = had {
+                    for (r, h) in rooms.iter_mut().zip(had) {
+                        *r = (*r).max(*h);
+                    }
+                }
+                self.delay_rooms.insert(node.id, rooms);
+                grow.push((node.id, rooms));
+            }
+        }
+        self.outbox.push_back(AudioMsg::SwapState(state));
+        // After the state, so their nodes have players.
+        for (node, rooms) in grow {
+            self.outbox.push_back(AudioMsg::SetDelays {
+                node,
+                delays: Box::new(audio::Delays::new(&rooms)),
+            });
+        }
+    }
+
+    /// Frees what the audio side let go of.
+    fn free_retired(&mut self) {
+        while let Ok(left) = self.retired.pop() {
+            match left {
+                audio::Leftover::Block(block) => self.plugins.retired(block),
+                audio::Leftover::Delays(delays) => drop(delays),
+            }
+        }
     }
 }
 
@@ -637,10 +956,16 @@ fn node_snapshot(
 /// A device's name; a plugin's own name for a plugin effect.
 fn device_name(node: &Node, device: DeviceRef) -> String {
     match device {
-        DeviceRef::Instrument(id) => node
-            .instrument(id)
-            .map_or("Instrument", |(_, i)| devices::instrument_name(i.kind))
-            .to_owned(),
+        DeviceRef::Instrument(id) => {
+            node.instrument(id)
+                .map_or(
+                    "Instrument".to_owned(),
+                    |(_, instrument)| match &instrument.plugin {
+                        Some(spec) => spec.name().to_owned(),
+                        None => devices::instrument_name(instrument.kind).to_owned(),
+                    },
+                )
+        }
         DeviceRef::Channel => "Channel".to_owned(),
         DeviceRef::Effect(id) => node.effects.iter().find(|(e, _)| *e == id).map_or(
             "Effect".to_owned(),

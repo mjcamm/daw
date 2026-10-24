@@ -12,6 +12,7 @@
 //! bus, and the Song's output is the processor's.
 
 use crate::clips::{ClipPlayer, ClipRender};
+use crate::compensation::Compensation;
 use crate::devices::{
     CHANNEL_PARAMS, MAX_DEVICE_PARAMS, ParamInfo, channel_settings, effect_params, filter_params,
     instrument_params, sampler_level, synth_params,
@@ -28,7 +29,7 @@ use daw_dsp::sampler::Sampler;
 use daw_dsp::smoothing::Smoothed;
 use daw_dsp::synth::{MAX_VOICES, Synth};
 use daw_plugins::block::{
-    Context as PluginContext, DawBlock, MAX_PARAM_CHANGES, Outcome, ParamChange,
+    Context as PluginContext, DawBlock, MAX_PARAM_CHANGES, NoteEvent, Outcome, ParamChange,
 };
 use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId};
 use std::sync::Arc;
@@ -53,15 +54,142 @@ pub const MAX_CLIP_PLAYERS: usize = 64;
 /// dropped (the rest of the tree and the device need the remainder).
 const PLUGIN_DEADLINE_SHARE: f64 = 0.7;
 
-/// Plugin channels the audio side lets go of, freed on the control side.
-pub(crate) type Retired = rtrb::Producer<Box<DawBlock>>;
+/// What the audio side lets go of, freed on the control side: plugin
+/// channels and nodes' delay lines.
+#[derive(Debug)]
+pub(crate) enum Leftover {
+    Block(Box<DawBlock>),
+    Delays(Box<Delays>),
+}
+
+pub(crate) type Retired = rtrb::Producer<Leftover>;
 
 /// Hands a channel back to be freed on the control side. The queue has
 /// room for every plugin there can be; were it ever full, leaking the
 /// channel is better than freeing it here.
 fn retire(retired: &mut Retired, block: Box<DawBlock>) {
-    if let Err(rtrb::PushError::Full(block)) = retired.push(block) {
-        std::mem::forget(block);
+    if let Err(rtrb::PushError::Full(left)) = retired.push(Leftover::Block(block)) {
+        std::mem::forget(left);
+    }
+}
+
+fn retire_delays(retired: &mut Retired, delays: Box<Delays>) {
+    if let Err(rtrb::PushError::Full(left)) = retired.push(Leftover::Delays(delays)) {
+        std::mem::forget(left);
+    }
+}
+
+/// A stereo delay line for lining sound up (`compensation.rs`). Its
+/// room is made on the control side; delaying never allocates.
+#[derive(Debug)]
+pub(crate) struct DelayLine {
+    left: Box<[f32]>,
+    right: Box<[f32]>,
+    write: usize,
+}
+
+impl DelayLine {
+    fn new(capacity: usize) -> Self {
+        Self {
+            left: vec![0.0; capacity].into_boxed_slice(),
+            right: vec![0.0; capacity].into_boxed_slice(),
+            write: 0,
+        }
+    }
+
+    /// Delays the sound in place by `delay` frames (at most the room
+    /// less one).
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], delay: usize) {
+        let room = self.left.len();
+        if delay == 0 || room < 2 {
+            return;
+        }
+        let delay = delay.min(room - 1);
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let w = self.write;
+            self.left[w] = *l;
+            self.right[w] = *r;
+            let read = (w + room - delay) % room;
+            *l = self.left[read];
+            *r = self.right[read];
+            self.write = (w + 1) % room;
+        }
+    }
+
+    /// Takes `old`'s most recent sound, so a bigger line carries on where
+    /// the old one was.
+    fn take_history(&mut self, old: &Self) {
+        let (room, old_room) = (self.left.len(), old.left.len());
+        let n = room.min(old_room);
+        for k in 0..n {
+            let from = (old.write + old_room - n + k) % old_room;
+            self.left[k] = old.left[from];
+            self.right[k] = old.right[from];
+        }
+        self.write = if room == 0 { 0 } else { n % room };
+    }
+}
+
+/// A node's delay lines: for its built-in sources, each instrument (by its
+/// place) and its output, all with the same room.
+#[derive(Debug)]
+pub(crate) struct Delays {
+    sources: DelayLine,
+    instruments: [DelayLine; MAX_INSTRUMENTS],
+    /// Standing in for switched-off plugins without their own bypass.
+    effects: [DelayLine; MAX_EFFECTS],
+    output: DelayLine,
+}
+
+/// A node's delay lines: sources, each instrument, each effect, output.
+pub(crate) const DELAY_LINES: usize = 2 + MAX_INSTRUMENTS + MAX_EFFECTS;
+
+/// The room each of a node's delay lines needs.
+pub(crate) type Rooms = [usize; DELAY_LINES];
+
+impl Delays {
+    /// Lines with the room `rooms` says (0: none).
+    pub(crate) fn new(rooms: &Rooms) -> Self {
+        let line = |i: usize| DelayLine::new(rooms[i]);
+        Self {
+            sources: line(0),
+            instruments: std::array::from_fn(|i| line(1 + i)),
+            effects: std::array::from_fn(|i| line(1 + MAX_INSTRUMENTS + i)),
+            output: line(DELAY_LINES - 1),
+        }
+    }
+
+    /// The room each line needs for `comp`: a power of two above its
+    /// delay, none for no delay.
+    pub(crate) fn rooms(comp: &Compensation) -> Rooms {
+        let room = |delay: u32| {
+            if delay == 0 {
+                0
+            } else {
+                (delay as usize + 1).next_power_of_two().max(64)
+            }
+        };
+        let mut rooms = [0; DELAY_LINES];
+        rooms[0] = room(comp.sources);
+        for (i, &d) in comp.instruments.iter().take(MAX_INSTRUMENTS).enumerate() {
+            rooms[1 + i] = room(d);
+        }
+        for (i, &d) in comp.bypass.iter().take(MAX_EFFECTS).enumerate() {
+            rooms[1 + MAX_INSTRUMENTS + i] = room(d);
+        }
+        rooms[DELAY_LINES - 1] = room(comp.output);
+        rooms
+    }
+
+    fn take_history(&mut self, old: &Self) {
+        self.sources.take_history(&old.sources);
+        for (new, old) in self.instruments.iter_mut().zip(&old.instruments) {
+            new.take_history(old);
+        }
+        for (new, old) in self.effects.iter_mut().zip(&old.effects) {
+            new.take_history(old);
+        }
+        self.output.take_history(&old.output);
     }
 }
 
@@ -85,6 +213,11 @@ pub(crate) enum AudioMsg {
     AttachPlugin {
         effect: DeviceId,
         block: Box<DawBlock>,
+    },
+    /// A node's delay lines, bigger than those it had (if any).
+    SetDelays {
+        node: NodeId,
+        delays: Box<Delays>,
     },
     /// Takes a plugin effect's channel away (its instance is ending), so it
     /// is silent until a new one attaches.
@@ -244,11 +377,14 @@ pub(crate) struct AudioQueues {
 
 impl AudioProcessor {
     /// `threads` is how many threads render, this one included (1: no
-    /// workers).
+    /// workers). Workers run at audio priority when `realtime_workers`;
+    /// renders to a file beside live play leave them at normal priority, so
+    /// they never compete with the live song.
     pub(crate) fn new(
         sample_rate: u32,
         channels: usize,
         threads: usize,
+        realtime_workers: bool,
         state: Box<RenderState>,
         queues: AudioQueues,
         status: Arc<SharedStatus>,
@@ -274,6 +410,9 @@ impl AudioProcessor {
             heights: Vec::with_capacity(MAX_NODES),
             pool: Pool::new(threads.saturating_sub(1), move || {
                 // Workers run at audio priority, like the device's thread.
+                if !realtime_workers {
+                    return;
+                }
                 if let Ok(handle) =
                     audio_thread_priority::promote_current_thread_to_real_time(512, rate)
                 {
@@ -347,7 +486,20 @@ impl AudioProcessor {
             self.status.output.record(peak(left), peak(right));
             write_output(left, right, chunk, self.channels);
         }
-        self.status.set_position_beats(self.transport.position());
+        // While playing, what is heard is the song's latency behind.
+        let behind = if self.transport.is_playing() {
+            f64::from(self.state.latency) * self.transport.beats_per_frame()
+        } else {
+            0.0
+        };
+        self.status
+            .set_position_beats(self.transport.position() - behind);
+    }
+
+    /// How late the song comes out (plugins' latency), in frames: a render
+    /// to a file skips this many at its start.
+    pub fn latency(&self) -> u32 {
+        self.state.latency
     }
 
     /// Adds the test tone, while it plays, over the output.
@@ -418,19 +570,36 @@ impl AudioProcessor {
                             .iter()
                             .find(|n| n.id == node)
                             .map_or(&[][..], |n| &n.instruments[..]);
-                        for ((_, instrument), state) in player.instruments.iter_mut().zip(states) {
+                        for (((_, instrument), state), notes) in player
+                            .instruments
+                            .iter_mut()
+                            .zip(states)
+                            .zip(player.plugin_notes.iter_mut())
+                        {
                             if on {
                                 if state.plays.contains(pitch) {
-                                    instrument.note_on(id, pitch, velocity);
+                                    instrument.note_on(id, pitch, velocity, 0, notes);
                                 }
                             } else {
-                                instrument.note_off(id);
+                                instrument.note_off(id, 0, notes);
                             }
                         }
                     }
                 }
                 AudioMsg::AttachPlugin { effect, block } => self.attach_plugin(effect, block),
                 AudioMsg::DetachPlugin(effect) => self.detach_plugin(effect),
+                AudioMsg::SetDelays { node, mut delays } => {
+                    match self.players.iter_mut().find(|p| p.node == Some(node)) {
+                        Some(player) => {
+                            if let Some(old) = player.delays.take() {
+                                delays.take_history(&old);
+                                retire_delays(&mut self.retired, old);
+                            }
+                            player.delays = Some(delays);
+                        }
+                        None => retire_delays(&mut self.retired, delays),
+                    }
+                }
                 AudioMsg::SwapState(state) => {
                     self.transport.set_tempo(state.tempo_bpm);
                     let old = std::mem::replace(&mut self.state, state);
@@ -448,9 +617,14 @@ impl AudioProcessor {
     /// back any it replaces (or this one, if the effect is gone).
     fn attach_plugin(&mut self, effect: DeviceId, block: Box<DawBlock>) {
         for player in self.players.iter_mut() {
-            if let Some((_, EffectInstance::Plugin(slot))) =
-                player.effects.iter_mut().find(|(id, _)| *id == effect)
-            {
+            let slot = match player.effects.iter_mut().find(|(id, _)| *id == effect) {
+                Some((_, EffectInstance::Plugin(slot))) => Some(slot),
+                _ => match player.instruments.iter_mut().find(|(id, _)| *id == effect) {
+                    Some((_, InstrumentInstance::Plugin(plugin))) => Some(&mut plugin.block),
+                    _ => None,
+                },
+            };
+            if let Some(slot) = slot {
                 if let Some(old) = slot.replace(block) {
                     retire(&mut self.retired, old);
                 }
@@ -465,6 +639,12 @@ impl AudioProcessor {
             if let Some((_, EffectInstance::Plugin(slot))) =
                 player.effects.iter_mut().find(|(id, _)| *id == effect)
                 && let Some(old) = slot.take()
+            {
+                retire(&mut self.retired, old);
+            }
+            if let Some((_, InstrumentInstance::Plugin(plugin))) =
+                player.instruments.iter_mut().find(|(id, _)| *id == effect)
+                && let Some(old) = plugin.block.take()
             {
                 retire(&mut self.retired, old);
             }
@@ -513,7 +693,7 @@ impl AudioProcessor {
         for (node, &index) in self.state.nodes.iter().zip(&self.slots) {
             let player = self.players.get_mut(index);
             player.sync_effects(&node.effects, self.sample_rate, &mut self.retired);
-            player.sync_instruments(&node.instruments);
+            player.sync_instruments(&node.instruments, &mut self.retired);
             // Audio nodes with clips borrow a clip player; without clips
             // they give it back.
             if node.clips.is_empty() {
@@ -610,12 +790,13 @@ impl AudioProcessor {
                 // changes.
                 let player = unsafe { players.task_mut(slots[slot]) };
                 player.clear_bus(frames);
+                player.render_chunk(&nodes[slot], &start, start_frames, frames, plugin);
                 let (from, len) = child_ranges[slot];
                 for &child in &child_list[from..from + len] {
                     let child = unsafe { players.task_ref(slots[child]) };
                     player.add_bus(child, frames);
                 }
-                player.render_chunk(&nodes[slot], &start, start_frames, frames, plugin);
+                player.finish_chunk(&nodes[slot], frames);
             };
             self.pool.run(level.len(), &task);
             begin = end;
@@ -742,6 +923,92 @@ impl EffectInstance {
 enum InstrumentInstance {
     Synth(Synth),
     Sampler(Sampler),
+    Plugin(PluginInstrument),
+}
+
+/// Notes sounding on one plugin instrument at once (more are not started).
+const MAX_PLUGIN_NOTES: usize = 64;
+/// Note starts and ends one plugin instrument takes in a chunk.
+const MAX_CHUNK_NOTES: usize = 256;
+
+/// A plugin instrument: its channel to the host process (once the control
+/// side sends it) and the notes sounding on it, so an end, or ending them
+/// all, can name their pitch.
+#[derive(Debug)]
+struct PluginInstrument {
+    block: Option<Box<DawBlock>>,
+    sounding: [Option<(u32, u8)>; MAX_PLUGIN_NOTES],
+}
+
+/// A plugin instrument's note starts and ends for the chunk being played,
+/// at their frames within it.
+#[derive(Debug)]
+struct ChunkNotes {
+    events: [NoteEvent; MAX_CHUNK_NOTES],
+    count: usize,
+}
+
+impl ChunkNotes {
+    fn new() -> Self {
+        Self {
+            events: [NoteEvent::default(); MAX_CHUNK_NOTES],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, event: NoteEvent) {
+        if let Some(slot) = self.events.get_mut(self.count) {
+            *slot = event;
+            self.count += 1;
+        }
+    }
+}
+
+impl PluginInstrument {
+    fn note_on(&mut self, note: u32, pitch: u8, velocity: u8, at: usize, notes: &mut ChunkNotes) {
+        let Some(slot) = self.sounding.iter_mut().find(|s| s.is_none()) else {
+            return;
+        };
+        *slot = Some((note, pitch));
+        notes.push(NoteEvent {
+            offset: at as u32,
+            note: note as i32,
+            pitch: u16::from(pitch),
+            on: 1,
+            velocity: f32::from(velocity) / 127.0,
+        });
+    }
+
+    fn note_off(&mut self, note: u32, at: usize, notes: &mut ChunkNotes) {
+        for slot in &mut self.sounding {
+            if let Some((id, pitch)) = *slot
+                && id == note
+            {
+                *slot = None;
+                notes.push(NoteEvent {
+                    offset: at as u32,
+                    note: id as i32,
+                    pitch: u16::from(pitch),
+                    on: 0,
+                    velocity: 0.0,
+                });
+            }
+        }
+    }
+
+    fn release_all(&mut self, at: usize, notes: &mut ChunkNotes) {
+        for slot in &mut self.sounding {
+            if let Some((id, pitch)) = slot.take() {
+                notes.push(NoteEvent {
+                    offset: at as u32,
+                    note: id as i32,
+                    pitch: u16::from(pitch),
+                    on: 0,
+                    velocity: 0.0,
+                });
+            }
+        }
+    }
 }
 
 impl InstrumentInstance {
@@ -749,6 +1016,10 @@ impl InstrumentInstance {
         match kind {
             InstrumentKind::Synth => Self::Synth(Synth::new(sample_rate)),
             InstrumentKind::SingleSampler => Self::Sampler(Sampler::new(sample_rate)),
+            InstrumentKind::Plugin => Self::Plugin(PluginInstrument {
+                block: None,
+                sounding: [None; MAX_PLUGIN_NOTES],
+            }),
         }
     }
 
@@ -756,6 +1027,14 @@ impl InstrumentInstance {
         match self {
             Self::Synth(_) => InstrumentKind::Synth,
             Self::Sampler(_) => InstrumentKind::SingleSampler,
+            Self::Plugin(_) => InstrumentKind::Plugin,
+        }
+    }
+
+    fn take_block(&mut self) -> Option<Box<DawBlock>> {
+        match self {
+            Self::Plugin(plugin) => plugin.block.take(),
+            Self::Synth(_) | Self::Sampler(_) => None,
         }
     }
 
@@ -764,27 +1043,34 @@ impl InstrumentInstance {
         match self {
             Self::Synth(synth) => synth.set_params(synth_params(plain)),
             Self::Sampler(sampler) => sampler.set_level(sampler_level(plain)),
+            // A plugin takes its parameters per chunk (`play_plugins`).
+            Self::Plugin(_) => {}
         }
     }
 
-    fn note_on(&mut self, note: u32, pitch: u8, velocity: u8) {
+    /// Starts a note `at` a frame of the chunk (built-in instruments start
+    /// it now, at the current span; a plugin hears it at that frame).
+    fn note_on(&mut self, note: u32, pitch: u8, velocity: u8, at: usize, notes: &mut ChunkNotes) {
         match self {
             Self::Synth(synth) => synth.note_on(note, pitch, velocity),
             Self::Sampler(sampler) => sampler.note_on(note, pitch, velocity),
+            Self::Plugin(plugin) => plugin.note_on(note, pitch, velocity, at, notes),
         }
     }
 
-    fn note_off(&mut self, note: u32) {
+    fn note_off(&mut self, note: u32, at: usize, notes: &mut ChunkNotes) {
         match self {
             Self::Synth(synth) => synth.note_off(note),
             Self::Sampler(sampler) => sampler.note_off(note),
+            Self::Plugin(plugin) => plugin.note_off(note, at, notes),
         }
     }
 
-    fn release_all(&mut self) {
+    fn release_all(&mut self, at: usize, notes: &mut ChunkNotes) {
         match self {
             Self::Synth(synth) => synth.release_all(),
             Self::Sampler(sampler) => sampler.release_all(),
+            Self::Plugin(plugin) => plugin.release_all(at, notes),
         }
     }
 
@@ -797,6 +1083,11 @@ impl InstrumentInstance {
                 right.copy_from_slice(left);
             }
             Self::Sampler(sampler) => sampler.render(sample.map(SampleData::view), left, right),
+            // Plays over the whole chunk (`play_plugins`).
+            Self::Plugin(_) => {
+                left.fill(0.0);
+                right.fill(0.0);
+            }
         }
     }
 }
@@ -849,13 +1140,14 @@ fn run_plugin(
 fn plugin_changes(
     params: &[(u32, Automation)],
     controls: &[ControlPoint],
+    behind: f64,
     out: &mut [ParamChange],
 ) -> usize {
     let mut count = 0;
     for (id, automation) in params {
         let mut last = None;
         for point in controls {
-            let value = automation.value_at(point.beat);
+            let value = automation.value_at(point.beat - behind);
             if last == Some(value) {
                 continue;
             }
@@ -921,6 +1213,26 @@ struct NodePlayer {
     control_count: usize,
     /// A plugin effect's parameter changes for the chunk.
     plugin_changes: Box<[ParamChange; MAX_PARAM_CHANGES]>,
+    /// Each plugin instrument's notes for the chunk, by the instrument's
+    /// place in `instruments`.
+    plugin_notes: Box<[ChunkNotes; MAX_INSTRUMENTS]>,
+    /// The frame within the chunk being rendered, for notes sent to
+    /// plugins.
+    at: usize,
+    /// Its delay lines, once it needs some (sent by the control side).
+    delays: Option<Box<Delays>>,
+    /// Which plugin effects (by place) were last run bypassed.
+    bypassed: [bool; MAX_EFFECTS],
+    /// The chunk being rendered, for its second half (`finish_chunk`).
+    chunk: ChunkRun,
+}
+
+/// What the second half of a node's chunk needs from the first.
+#[derive(Debug, Clone, Copy, Default)]
+struct ChunkRun {
+    context: PluginContext,
+    deadline: Option<Instant>,
+    beats_per_frame: f64,
 }
 
 impl NodePlayer {
@@ -946,6 +1258,11 @@ impl NodePlayer {
             controls: [ControlPoint::default(); MAX_CONTROL_POINTS],
             control_count: 0,
             plugin_changes: Box::new([ParamChange::default(); MAX_PARAM_CHANGES]),
+            plugin_notes: Box::new(std::array::from_fn(|_| ChunkNotes::new())),
+            at: 0,
+            delays: None,
+            bypassed: [false; MAX_EFFECTS],
+            chunk: ChunkRun::default(),
         }
     }
 
@@ -953,8 +1270,11 @@ impl NodePlayer {
     fn start(&mut self, node: NodeId, meter: &PlayerMeter, retired: &mut Retired) {
         self.node = Some(node);
         self.fresh = true;
-        self.instruments.clear();
+        self.retire_instruments(retired);
         self.retire_effects(retired);
+        if let Some(delays) = self.delays.take() {
+            retire_delays(retired, delays);
+        }
         self.cursor = 0;
         self.pending_ends = [None; MAX_PENDING_ENDS];
         meter.node.store(node.0 + 1, Ordering::Relaxed);
@@ -965,8 +1285,11 @@ impl NodePlayer {
     fn free(&mut self, meter: &PlayerMeter, retired: &mut Retired) {
         self.node = None;
         self.release_all();
-        self.instruments.clear();
+        self.retire_instruments(retired);
         self.retire_effects(retired);
+        if let Some(delays) = self.delays.take() {
+            retire_delays(retired, delays);
+        }
         meter.node.store(0, Ordering::Relaxed);
         meter.peaks.take();
     }
@@ -1022,6 +1345,7 @@ impl NodePlayer {
             };
             let segment_end = done + segment;
             while done < segment_end {
+                self.at = done as usize;
                 let into_control = processed % CONTROL_FRAMES;
                 if into_control == 0 {
                     let beat = transport.position();
@@ -1050,18 +1374,51 @@ impl NodePlayer {
             }
             if jumps {
                 transport.jump_to_loop_start();
+                self.at = done as usize;
                 self.release_all();
                 self.seek(node, &transport);
             }
         }
+        // Notes from outside the chunk (previews) come at its start.
+        self.at = 0;
         let context = PluginContext {
             tempo_bpm: plugin.tempo_bpm,
             position_beats: start.position(),
             playing: start.is_playing(),
             offline: plugin.offline,
         };
-        self.process_effects(node, chunk, context, plugin.deadline);
-        self.apply_channel(node, chunk);
+        self.chunk = ChunkRun {
+            context,
+            deadline: plugin.deadline,
+            beats_per_frame: start.beats_per_frame(),
+        };
+        // The built-in sources wait for the node's slowest.
+        if let Some(delays) = &mut self.delays {
+            delays.sources.process(
+                &mut self.bus_left[..chunk],
+                &mut self.bus_right[..chunk],
+                node.comp.sources as usize,
+            );
+        }
+        self.play_plugins(node, chunk, context, plugin.deadline);
+    }
+
+    /// The chunk's second half, once the children's sound is in the bus:
+    /// the effect chain, volume and pan, then the delay that lines the node
+    /// up at its parent.
+    fn finish_chunk(&mut self, node: &NodeRender, frames: usize) {
+        let ChunkRun {
+            context, deadline, ..
+        } = self.chunk;
+        self.process_effects(node, frames, context, deadline);
+        self.apply_channel(node, frames);
+        if let Some(delays) = &mut self.delays {
+            delays.output.process(
+                &mut self.bus_left[..frames],
+                &mut self.bus_right[..frames],
+                node.comp.output as usize,
+            );
+        }
     }
 
     /// A span with steady parameters: its audio clips and every instrument
@@ -1105,6 +1462,18 @@ impl NodePlayer {
 
     /// Rebuilds the running chain to match `wanted`, keeping existing effects
     /// (and their filter memory) by id. Allocation-free.
+    /// Drops every instrument, handing plugin channels back.
+    fn retire_instruments(&mut self, retired: &mut Retired) {
+        for (_, mut instrument) in self.instruments.drain(..) {
+            if let Some(block) = instrument.take_block() {
+                retire(retired, block);
+            }
+        }
+        for notes in self.plugin_notes.iter_mut() {
+            notes.count = 0;
+        }
+    }
+
     /// Empties the chain, handing plugin channels back.
     fn retire_effects(&mut self, retired: &mut Retired) {
         for (_, mut effect) in self.effects.drain(..) {
@@ -1136,7 +1505,7 @@ impl NodePlayer {
     /// Rebuilds the running instruments to match `wanted`, keeping existing
     /// ones (and their sounding voices) by id and kind. Allocation-free: an
     /// instrument holds no heap memory.
-    fn sync_instruments(&mut self, wanted: &[InstrumentState]) {
+    fn sync_instruments(&mut self, wanted: &[InstrumentState], retired: &mut Retired) {
         debug_assert!(wanted.len() <= MAX_INSTRUMENTS);
         self.spare_instruments.clear();
         for state in wanted {
@@ -1150,8 +1519,17 @@ impl NodePlayer {
             };
             self.spare_instruments.push((state.id, instance));
         }
-        self.instruments.clear();
+        // Whatever is left was removed.
+        for (_, mut instrument) in self.instruments.drain(..) {
+            if let Some(block) = instrument.take_block() {
+                retire(retired, block);
+            }
+        }
         std::mem::swap(&mut self.instruments, &mut self.spare_instruments);
+        // Notes queued for the old order no longer line up.
+        for notes in self.plugin_notes.iter_mut() {
+            notes.count = 0;
+        }
     }
 
     /// Evaluates every parameter's layers at `beat` and applies the results.
@@ -1209,20 +1587,67 @@ impl NodePlayer {
         let controls = &self.controls[..self.control_count];
         let (left, right) = (&mut self.bus_left[..frames], &mut self.bus_right[..frames]);
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
-        for ((_, effect), state) in self.effects.iter_mut().zip(&node.effects) {
+        let beats_per_frame = self.chunk.beats_per_frame;
+        for (index, (((_, effect), state), &late)) in self
+            .effects
+            .iter_mut()
+            .zip(&node.effects)
+            .zip(node.comp.effects.iter().chain(std::iter::repeat(&0)))
+            .enumerate()
+        {
+            // Its layers act on the sound reaching it, `late` frames behind.
+            let behind = f64::from(late) * beats_per_frame;
             if let EffectInstance::Plugin(block) = effect {
-                if state.enabled {
-                    let count =
-                        plugin_changes(&state.plugin_params, controls, &mut *self.plugin_changes);
-                    let changes = &self.plugin_changes[..count];
-                    run_plugin(
-                        block.as_deref_mut(),
-                        left,
-                        right,
-                        changes,
-                        context,
-                        deadline,
-                    );
+                let was_bypassed = &mut self.bypassed[index.min(MAX_EFFECTS - 1)];
+                match (state.enabled, state.bypass_param) {
+                    // Switched off without a bypass of its own: not run, and
+                    // the sound waits as long as it would have taken.
+                    (false, None) => {
+                        if let Some(delays) = &mut self.delays {
+                            let wait = node.comp.bypass.get(index).copied().unwrap_or(0);
+                            delays.effects[index.min(MAX_EFFECTS - 1)].process(
+                                left,
+                                right,
+                                wait as usize,
+                            );
+                        }
+                    }
+                    // Run, its own bypass switched to match (on while off;
+                    // back off once, when switched on again, so its own
+                    // bypass button stays the user's otherwise).
+                    (enabled, bypass) => {
+                        let mut count = plugin_changes(
+                            &state.plugin_params,
+                            controls,
+                            behind,
+                            &mut *self.plugin_changes,
+                        );
+                        let set = match (enabled, *was_bypassed) {
+                            (false, _) => Some(1.0),
+                            (true, true) => Some(0.0),
+                            (true, false) => None,
+                        };
+                        if let (Some(id), Some(value)) = (bypass, set)
+                            && let Some(slot) = self.plugin_changes.get_mut(count)
+                        {
+                            *slot = ParamChange {
+                                id,
+                                offset: 0,
+                                value,
+                            };
+                            count += 1;
+                        }
+                        *was_bypassed = !enabled;
+                        let changes = &self.plugin_changes[..count];
+                        run_plugin(
+                            block.as_deref_mut(),
+                            left,
+                            right,
+                            changes,
+                            context,
+                            deadline,
+                        );
+                    }
                 }
                 continue;
             }
@@ -1237,7 +1662,7 @@ impl NodePlayer {
                 evaluate(
                     &state.params,
                     effect_params(state.kind),
-                    point.beat,
+                    point.beat - behind,
                     &mut plain,
                 );
                 effect.set_params(&plain);
@@ -1261,7 +1686,8 @@ impl NodePlayer {
                 self.bus_right[i] *= self.gain_right.next_value();
             }
             if let Some(point) = point {
-                self.update_channel(node, point.beat);
+                let behind = f64::from(node.comp.channel) * self.chunk.beats_per_frame;
+                self.update_channel(node, point.beat - behind);
             }
             from = to;
         }
@@ -1287,8 +1713,12 @@ impl NodePlayer {
             if let Some(pending) = *slot
                 && transport.frames_until(pending.end_beats) <= 0
             {
-                for (_, instrument) in &mut self.instruments {
-                    instrument.note_off(pending.note_id);
+                for ((_, instrument), notes) in self
+                    .instruments
+                    .iter_mut()
+                    .zip(self.plugin_notes.iter_mut())
+                {
+                    instrument.note_off(pending.note_id, self.at, notes);
                 }
                 *slot = None;
             }
@@ -1309,17 +1739,26 @@ impl NodePlayer {
                     .filter_map(|(i, p)| p.map(|p| (i, p)))
                     .min_by(|(_, a), (_, b)| a.end_beats.total_cmp(&b.end_beats))
                     .unwrap_or((0, PendingEnd { note_id, end_beats }));
-                for (_, instrument) in &mut self.instruments {
-                    instrument.note_off(soonest.note_id);
+                for ((_, instrument), notes) in self
+                    .instruments
+                    .iter_mut()
+                    .zip(self.plugin_notes.iter_mut())
+                {
+                    instrument.note_off(soonest.note_id, self.at, notes);
                 }
                 slot
             }
         };
         self.pending_ends[slot] = Some(PendingEnd { note_id, end_beats });
         // Each instrument plays only its own notes.
-        for ((_, instrument), state) in self.instruments.iter_mut().zip(&node.instruments) {
+        for (((_, instrument), state), notes) in self
+            .instruments
+            .iter_mut()
+            .zip(&node.instruments)
+            .zip(self.plugin_notes.iter_mut())
+        {
             if state.plays.contains(pitch) {
-                instrument.note_on(note_id, pitch, velocity);
+                instrument.note_on(note_id, pitch, velocity, self.at, notes);
             }
         }
     }
@@ -1351,10 +1790,75 @@ impl NodePlayer {
     }
 
     fn release_all(&mut self) {
-        for (_, instrument) in &mut self.instruments {
-            instrument.release_all();
+        for ((_, instrument), notes) in self
+            .instruments
+            .iter_mut()
+            .zip(self.plugin_notes.iter_mut())
+        {
+            instrument.release_all(self.at, notes);
         }
         self.pending_ends = [None; MAX_PENDING_ENDS];
+    }
+
+    /// Plays the plugin instruments over the chunk, after the built-in
+    /// ones: each takes its notes at their frames and its parameters at the
+    /// chunk's control points, and joins the bus. Silent while it has no
+    /// channel, is late or its process is gone.
+    fn play_plugins(
+        &mut self,
+        node: &NodeRender,
+        frames: usize,
+        context: PluginContext,
+        deadline: Option<Instant>,
+    ) {
+        let controls = &self.controls[..self.control_count];
+        for (index, (((_, instrument), state), notes)) in self
+            .instruments
+            .iter_mut()
+            .zip(&node.instruments)
+            .zip(self.plugin_notes.iter_mut())
+            .enumerate()
+        {
+            let InstrumentInstance::Plugin(plugin) = instrument else {
+                continue;
+            };
+            let count = plugin_changes(
+                &state.plugin_params,
+                controls,
+                0.0,
+                &mut *self.plugin_changes,
+            );
+            let left = &mut self.scratch_left[..frames];
+            let right = &mut self.scratch_right[..frames];
+            let done = plugin.block.as_deref_mut().is_some_and(|block| {
+                block.process_with_notes(
+                    &[],
+                    &self.plugin_changes[..count],
+                    &notes.events[..notes.count],
+                    context,
+                    &mut [&mut *left, &mut *right],
+                    deadline,
+                ) == Outcome::Done
+            });
+            notes.count = 0;
+            if !done {
+                left.fill(0.0);
+                right.fill(0.0);
+            }
+            // It waits for the node's slowest source.
+            if let Some(delays) = &mut self.delays {
+                let wait = node.comp.instruments.get(index).copied().unwrap_or(0);
+                delays.instruments[index].process(left, right, wait as usize);
+            }
+            if done && node.instrument_on && state.enabled {
+                for (to, from) in self.bus_left[..frames].iter_mut().zip(left.iter()) {
+                    *to += *from;
+                }
+                for (to, from) in self.bus_right[..frames].iter_mut().zip(right.iter()) {
+                    *to += *from;
+                }
+            }
+        }
     }
 }
 
@@ -1403,6 +1907,7 @@ mod tests {
             48_000,
             2,
             1,
+            true,
             state(100.0),
             AudioQueues {
                 from_control,
@@ -1439,6 +1944,7 @@ mod tests {
             48_000,
             2,
             1,
+            true,
             state(120.0),
             AudioQueues {
                 from_control,
@@ -1524,7 +2030,7 @@ mod tests {
             })
             .collect();
         let mut out = [ParamChange::default(); 8];
-        let count = plugin_changes(&params, &controls, &mut out);
+        let count = plugin_changes(&params, &controls, 0.0, &mut out);
         let sent: Vec<(u32, u32)> = out[..count].iter().map(|c| (c.id, c.offset)).collect();
         // The resting one once; the moving one at its start, then where it
         // moves (beats 0 and 0.5 are both before the block).
@@ -1532,6 +2038,6 @@ mod tests {
         assert_eq!(out[0].value, 0.25);
         assert!(out[3].value > out[2].value);
         // Out of room, the rest is dropped.
-        assert_eq!(plugin_changes(&params, &controls, &mut out[..2]), 2);
+        assert_eq!(plugin_changes(&params, &controls, 0.0, &mut out[..2]), 2);
     }
 }

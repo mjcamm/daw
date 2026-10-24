@@ -86,9 +86,9 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 - **Picking** (agreed with the user): "+ Add Parameter" on a plugin opens a searchable dropdown (`daw-ui/src/param_picker.rs`): ungrouped parameters first, then each group under a heading in the plugin's order; arrows, Enter, Escape, a click outside closes; parameters with layers aren't offered. Choosing one goes on to its first layer's type as for built-in devices; the parameter joins the song with that layer in one `Edit::Batch` (one undo), resting at the plugin's current value. Values show as percentages until the plugin's own value text comes with editor windows.
 - **Learn (wiggle the knob):** while armed, the first parameter the user touches in the plugin's window (`beginEdit` / `performEdit` from the plugin, forwarded over the control channel) is added. Mouse-wheel moves may come without `beginEdit`.
 - **Knob moves edit the resting value** (as for built-in devices): a `beginEdit` … `endEdit` gesture becomes one undoable edit of the default state. Not recording; that stays a later, armed mode.
-- **Automation delivery** (built): layers are evaluated on the 32-frame control grid; each chunk sends every song parameter's first value, then a point wherever it changes (`audio.rs`, `plugin_changes`), in the shared parameter area (512 changes a block; more are dropped), rebuilt into `IParamValueQueue`s (sample accurate to the grid). A parameter at rest costs one change per chunk, so the plugin always follows the song. Still to come: the plugin's window following along through `setParamNormalized` on the controller at UI rate.
-- **`restartComponent`:** titles or flags changed: rescan parameter info; values changed: re-read values; latency changed: re-plan delay compensation; I/O changed: redo the bus setup (outside the audio callback); reload: deactivate, reload state, reactivate.
-- **Bypass:** a plugin's own bypass parameter (`kIsBypass`) is used when it has one, so its latency stays constant; otherwise the host stops calling it and passes sound through, delayed by its latency.
+- **Automation delivery** (built): layers are evaluated on the 32-frame control grid; each chunk sends every song parameter's first value, then a point wherever it changes (`audio.rs`, `plugin_changes`), in the shared parameter area (512 changes a block; more are dropped), rebuilt into `IParamValueQueue`s (sample accurate to the grid). A parameter at rest costs one change per chunk, so the plugin always follows the song. The plugin's window follows along (Editor windows, below).
+- **`restartComponent`** (built 2026-10-23, control protocol 7): the host forwards it (`HostEvent::Restart` with VST3's flags), except while it is activating the plugin itself (latency is read right after). A new latency, new buses or a reload: the plugin is activated again (a fresh channel; `GetLatency` again) and the song re-lined; new parameter titles, values or ids: its list is read again. The handler ignores calls from any thread but the host's main thread (some plugins call from their audio thread).
+- **Bypass** (built 2026-10-23): switching a plugin effect off on its slot uses its own bypass parameter when it has one (`PluginParamInfo::bypass`): it keeps running with that parameter on, and when switched on again it is turned off once (so the plugin's own bypass button stays the user's). Without one the plugin is not run and the sound passes through a delay as long as its latency. Either way the timing stays.
 
 ## State
 
@@ -100,11 +100,25 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 - The engine remembers each plugin effect's last known state, also when the effect is deleted, so undo brings it back as it was.
 - `.vstpreset` import and export later (format is documented: header "VST3", class id, chunk list).
 
+## Instruments
+
+*Built (2026-10-23): file version 19, block layout 2; tests `daw-plugins/tests/vst3_instrument.rs` (Test Synth alone and in a song), `ui_tests/browser.rs`; the user's Serum 2 plays a chord with no late blocks (`installed_plugins.rs`, opt-in).*
+
+- An instrument can be a plugin: `InstrumentKind::Plugin` with `Instrument::plugin` (a `PluginSpec`) and `plugin_params`, exactly as for effects: chosen in the browser under "+ Instrument" → Plugins, layered with the node's other instruments, saved with its state and window place, its parameters picked from the list or learned, its window opened by double-clicking its slot. It plays every note (`plays` is all pitches). Device ids are project-wide, so `plugins.rs` keeps instruments and effects in one map; `Edit::AddPluginParam`, `Command::OpenPluginWindow` and `Command::LearnPluginParam` name a `device`.
+- **Notes:** the shared block has a fixed note-event area (`NoteEvent`: frame offset, note id, pitch, on or off, velocity `0..=1`; 512 a block). On the audio side a plugin instrument queues each start and end at its frame within the chunk (`ChunkNotes`, 256 per instrument a chunk; previews come at the chunk's start), keeps up to 64 sounding notes so an end or "end everything" (stop, locate, loop jump) can name its pitch, and plays the whole chunk after the built-in instruments (`NodePlayer::play_plugins`), its parameters on the control grid as for effects. The host fills a preallocated `IEventList` (`EventList`) from the block. Output joins the node's bus; it is silent while the plugin has no channel, is late or has crashed.
+- Instruments have no audio input; the block still has stereo inputs (unused), so effects and instruments share one layout.
+
 ## Editor windows
 
-- Opened from the plugin's slot (layout to be agreed). The host process makes a native top-level window and attaches the plugin's view to it; the plugin and the user can resize it (`vst3-notes.md`, Editor). Content scale follows the screen.
-- **Staying above the DAW, without linking windows:** measured on Windows, a plugin window owned by the DAW's window (across processes) froze the DAW's UI for as long as the plugin hung (`vst3-notes.md`). So windows stay unlinked: the DAW tells host processes when it becomes or stops being the active app, and they keep their windows above it while it is.
-- Window positions are remembered per plugin instance. Closing the window leaves the plugin running.
+*Built (2026-10-23; agreed with the user): `daw-plugins/src/editor.rs`, control protocol 5; tests `daw-plugins/tests/vst3_editor.rs`, `vst3_effect.rs` (learn and turns), `ui_tests/plugin_params.rs`. All seven of the user's tried effects open (OTT 310 × 440 in 22 ms … Serum 2 FX 1190 × 740 in 1.5 s), `tests/installed_plugins.rs`.*
+
+- **Opening** (the user's call): double-click a plugin's slot on a mixer strip (`Command::OpenPluginWindow`). Each plugin has its own window and any number can be open. Title "OTT — Bass" (the plugin, then its node). The DAW asks without waiting (`HostProcess::start_open_editor`; Serum takes 1.5 s) and the answer arrives with the host's events; `PluginSnapshot::window` says Open, Closed, or why it failed, and the slot's tooltip shows that ("Double-click to open OTT", "Couldn't open OTT's window: …"). Opening an open window brings it to the front; the DAW lets the host take the foreground (`AllowSetForegroundWindow`) as it asks.
+- **The window** is the host process's own top-level window (a tool window: no taskbar button), first placed just below and right of the mouse and kept on that screen. **Where it is goes into the song** (`EffectFile::window`, by effect; reported by the host as `HostEvent::EditorMoved` when placed and whenever the user lets go after moving it), so it reopens there, also after a restart. Its title follows its node's name (`Request::SetEditorTitle` after any edit). Closing it leaves the plugin running; the DAW hears (`HostEvent::EditorClosed`).
+- **Resizing:** the plugin asks with `IPlugFrame::resizeView` (the window resizes, then `onSize`). If `canResize`, the window has a sizing border; dragging an edge keeps to `checkSizeConstraint`, and any resize from outside tells the plugin `onSize`. The host process is per-monitor DPI aware: `setContentScaleFactor` before `attached` and on `WM_DPICHANGED` (taking Windows' suggested rectangle).
+- **Staying above the DAW, without linking windows:** measured on Windows, a plugin window owned by the DAW's window (across processes) froze the DAW's UI for as long as the plugin hung (`vst3-notes.md`). So windows stay unlinked: the host learns the DAW's process id in `Hello` and listens for foreground changes (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`, out of context, skipping its own windows). When one of the DAW's own unowned windows comes forward (the user clicked the DAW), its plugin windows are lifted just above it without taking focus (`editor::stacking`). Nothing is topmost: the DAW's dialogs (file pickers, owned by its window) come up above plugin windows, and other apps cover them as usual.
+- **The host's main thread** runs a Windows message loop: messages from the DAW are read on their own thread and wake the loop (`sys::pump_until`), so waiting for the DAW never stops plugin windows. Every 30 ms round it sends what the plugins reported and shows the song's latest values in their windows (`Vst3State::follow`: the audio thread records each value it sends in a lock-free `ParamMirror`; `setParamNormalized` on the controller, skipping knobs the user holds).
+- **Knob moves** (`IComponentHandler`): `performEdit` goes to the processor through a lock-free queue (as the block's first points) and to the DAW (`HostEvent::EditBegin / EditValue / EditEnd`). In the engine (`Engine::window_edits`), a turn of a parameter in the song moves its resting value as it goes and is **one undo step** (`History::record`); moves without begin and end (a mouse wheel) count as one turn until they pause for 0.5 s. Moves of other parameters only change the plugin (kept in its state).
+- **Learn** (the user's call): "Learn" beside a plugin's "+ Add Parameter" on Parameters opens its window and arms learning (`Command::LearnPluginParam`, `PluginSnapshot::learning`; it reads "Learning: turn a knob in OTT", click again to stop). When the first turned parameter that isn't shown yet finishes its turn, it joins the song resting where it was left, with a drawn "Layer 1" (one undo), and learning stops.
 - The same window host later serves the app's own native plugins' editors.
 
 ## Scanning
@@ -117,9 +131,9 @@ The host process follows Steinberg's call order and threading rules exactly: `do
 - Folders: the standard ones per platform (Windows: `%LOCALAPPDATA%\Programs\Common\VST3`, `C:\Program Files\Common Files\VST3`), searched recursively; extra folders can be added in Preferences.
 - When: in the background at startup, and a Rescan button in Preferences. Plugins that failed to scan are listed with the reason and can be retried.
 
-## Delay compensation (needed with plugins)
+## Delay compensation
 
-Many plugins report latency (`getLatencySamples`). The engine has none yet, and the tree makes it matter: a parent sums children whose chains have different latencies. Plan: each node's latency is its chain's sum plus the most-delayed child; shorter children are delayed to match at each sum; the transport runs ahead by the song's total latency so audio still lines up with the playhead, and signals and automation are read at the compensated time. Its own design note when built.
+*Built (2026-10-23): `delay-compensation.md` has the rule and how it runs.* Each plugin's latency is asked after activation (`Request::GetLatency`, control protocol 6); nodes line up at every sum, automation follows the sound, the playhead shows what is heard, and renders to a file start the latency in.
 
 ## Testing
 
@@ -133,10 +147,10 @@ Many plugins report latency (`getLatencySamples`). The engine has none yet, and 
 1. **IPC and host process with built-in test devices** (no VST3 yet), **built**: the hand-off, deadlines, crash and hang detection (`daw-plugins`, tested with real processes); the engine's plugin effect, live deadlines (70% of each block) and offline waiting, Reload, states in the snapshot (`daw-plugins/tests/engine.rs`); the app and player as their own host (`daw_host::plugins`). Process groups other than Together come with the Preferences page.
 2. **Scanner** and Preferences → Plugins (built). The browser modal comes with step 3, so plugins can be added the moment they show.
 3. **Effects:** load, buses, process (**built**: `vst3_host.rs`, `PluginSpec::Vst3`; tested with the test plugin alone and in a song, and with seven installed commercial effects), state and the modal browser (**built**), parameters picked from a list and moved by layers (**built**).
-4. **Instruments:** note events, multiple outputs later.
-5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn.
-6. **Delay compensation.**
-7. `restartComponent` handling, bypass, presets, diagnostics.
+4. **Instruments:** note events (**built**, 2026-10-23); multiple outputs later.
+5. **Editor windows:** floating, staying above the DAW, resizing, knob moves as resting values, learn (**built**, done before step 4 at the user's call).
+6. **Delay compensation** (**built**, `delay-compensation.md`).
+7. `restartComponent` handling and bypass (**built**), presets, diagnostics.
 
 ## Still to decide
 

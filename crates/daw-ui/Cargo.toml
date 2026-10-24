@@ -21,6 +21,10 @@ daw-rt.workspace = true
 gpui = "0.2.2"
 unicode-segmentation.workspace = true
 
+[dev-dependencies]
+# The export UI test reads its file back.
+hound.workspace = true
+
 [lints]
 workspace = true
 

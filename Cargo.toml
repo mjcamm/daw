@@ -26,6 +26,7 @@ audio_thread_priority = { version = "0.35.1", default-features = false }
 cpal = { version = "0.18.2", features = ["realtime"] }
 dirs = "7.0.0"
 hound = "3.5.1"
+mp3lame-encoder = "0.2.5"
 rtrb = "0.4.0"
 rubato = "5.0.1"
 serde = { version = "1.0.229", features = ["derive"] }

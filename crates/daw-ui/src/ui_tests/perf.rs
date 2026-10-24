@@ -347,6 +347,17 @@ fn perf_browser() {
     check("browser", t, 6., 20.);
 }
 
+/// The export dialog open over Arrange.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_export() {
+    let mut h = Harness::new("perf-export");
+    heavy_song(&mut h);
+    h.keys("ctrl-e");
+    let t = measure(&mut h, "export");
+    check("export", t, 2., 6.);
+}
+
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timings need a release build")]
 fn perf_parameters() {
@@ -387,6 +398,7 @@ fn perf_param_picker() {
             unit: String::new(),
             steps: 0,
             value: 0.5,
+            bypass: false,
         })
         .collect();
     h.view.update(h.cx, |view, _| {

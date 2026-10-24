@@ -8,7 +8,7 @@
 
 use crate::block::{DawBlock, Layout, Names};
 use crate::control::{
-    FromHost, PROTOCOL, PluginData, PluginParamInfo, PluginSpec, Reply, Request, ToHost,
+    FromHost, HostEvent, PROTOCOL, PluginData, PluginParamInfo, PluginSpec, Reply, Request, ToHost,
     read_message, write_message,
 };
 use crate::sys::Job;
@@ -71,6 +71,10 @@ pub struct HostProcess {
     child: Child,
     stdin: BufWriter<ChildStdin>,
     replies: Receiver<FromHost>,
+    /// Events that came in while waiting for a reply.
+    events: Vec<HostEvent>,
+    /// Replies to calls nobody waits for ([`HostProcess::start_open_editor`]).
+    late: Vec<(u64, Result<Reply, String>)>,
     alive: Arc<AtomicBool>,
     next_call: u64,
     pid: u32,
@@ -117,12 +121,17 @@ impl HostProcess {
             child,
             stdin: BufWriter::new(stdin),
             replies,
+            events: Vec::new(),
+            late: Vec::new(),
             alive,
             next_call: 0,
             pid: 0,
             _job: job,
         };
-        host.send(&ToHost::Hello { protocol: PROTOCOL })?;
+        host.send(&ToHost::Hello {
+            protocol: PROTOCOL,
+            daw_pid: std::process::id(),
+        })?;
         match host.replies.recv_timeout(CALL_TIMEOUT) {
             Ok(FromHost::Ready { protocol, pid }) if protocol == PROTOCOL => host.pid = pid,
             Ok(other) => return Err(HostError::Protocol(format!("{other:?}"))),
@@ -194,6 +203,86 @@ impl HostProcess {
         Ok(block)
     }
 
+    /// Opens the plugin's window (or brings it to the front) and waits:
+    /// its content size in pixels.
+    pub fn open_editor(
+        &mut self,
+        instance: u64,
+        title: &str,
+        at: Option<(i32, i32)>,
+    ) -> Result<(u32, u32), HostError> {
+        let call = self.start_open_editor(instance, title, at)?;
+        match self.wait_for(call)? {
+            Reply::Editor { width, height } => Ok((width, height)),
+            other => Err(HostError::Protocol(format!("{other:?}"))),
+        }
+    }
+
+    /// Asks for the plugin's window without waiting (some take a second or
+    /// two to open): the reply comes from [`HostProcess::take_replies`]
+    /// under the returned call id.
+    pub fn start_open_editor(
+        &mut self,
+        instance: u64,
+        title: &str,
+        at: Option<(i32, i32)>,
+    ) -> Result<u64, HostError> {
+        // The DAW is in front (the user just asked): let the host's window
+        // come in front of it.
+        crate::sys::allow_foreground(self.pid);
+        self.start_call(Request::OpenEditor {
+            instance,
+            title: title.to_owned(),
+            at,
+        })
+    }
+
+    /// Renames the plugin's window, if open, without waiting.
+    pub fn retitle_editor(&mut self, instance: u64, title: &str) -> Result<(), HostError> {
+        self.start_call(Request::SetEditorTitle {
+            instance,
+            title: title.to_owned(),
+        })
+        .map(drop)
+    }
+
+    /// Replies to calls started without waiting. Never blocks.
+    pub fn take_replies(&mut self) -> Vec<(u64, Result<Reply, String>)> {
+        self.drain();
+        std::mem::take(&mut self.late)
+    }
+
+    pub fn close_editor(&mut self, instance: u64) -> Result<(), HostError> {
+        self.call(Request::CloseEditor { instance }).map(drop)
+    }
+
+    /// What the host reported since last asked (knobs moved in plugin
+    /// windows, windows closed). Never blocks.
+    pub fn take_events(&mut self) -> Vec<HostEvent> {
+        self.drain();
+        std::mem::take(&mut self.events)
+    }
+
+    /// Sorts what has arrived, without waiting.
+    fn drain(&mut self) {
+        while let Ok(message) = self.replies.try_recv() {
+            match message {
+                FromHost::Event(event) => self.events.push(event),
+                FromHost::Reply { id, result } => self.late.push((id, result)),
+                FromHost::Ready { .. } => {}
+            }
+        }
+    }
+
+    /// How late the instance's sound comes out, in frames (after
+    /// activating).
+    pub fn latency(&mut self, instance: u64) -> Result<u32, HostError> {
+        match self.call(Request::GetLatency { instance })? {
+            Reply::Latency(frames) => Ok(frames),
+            _ => Ok(0),
+        }
+    }
+
     pub fn deactivate(&mut self, instance: u64) -> Result<(), HostError> {
         self.call(Request::Deactivate { instance }).map(drop)
     }
@@ -217,9 +306,18 @@ impl HostProcess {
     }
 
     fn call(&mut self, request: Request) -> Result<Reply, HostError> {
+        let id = self.start_call(request)?;
+        self.wait_for(id)
+    }
+
+    fn start_call(&mut self, request: Request) -> Result<u64, HostError> {
         self.next_call += 1;
         let id = self.next_call;
         self.send(&ToHost::Call { id, request })?;
+        Ok(id)
+    }
+
+    fn wait_for(&mut self, id: u64) -> Result<Reply, HostError> {
         let until = Instant::now() + CALL_TIMEOUT;
         loop {
             let left = until.saturating_duration_since(Instant::now());
@@ -227,6 +325,8 @@ impl HostProcess {
                 Ok(FromHost::Reply { id: got, result }) if got == id => {
                     return result.map_err(HostError::Refused);
                 }
+                Ok(FromHost::Reply { id: got, result }) => self.late.push((got, result)),
+                Ok(FromHost::Event(event)) => self.events.push(event),
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => return Err(HostError::TimedOut),
                 Err(RecvTimeoutError::Disconnected) => return Err(HostError::Gone),

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 /// Bump when messages change; the host refuses a different one.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 7;
 
 /// Largest message accepted, so a garbled length can't allocate gigabytes.
 const MAX_MESSAGE: u32 = 64 << 20;
@@ -45,6 +45,28 @@ pub enum Request {
     GetParams {
         instance: u64,
     },
+    /// Opens the plugin's window ([`Reply::Editor`]), or brings it to the
+    /// front if it is open.
+    OpenEditor {
+        instance: u64,
+        title: String,
+        /// Where its top-left corner goes (screen pixels), as the song
+        /// remembers it; `None`: where it was, or near the mouse.
+        at: Option<(i32, i32)>,
+    },
+    /// How late the instance's sound comes out, in frames
+    /// ([`Reply::Latency`]); asked after activating.
+    GetLatency {
+        instance: u64,
+    },
+    /// Renames the plugin's window, if open.
+    SetEditorTitle {
+        instance: u64,
+        title: String,
+    },
+    CloseEditor {
+        instance: u64,
+    },
 }
 
 /// What a call answers with.
@@ -54,12 +76,67 @@ pub enum Reply {
     /// `None` for a device without state.
     State(Option<PluginData>),
     Params(Vec<PluginParamInfo>),
+    Latency(u32),
+    /// The window's content size, in pixels.
+    Editor {
+        width: u32,
+        height: u32,
+    },
+}
+
+/// VST3's `RestartFlags`, as [`HostEvent::Restart`] carries them.
+pub mod restart {
+    pub const RELOAD: i32 = 1;
+    pub const IO: i32 = 2;
+    pub const PARAM_VALUES: i32 = 4;
+    pub const LATENCY: i32 = 8;
+    pub const PARAM_TITLES: i32 = 16;
+    pub const PARAM_IDS: i32 = 2048;
+}
+
+/// What a host tells the DAW without being asked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum HostEvent {
+    /// The user started moving a parameter in the plugin's window.
+    EditBegin {
+        instance: u64,
+        id: u32,
+    },
+    /// A parameter moved in the plugin's window (some moves, such as the
+    /// mouse wheel, come without a begin and end).
+    EditValue {
+        instance: u64,
+        id: u32,
+        value: f64,
+    },
+    EditEnd {
+        instance: u64,
+        id: u32,
+    },
+    /// The user closed the plugin's window.
+    EditorClosed {
+        instance: u64,
+    },
+    /// The plugin asks for a restart (`restartComponent`): its latency,
+    /// buses or parameters changed. Flags as VST3's `RestartFlags`.
+    Restart {
+        instance: u64,
+        flags: i32,
+    },
+    /// The plugin's window was placed or moved: its top-left corner.
+    EditorMoved {
+        instance: u64,
+        at: (i32, i32),
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ToHost {
     Hello {
         protocol: u32,
+        /// The DAW's process: plugin windows stay above it while it is
+        /// the active app.
+        daw_pid: u32,
     },
     Call {
         id: u64,
@@ -79,6 +156,7 @@ pub enum FromHost {
         id: u64,
         result: Result<Reply, String>,
     },
+    Event(HostEvent),
 }
 
 pub fn write_message(to: &mut impl Write, message: &impl Serialize) -> io::Result<()> {

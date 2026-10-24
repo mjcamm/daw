@@ -54,8 +54,11 @@ pub fn render_to_file(path: &Path, bars: u32) -> Result<()> {
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
+    // The song comes out late by its plugins' latency: the file starts that
+    // far in, so it lines up with the song (the tail covers the end).
+    let late = (processor.latency() as usize * channels).min(samples.len());
     let mut writer = hound::WavWriter::create(path, spec)?;
-    for &sample in &samples {
+    for &sample in &samples[late..] {
         writer.write_sample(sample)?;
     }
     writer.finalize()?;

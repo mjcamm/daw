@@ -143,7 +143,14 @@ impl NodeExt for Node {
     fn devices(&self) -> impl Iterator<Item = (DeviceRef, DeviceParams<'_>)> {
         self.instruments
             .iter()
-            .map(|(id, i)| (DeviceRef::Instrument(*id), DeviceParams::Indexed(&i.params)))
+            .map(|(id, i)| {
+                let params = if i.kind == InstrumentKind::Plugin {
+                    DeviceParams::Plugin(&i.plugin_params)
+                } else {
+                    DeviceParams::Indexed(&i.params)
+                };
+                (DeviceRef::Instrument(*id), params)
+            })
             .chain(self.effects.iter().map(|(id, e)| {
                 let params = if e.kind == EffectKind::Plugin {
                     DeviceParams::Plugin(&e.plugin_params)
@@ -170,7 +177,18 @@ impl NodeExt for Node {
 
     fn param_state(&self, device: DeviceRef, index: u32) -> Option<&ParamState> {
         match device {
-            DeviceRef::Instrument(id) => self.instrument(id)?.1.params.get(index as usize),
+            DeviceRef::Instrument(id) => {
+                let (_, instrument) = self.instrument(id)?;
+                if instrument.kind == InstrumentKind::Plugin {
+                    instrument
+                        .plugin_params
+                        .iter()
+                        .find(|p| p.id == index)
+                        .map(|p| &p.state)
+                } else {
+                    instrument.params.get(index as usize)
+                }
+            }
             DeviceRef::Channel => self.channel.get(index as usize),
             DeviceRef::Effect(id) => {
                 let (_, effect) = self.effect(id)?;
@@ -189,13 +207,18 @@ impl NodeExt for Node {
 
     fn param_state_mut(&mut self, device: DeviceRef, index: u32) -> Option<&mut ParamState> {
         match device {
-            DeviceRef::Instrument(id) => self
-                .instruments
-                .iter_mut()
-                .find(|(i, _)| *i == id)?
-                .1
-                .params
-                .get_mut(index as usize),
+            DeviceRef::Instrument(id) => {
+                let instrument = &mut self.instruments.iter_mut().find(|(i, _)| *i == id)?.1;
+                if instrument.kind == InstrumentKind::Plugin {
+                    instrument
+                        .plugin_params
+                        .iter_mut()
+                        .find(|p| p.id == index)
+                        .map(|p| &mut p.state)
+                } else {
+                    instrument.params.get_mut(index as usize)
+                }
+            }
             DeviceRef::Channel => self.channel.get_mut(index as usize),
             DeviceRef::Effect(id) => {
                 let effect = &mut self.effects.iter_mut().find(|(e, _)| *e == id)?.1;
@@ -367,19 +390,33 @@ impl Project {
         Ok(())
     }
 
+    /// A plugin effect's or instrument's parameters in the song, and
+    /// whether it is a plugin.
     fn plugin_params_mut(
         &mut self,
-        effect: DeviceId,
-    ) -> Result<&mut Vec<PluginParam>, CommandError> {
+        device: DeviceId,
+    ) -> Result<(&mut Vec<PluginParam>, bool), CommandError> {
         let node = self
-            .effect_node(effect)
-            .ok_or(CommandError::UnknownDevice { id: effect })?;
-        self.node_or_err(node)?
-            .effects
+            .device_node(device)
+            .ok_or(CommandError::UnknownDevice { id: device })?;
+        let node = self.node_or_err(node)?;
+        if let Some((_, e)) = node.effects.iter_mut().find(|(id, _)| *id == device) {
+            let plugin = e.kind == EffectKind::Plugin;
+            return Ok((&mut e.plugin_params, plugin));
+        }
+        node.instruments
             .iter_mut()
-            .find(|(id, _)| *id == effect)
-            .map(|(_, e)| &mut e.plugin_params)
-            .ok_or(CommandError::UnknownDevice { id: effect })
+            .find(|(id, _)| *id == device)
+            .map(|(_, i)| {
+                let plugin = i.kind == InstrumentKind::Plugin;
+                (&mut i.plugin_params, plugin)
+            })
+            .ok_or(CommandError::UnknownDevice { id: device })
+    }
+
+    /// The node holding an effect or an instrument.
+    pub fn device_node(&self, id: DeviceId) -> Option<NodeId> {
+        self.effect_node(id).or_else(|| self.instrument_node(id))
     }
 
     fn node_or_err(&mut self, id: NodeId) -> Result<&mut Node, CommandError> {
@@ -536,6 +573,18 @@ impl Project {
     }
 
     /// Every id in use anywhere in the project.
+    /// A layer id no layer uses yet.
+    pub fn next_layer_id(&self) -> LayerId {
+        LayerId(
+            self.used_ids()
+                .layers
+                .iter()
+                .map(|l| l.0 + 1)
+                .max()
+                .unwrap_or(1),
+        )
+    }
+
     fn used_ids(&self) -> UsedIds {
         let mut used = UsedIds::default();
         for entry in self.nodes() {
@@ -892,35 +941,30 @@ impl Project {
                     value: previous,
                 })
             }
-            Edit::AddPluginParam { effect, mut param } => {
-                let target = self
-                    .effect_node(effect)
-                    .and_then(|node| self.node(node))
-                    .and_then(|node| node.effect(effect))
-                    .map(|(_, e)| e)
-                    .ok_or(CommandError::UnknownDevice { id: effect })?;
-                if target.kind != EffectKind::Plugin {
-                    return Err(CommandError::NotAPlugin { id: effect });
+            Edit::AddPluginParam { device, mut param } => {
+                let mut used = self.used_ids();
+                prepare_state(&mut param.state, &mut used, &self.signals)?;
+                let (params, plugin) = self.plugin_params_mut(device)?;
+                if !plugin {
+                    return Err(CommandError::NotAPlugin { id: device });
                 }
-                if target.plugin_params.iter().any(|p| p.id == param.id) {
+                if params.iter().any(|p| p.id == param.id) {
                     return Err(CommandError::DuplicatePluginParam {
-                        effect,
+                        device,
                         id: param.id,
                     });
                 }
-                if target.plugin_params.len() >= MAX_PLUGIN_PARAMS {
+                if params.len() >= MAX_PLUGIN_PARAMS {
                     return Err(CommandError::TooManyPluginParams {
                         max: MAX_PLUGIN_PARAMS,
                     });
                 }
-                let mut used = self.used_ids();
-                prepare_state(&mut param.state, &mut used, &self.signals)?;
                 let id = param.id;
-                self.plugin_params_mut(effect)?.push(param);
-                Ok(Edit::RemovePluginParam { effect, id })
+                params.push(param);
+                Ok(Edit::RemovePluginParam { device, id })
             }
-            Edit::RemovePluginParam { effect, id } => {
-                let params = self.plugin_params_mut(effect)?;
+            Edit::RemovePluginParam { device: effect, id } => {
+                let (params, _) = self.plugin_params_mut(effect)?;
                 let index =
                     params
                         .iter()
@@ -933,10 +977,13 @@ impl Project {
                             },
                         })?;
                 if !params[index].state.layers.is_empty() {
-                    return Err(CommandError::PluginParamInUse { effect, id });
+                    return Err(CommandError::PluginParamInUse { device: effect, id });
                 }
                 let param = params.remove(index);
-                Ok(Edit::AddPluginParam { effect, param })
+                Ok(Edit::AddPluginParam {
+                    device: effect,
+                    param,
+                })
             }
             Edit::AddEffect {
                 node,
@@ -961,7 +1008,13 @@ impl Project {
                     &mut used,
                     &self.signals,
                 )?;
-                prepare_plugin_params(id, &mut effect, &mut used, &self.signals)?;
+                prepare_plugin_params(
+                    id,
+                    effect.kind == EffectKind::Plugin,
+                    &mut effect.plugin_params,
+                    &mut used,
+                    &self.signals,
+                )?;
                 self.node_or_err(node)?.effects.insert(index, (id, effect));
                 Ok(Edit::RemoveEffect { id })
             }
@@ -1008,6 +1061,14 @@ impl Project {
                 prepare_params(
                     &mut instrument.params,
                     instrument_params(instrument.kind),
+                    &mut used,
+                    &self.signals,
+                )?;
+                check_instrument_plugin(id, &instrument)?;
+                prepare_plugin_params(
+                    id,
+                    instrument.kind == InstrumentKind::Plugin,
+                    &mut instrument.plugin_params,
                     &mut used,
                     &self.signals,
                 )?;
@@ -1377,9 +1438,17 @@ fn prepare_node(
     }
     for (instrument_id, instrument) in &mut node.instruments {
         used.claim_device(*instrument_id)?;
+        check_instrument_plugin(*instrument_id, instrument)?;
         prepare_params(
             &mut instrument.params,
             instrument_params(instrument.kind),
+            used,
+            signals,
+        )?;
+        prepare_plugin_params(
+            *instrument_id,
+            instrument.kind == InstrumentKind::Plugin,
+            &mut instrument.plugin_params,
             used,
             signals,
         )?;
@@ -1397,7 +1466,13 @@ fn prepare_node(
             used,
             signals,
         )?;
-        prepare_plugin_params(*effect_id, effect, used, signals)?;
+        prepare_plugin_params(
+            *effect_id,
+            effect.kind == EffectKind::Plugin,
+            &mut effect.plugin_params,
+            used,
+            signals,
+        )?;
     }
     if node.kind == NodeKind::Audio && !node.instruments.is_empty() {
         return Err(CommandError::InstrumentOnAudio { node: id });
@@ -1466,26 +1541,27 @@ fn prepare_state(
 /// them, each id once, at most [`MAX_PLUGIN_PARAMS`].
 fn prepare_plugin_params(
     id: DeviceId,
-    effect: &mut Effect,
+    is_plugin: bool,
+    params: &mut [PluginParam],
     used: &mut UsedIds,
     signals: &BTreeMap<SignalId, Signal>,
 ) -> Result<(), CommandError> {
-    if effect.plugin_params.is_empty() {
+    if params.is_empty() {
         return Ok(());
     }
-    if effect.kind != EffectKind::Plugin {
+    if !is_plugin {
         return Err(CommandError::NotAPlugin { id });
     }
-    if effect.plugin_params.len() > MAX_PLUGIN_PARAMS {
+    if params.len() > MAX_PLUGIN_PARAMS {
         return Err(CommandError::TooManyPluginParams {
             max: MAX_PLUGIN_PARAMS,
         });
     }
     let mut seen = HashSet::new();
-    for param in &mut effect.plugin_params {
+    for param in params {
         if !seen.insert(param.id) {
             return Err(CommandError::DuplicatePluginParam {
-                effect: id,
+                device: id,
                 id: param.id,
             });
         }
@@ -1509,6 +1585,15 @@ fn check_normalized(value: f64) -> Result<(), CommandError> {
         Ok(())
     } else {
         Err(CommandError::ValueOutOfRange { value })
+    }
+}
+
+/// A plugin instrument names its plugin, and nothing else names one.
+fn check_instrument_plugin(id: DeviceId, instrument: &Instrument) -> Result<(), CommandError> {
+    if (instrument.kind == InstrumentKind::Plugin) == instrument.plugin.is_some() {
+        Ok(())
+    } else {
+        Err(CommandError::PluginMismatch { id })
     }
 }
 
@@ -2604,7 +2689,7 @@ mod tests {
     fn a_plugin_parameter_is_added_by_its_id_layered_and_undone() {
         let mut project = with_plugin();
         let add = Edit::AddPluginParam {
-            effect: PLUGIN,
+            device: PLUGIN,
             param: plugin_param(4097, 0.25),
         };
         assert_round_trip(project.clone(), add.clone());
@@ -2630,12 +2715,12 @@ mod tests {
             assert_rejected(
                 &mut project,
                 Edit::RemovePluginParam {
-                    effect: PLUGIN,
+                    device: PLUGIN,
                     id: 4097
                 }
             ),
             CommandError::PluginParamInUse {
-                effect: PLUGIN,
+                device: PLUGIN,
                 id: 4097
             }
         );
@@ -2648,7 +2733,7 @@ mod tests {
         let mut project = with_plugin();
         project
             .apply(Edit::AddPluginParam {
-                effect: PLUGIN,
+                device: PLUGIN,
                 param: plugin_param(3, 0.5),
             })
             .unwrap();
@@ -2656,12 +2741,12 @@ mod tests {
             assert_rejected(
                 &mut project,
                 Edit::AddPluginParam {
-                    effect: PLUGIN,
+                    device: PLUGIN,
                     param: plugin_param(3, 0.5),
                 }
             ),
             CommandError::DuplicatePluginParam {
-                effect: PLUGIN,
+                device: PLUGIN,
                 id: 3
             }
         );
@@ -2669,7 +2754,7 @@ mod tests {
             assert_rejected(
                 &mut project,
                 Edit::AddPluginParam {
-                    effect: PLUGIN,
+                    device: PLUGIN,
                     param: plugin_param(4, 1.5),
                 }
             ),
@@ -2680,7 +2765,7 @@ mod tests {
             assert_rejected(
                 &mut filtered,
                 Edit::AddPluginParam {
-                    effect: DeviceId(1),
+                    device: DeviceId(1),
                     param: plugin_param(0, 0.5),
                 }
             ),
@@ -2703,7 +2788,7 @@ mod tests {
         for id in 4..(3 + MAX_PLUGIN_PARAMS as u32) {
             project
                 .apply(Edit::AddPluginParam {
-                    effect: PLUGIN,
+                    device: PLUGIN,
                     param: plugin_param(id, 0.5),
                 })
                 .unwrap();
@@ -2712,7 +2797,7 @@ mod tests {
             assert_rejected(
                 &mut project,
                 Edit::AddPluginParam {
-                    effect: PLUGIN,
+                    device: PLUGIN,
                     param: plugin_param(9999, 0.5),
                 }
             ),

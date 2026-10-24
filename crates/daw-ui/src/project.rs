@@ -2,6 +2,7 @@
 
 use crate::block_edit::Snap;
 use crate::browser::{BrowserEvent, Choice, DeviceBrowser, PluginShelf, Side, Target};
+use crate::export_dialog::{ExportDialog, ExportEvent, SongFacts};
 use crate::frame::{FrameDrag, TimelineView};
 use crate::layout::PIXELS_PER_BEAT;
 use crate::live::{LiveLayer, PaneKind};
@@ -46,7 +47,8 @@ actions!(
         SelectAll,
         CopyNotes,
         PasteNotes,
-        Quantize
+        Quantize,
+        ExportSong
     ]
 );
 
@@ -225,6 +227,10 @@ pub struct ProjectView {
     pub(crate) browser: Option<(Entity<DeviceBrowser>, Subscription)>,
     /// A plugin's parameter list, while its add-parameter menu is open.
     pub(crate) param_picker: Option<(Entity<ParamPicker>, Subscription)>,
+    /// File → Export…, while open.
+    pub(crate) export: Option<(Entity<ExportDialog>, Subscription)>,
+    /// The export settings chosen last; the dialog opens with them.
+    export_settings: daw_host::export::ExportSettings,
     /// The browser's side the user chose last; it opens there.
     browser_side: Side,
     /// The plugins the browser offers (handed over by the app).
@@ -368,6 +374,8 @@ impl ProjectView {
             rename: None,
             browser: None,
             param_picker: None,
+            export: None,
+            export_settings: crate::export_dialog::default_settings(),
             browser_side: Side::default(),
             plugins: PluginShelf::default(),
             save_error: None,
@@ -622,6 +630,9 @@ impl Render for ProjectView {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &TogglePlay, _, _| this.toggle_play()))
             .on_action(cx.listener(|this, _: &Save, _, _| this.save()))
+            .on_action(cx.listener(|this, _: &ExportSong, window, cx| {
+                this.open_export(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &Undo, _, _| this.session.apply(Command::Undo)))
             .on_action(cx.listener(|this, _: &Redo, _, _| this.session.apply(Command::Redo)))
             .on_action(cx.listener(|this, _: &DeleteSelection, _, _| this.delete_selection()))
@@ -669,6 +680,12 @@ impl Render for ProjectView {
                 // Its own cached view: playback frames reuse it.
                 d.child(div().absolute().size_full().child(
                     AnyView::from(browser.clone()).cached(StyleRefinement::default().size_full()),
+                ))
+            })
+            .when_some(self.export.as_ref(), |d, (export, _)| {
+                // Its own cached view: playback frames reuse it.
+                d.child(div().absolute().size_full().child(
+                    AnyView::from(export.clone()).cached(StyleRefinement::default().size_full()),
                 ))
             })
     }
@@ -1103,6 +1120,54 @@ impl ProjectView {
         cx.notify();
     }
 
+    /// File → Export…: opens the export dialog (or brings back the one
+    /// open).
+    pub(crate) fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu = None;
+        if let Some((export, _)) = &self.export {
+            if !export.read(cx).is_running() {
+                window.focus(&export.focus_handle(cx));
+            }
+            return;
+        }
+        let snapshot = self.session.snapshot();
+        let seconds = |beats: f64| beats * 60.0 / snapshot.tempo_bpm;
+        let song = SongFacts {
+            name: snapshot.song_name.clone(),
+            folder: self.session.folder().to_owned(),
+            song_seconds: seconds(self.session.song_end().as_beats()),
+            loop_seconds: snapshot
+                .loop_range
+                .map(|r| seconds(r.end.as_beats() - r.start.as_beats())),
+            sample_rate: self.session.sample_rate(),
+        };
+        let dialog = cx.new(|cx| ExportDialog::new(self.export_settings, song, window, cx));
+        let subscription = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, dialog, event: &ExportEvent, window, cx| {
+                this.export_settings = dialog.read(cx).settings();
+                match event {
+                    ExportEvent::Start(settings, path) => {
+                        let job = this.session.export_job(*settings, path.clone());
+                        dialog.update(cx, |dialog, cx| dialog.run(job, cx));
+                        // The app stays usable while it renders.
+                        window.focus(&this.focus);
+                    }
+                    ExportEvent::Close => {
+                        this.export = None;
+                        window.focus(&this.focus);
+                    }
+                }
+                this.invalidate_all(cx);
+                cx.notify();
+            },
+        );
+        self.export = Some((dialog, subscription));
+        self.invalidate_all(cx);
+        cx.notify();
+    }
+
     /// The browser's target, while it is open.
     pub(crate) fn browsing(&self, cx: &gpui::App) -> Option<Target> {
         self.browser.as_ref().map(|(b, _)| b.read(cx).target())
@@ -1134,7 +1199,15 @@ impl ProjectView {
                 };
                 self.add_effect(node, daw_engine::Effect::plugin(spec));
             }
-            // Plugin instruments can't be chosen yet.
+            (Target::Instrument(_), Choice::Plugin(info)) => {
+                let spec = daw_engine::PluginSpec::Vst3 {
+                    bundle: info.bundle,
+                    cid: info.cid,
+                    name: info.name,
+                    vendor: info.vendor,
+                };
+                self.add_plugin_instrument(node, spec);
+            }
             _ => {}
         }
     }

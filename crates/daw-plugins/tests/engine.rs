@@ -206,7 +206,7 @@ fn a_plugin_parameter_follows_its_resting_value_and_its_layers() {
     };
     for edit in [
         Edit::AddPluginParam {
-            effect: PLUGIN,
+            device: PLUGIN,
             param: PluginParam {
                 id: 0,
                 name: "Gain".into(),
@@ -249,4 +249,171 @@ fn a_plugin_parameter_follows_its_resting_value_and_its_layers() {
         "the layer pulls it to nothing"
     );
     assert!(!expected.samples[48_128 * 2..].iter().all(|&s| s == 0.0));
+}
+
+/// A second node ("Copy", node 2) playing the same chord on its own synth.
+fn add_copy(engine: &mut Engine) {
+    let mut node = daw_engine::Node::new("Copy", 1).with_instrument(DeviceId(50));
+    let notes = [60, 64, 67]
+        .map(|pitch| MidiNote {
+            start: Ticks::ZERO,
+            length: Ticks::from_bars(4),
+            pitch,
+            velocity: 100,
+        })
+        .to_vec();
+    node.clips.insert(
+        ClipId(2),
+        MidiClip {
+            start: Ticks::ZERO,
+            length: Ticks::from_bars(4),
+            notes,
+            looping: None,
+        },
+    );
+    engine
+        .apply(Command::Edit(Edit::AddNode {
+            id: daw_engine::NodeId(2),
+            parent: daw_engine::NodeId::ROOT,
+            index: 1,
+            node,
+        }))
+        .unwrap();
+}
+
+#[test]
+fn a_delaying_plugin_lines_the_song_up_late_by_its_latency() {
+    let (mut plain, mut plain_processor) = engine(None);
+    add_copy(&mut plain);
+    let expected = render(&mut plain, &mut plain_processor, 20_000, &[512]);
+    assert_eq!(plain_processor.latency(), 0);
+
+    let (mut delayed, mut processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut delayed);
+    let out = render(&mut delayed, &mut processor, 20_000, &[512]);
+    assert_eq!(processor.latency(), 100, "the song's latency");
+    assert!(out.samples[..200].iter().all(|&s| s == 0.0), "late by 100");
+    assert!(
+        out.samples[200..] == expected.samples[..expected.samples.len() - 200],
+        "both nodes line up, exactly 100 frames late"
+    );
+
+    let (mut again, mut again_processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut again);
+    let varied = render(&mut again, &mut again_processor, 20_000, VARIED_BLOCKS);
+    assert!(varied == out, "the same at any block size");
+}
+
+#[test]
+fn automation_acts_on_the_sound_it_was_drawn_against() {
+    use daw_engine::{BlendMode, Block, BlockId, DeviceRef, Layer, LayerId, ParamId, Shape};
+    let (mut engine, mut processor) = engine(Some(TestPlugin::Delay { frames: 1_000 }));
+    // The volume drops to nothing from beat 1 (frame 24 000).
+    let volume = ParamId {
+        node: FIRST_NODE,
+        device: DeviceRef::Channel,
+        index: 0,
+    };
+    for edit in [
+        Edit::AddLayer {
+            param: volume,
+            id: LayerId(1),
+            index: 0,
+            layer: Layer::new(BlendMode::Multiply),
+        },
+        Edit::AddBlock {
+            layer: LayerId(1),
+            id: BlockId(1),
+            block: Block::new(
+                Ticks::from_beats(1),
+                Ticks::from_beats(2),
+                Shape::constant(0.0),
+            ),
+        },
+    ] {
+        engine.apply(Command::Edit(edit)).unwrap();
+    }
+    let out = render(&mut engine, &mut processor, 30_000, &[512]);
+    let loud = |range: std::ops::Range<usize>| {
+        out.samples[range.start * 2..range.end * 2]
+            .iter()
+            .any(|&s| s.abs() > 1e-3)
+    };
+    // Beat 1's sound comes out at frame 25 000: the cut lands there, not
+    // 1 000 frames early.
+    assert!(
+        loud(24_100..24_900),
+        "still sounding until its sound is due"
+    );
+    assert!(!loud(25_100..30_000), "cut from beat 1's sound on");
+    // The playhead shows what is heard.
+    let heard = (30_000.0 - 1_000.0) / 24_000.0;
+    assert!((engine.position_beats() - heard).abs() < 1e-9);
+}
+
+#[test]
+fn switching_off_a_delaying_plugin_keeps_the_timing() {
+    let (mut on, mut on_processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut on);
+    let expected = render(&mut on, &mut on_processor, 20_000, &[512]);
+
+    let (mut off, mut processor) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut off);
+    off.apply(Command::Edit(Edit::SetDeviceEnabled {
+        id: PLUGIN,
+        enabled: false,
+    }))
+    .unwrap();
+    let out = render(&mut off, &mut processor, 20_000, &[512]);
+    assert_eq!(processor.latency(), 100, "it keeps its latency");
+    // It has no bypass of its own: the sound waits as long around it.
+    assert!(out == expected, "both nodes still line up, 100 late");
+}
+
+/// Exports `engine`'s song as a float WAV, with plugins, and reads it back.
+fn exported(engine: &mut Engine, name: &str) -> Vec<f32> {
+    use daw_host::export::{
+        ExportJob, ExportSettings, Format, Progress, Range, Tail, WavDepth, export,
+    };
+    let path = std::env::temp_dir().join(format!("daw-{name}-{}.wav", std::process::id()));
+    export(
+        ExportJob {
+            song: engine.to_file(),
+            sample_dir: None,
+            sample_rate: 48_000,
+            threads: 2,
+            plugin_host: Some(host_command()),
+            settings: ExportSettings {
+                format: Format::Wav(WavDepth::Float32),
+                range: Range::Song,
+                tail: Tail::Off,
+            },
+            path: path.clone(),
+        },
+        &Progress::default(),
+    )
+    .unwrap();
+    let samples = hound::WavReader::open(&path)
+        .unwrap()
+        .samples::<f32>()
+        .map(Result::unwrap)
+        .collect();
+    let _ = std::fs::remove_file(&path);
+    samples
+}
+
+#[test]
+fn an_export_starts_the_songs_latency_in() {
+    let (mut plain, _) = engine(None);
+    add_copy(&mut plain);
+    let expected = exported(&mut plain, "export-plain");
+    let (mut delayed, _) = engine(Some(TestPlugin::Delay { frames: 100 }));
+    add_copy(&mut delayed);
+    let out = exported(&mut delayed, "export-delayed");
+    assert!(!expected.iter().all(|&s| s == 0.0));
+    assert_eq!(out.len(), expected.len(), "the song's length");
+    assert!(
+        out == expected,
+        "lined up with the song, not 100 frames late"
+    );
 }
