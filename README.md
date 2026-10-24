@@ -1,18 +1,6 @@
 # DAW (working name)
 
-A digital audio workstation for electronic and dance music where **movement is the core of the music, and automation is the core of the app**.
-
-> Draw a movement once, use it everywhere, and build your track around movement.
-
-Early development. See [daw-foundation.md](daw-foundation.md) for the vision and design, and [build-plan.md](build-plan.md) for the roadmap.
-
-## Building
-
-Requires Rust (the toolchain version is pinned in `rust-toolchain.toml`).
-
-```sh
-cargo test --workspace
-```
+A digital audio workstation for electronic and dance music where **movement and automation is the core of philosophy**.
 
 ## License
 
