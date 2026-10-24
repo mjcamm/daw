@@ -15,7 +15,7 @@ use crate::clip_edit;
 use crate::clip_edit::Grab;
 use crate::frame::{Timeline, grid_lines};
 use crate::icons::{Icon, icon};
-use crate::layout::{BEATS_PER_BAR, ruler_label_step, timeline_bars, x_to_snapped_position};
+use crate::layout::{BEATS_PER_BAR, ruler_label_step, timeline_bars};
 use crate::live::{Live, PaneKind};
 use crate::menu::{self, OpenMenu};
 use crate::motion::RowLayout;
@@ -1394,7 +1394,6 @@ impl ProjectView {
         scroll: &gpui::ScrollHandle,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let bounds_cell = self.ruler_bounds.clone();
         // The loop strip along the top half; bar numbers below it.
         let width = bars as f32 * BEATS_PER_BAR as f32 * pixels_per_beat;
         let loop_strip = self.render_loop_strip(
@@ -1430,25 +1429,13 @@ impl ProjectView {
             .border_b_1()
             .border_color(theme.hairline)
             .cursor_pointer()
-            .child(
-                // Records where the ruler is on screen, to map clicks to beats.
-                canvas(
-                    move |bounds, _, _| bounds_cell.set(bounds),
-                    |_, (), _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
             .children(labels)
             .child(loop_strip)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                    let origin = this.ruler_bounds.get().origin.x;
-                    let x = (event.position.x - origin) / px(1.);
-                    this.session.apply(Command::Locate {
-                        position: x_to_snapped_position(x, pixels_per_beat),
-                    });
+                    let ruler = crate::loop_strip::LoopRuler::Main;
+                    this.locate_on_ruler(ruler, event.position, pixels_per_beat);
                 }),
             )
     }

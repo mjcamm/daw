@@ -143,6 +143,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Any drag on the strip but a handle draws a fresh loop, inside the loop too | `loop_strip::a_drag_inside_the_loop_draws_a_fresh_one` |
 | Drag a loop's start or end handle to move that end | `loop_strip::dragging_a_handle_moves_only_that_end` |
 | The piano roll's strip snaps to the roll's own grid | `loop_strip::the_piano_roll_strip_uses_the_rolls_grid` |
+| Click a ruler below its loop strip to place the playhead, to the nearest quarter beat (Arrange, Parameters, Signals, piano roll, audio panel: one shared handler, `locate_on_ruler`) | `rulers::clicking_arranges_ruler_places_the_playhead`, `rulers::clicking_the_piano_rolls_ruler_places_the_playhead`, `rulers::clicking_the_audio_panels_ruler_places_the_playhead` |
 | The transport's loop button switches looping, keeping the region (grey while off) | `loop_strip::the_loop_button_switches_looping_and_keeps_the_region` |
 | Tempo beside the transport: click to type, Enter applies (one undo step) | `transport::typing_a_tempo_sets_the_song_tempo` |
 | Escape, or a tempo outside 20 to 999, leaves it | `transport::escape_or_an_impossible_tempo_leaves_the_tempo` |

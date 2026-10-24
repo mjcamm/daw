@@ -13,6 +13,7 @@ mod parameters;
 mod perf;
 mod piano_roll;
 mod plugin_params;
+mod rulers;
 mod transport;
 
 use crate::project::ProjectView;

@@ -105,7 +105,6 @@ pub struct ProjectView {
     pub(crate) loop_strip_bounds: crate::loop_view::StripBounds,
     /// Where the timeline ruler was last drawn, for turning clicks into
     /// song positions.
-    pub(crate) ruler_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) open_menu: Option<OpenMenu>,
     /// The menu the current press closed by landing outside it, so that
     /// pressing the menu's own trigger closes it rather than reopening it.
@@ -315,7 +314,6 @@ impl ProjectView {
             page: Page::Arrange,
             loop_drag: None,
             loop_strip_bounds: Default::default(),
-            ruler_bounds: Rc::default(),
             open_menu: None,
             dismissed_menu: None,
             selected_node: None,

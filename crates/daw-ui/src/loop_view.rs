@@ -136,6 +136,23 @@ impl ProjectView {
             )
     }
 
+    /// A press on a ruler below its loop strip: the playhead goes there,
+    /// to the nearest quarter beat. Every ruler (Arrange, Parameters,
+    /// Signals, piano roll, audio panel) places it this way; their content
+    /// starts at the song start, where the loop strip does.
+    pub(crate) fn locate_on_ruler(
+        &mut self,
+        ruler: LoopRuler,
+        at: Point<Pixels>,
+        pixels_per_beat: f32,
+    ) {
+        let origin = self.loop_strip_bounds.of(ruler).get().origin.x;
+        let x = (at.x - origin) / px(1.);
+        self.session.apply(Command::Locate {
+            position: crate::layout::x_to_snapped_position(x, pixels_per_beat),
+        });
+    }
+
     fn start_loop_drag(&mut self, ruler: LoopRuler, at: Point<Pixels>, pixels_per_beat: f32) {
         let origin = self.loop_strip_bounds.of(ruler).get().origin.x;
         let x = (at.x - origin) / px(1.);

@@ -49,6 +49,10 @@ pub struct Session {
     previous: Option<Snapshot>,
     /// Whether the engine is playing a drag's preview.
     previewing: bool,
+    /// Where the playhead was last sent (tests run no audio, so the
+    /// position itself never moves).
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub located: Option<daw_engine::Ticks>,
     /// Each node's meter as displayed: peaks that fall back smoothly.
     meters: BTreeMap<NodeId, Meter>,
     folder: PathBuf,
@@ -128,6 +132,8 @@ impl Session {
             snapshot: engine.snapshot(),
             previous: None,
             previewing: false,
+            #[cfg(all(test, feature = "ui-tests"))]
+            located: None,
             engine,
             audio: info.filter(|_| output.is_some()),
             output,
@@ -418,6 +424,10 @@ impl Session {
         // An edit, undo or redo ends a preview, landed or not.
         if matches!(command, Command::Edit(_) | Command::Undo | Command::Redo) {
             self.previewing = false;
+        }
+        #[cfg(all(test, feature = "ui-tests"))]
+        if let Command::Locate { position } = command {
+            self.located = Some(position);
         }
         if let Err(e) = self.engine.apply(command) {
             eprintln!("command rejected: {e}");

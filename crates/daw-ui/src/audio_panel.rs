@@ -633,8 +633,17 @@ impl ProjectView {
                     .left(offset.x)
                     .w(px(width))
                     .h(px(RULER_HEIGHT))
+                    .cursor_pointer()
                     .children(labels.collect::<Vec<_>>())
-                    .child(loop_strip),
+                    .child(loop_strip)
+                    // Below the loop strip, a press places the playhead.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, _| {
+                            let ruler = crate::loop_strip::LoopRuler::Audio;
+                            this.locate_on_ruler(ruler, event.position, ppb);
+                        }),
+                    ),
             );
         let body = div()
             .flex_1()
