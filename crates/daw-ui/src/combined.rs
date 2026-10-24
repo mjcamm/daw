@@ -210,11 +210,21 @@ impl ProjectView {
 
     /// Ends a block drag: every clip in it moves, cutting what it lands on.
     pub(crate) fn finish_combined_drag(&mut self) {
+        let edit = self.combined_drag_edit();
         let Some(drag) = self.combined_drag.take() else {
             return;
         };
+        if let Some(edit) = edit {
+            self.session.apply(Command::Edit(edit));
+            self.selected_combined = Some((drag.node, drag.start + drag.shift));
+        }
+    }
+
+    /// The edit a block drag makes if let go now: its clips moved.
+    pub(crate) fn combined_drag_edit(&self) -> Option<Edit> {
+        let drag = self.combined_drag.as_ref()?;
         if !drag.started || drag.shift == Ticks::ZERO {
-            return;
+            return None;
         }
         let landings: Vec<Landing> = drag
             .clips
@@ -230,8 +240,7 @@ impl ProjectView {
             .collect();
         let moving: Vec<ClipId> = drag.clips.iter().map(|(_, id, _)| *id).collect();
         let (edit, _) = clip_edit::land(self.session.snapshot(), &landings, &moving, Vec::new());
-        self.session.apply(Command::Edit(edit));
-        self.selected_combined = Some((drag.node, drag.start + drag.shift));
+        Some(edit)
     }
 
     /// Deletes the selected block's clips; false if no block is selected.

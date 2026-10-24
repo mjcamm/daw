@@ -510,3 +510,27 @@ fn perf_arrange_lanes_redraw() {
     eprintln!("perf {:<22} lanes pane: {t}", "arrange lanes redraw");
     assert!(t.median <= ms(10.), "arrange lanes redraw: {t}");
 }
+
+/// What hearing a drag costs a frame on the full-size song: the song
+/// compiled again for the audio side (`Command::Preview`), here for a
+/// fader. The frame around it is the page's own cost while dragging.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_drag_preview() {
+    let mut h = Harness::new("perf-drag-preview");
+    heavy_song(&mut h);
+    let param = crate::mixer::volume_id(NodeId::ROOT);
+    let mut down = false;
+    let preview = time(|| {
+        down = !down;
+        let value = if down { 0.5 } else { 0.6 };
+        h.view.update(h.cx, |view, _| {
+            view.session.preview(Some(Edit::SetParam { param, value }));
+        });
+    });
+    eprintln!("perf {:<22} preview: {preview}", "drag preview");
+    assert!(
+        preview.median <= ms(1.),
+        "hearing a drag takes {preview} a frame, over the 1 ms budget"
+    );
+}

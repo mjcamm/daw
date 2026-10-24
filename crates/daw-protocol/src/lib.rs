@@ -38,8 +38,17 @@ pub enum Command {
     /// Switch looping on or off, keeping the region. Without a region,
     /// looping stays off. Not part of undo history.
     SetLoopEnabled(bool),
-    /// Change the project. Edits are recorded in the undo history.
+    /// Change the project. Edits are recorded in the undo history. An edit
+    /// ends any preview first (it lands what the drag previewed).
     Edit(Edit),
+    /// Hear an edit at once while a drag runs: applied to the song as it was
+    /// before the drag, replacing any earlier preview. Not in the undo
+    /// history, not saved, and no new snapshot (the front end shows its own
+    /// preview). The drag ends with an [`Command::Edit`] or
+    /// [`Command::CancelPreview`]; undo and redo drop it first.
+    Preview(Edit),
+    /// Put the song back as it was before the preview, if there is one.
+    CancelPreview,
     /// Revert the most recent edit.
     Undo,
     /// Reapply the most recently undone edit.

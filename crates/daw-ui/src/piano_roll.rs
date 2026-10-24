@@ -459,19 +459,36 @@ impl ProjectView {
 
     /// Makes `node`'s clips hold `notes` (song time), as one edit.
     fn place_on(&mut self, node: NodeId, notes: Vec<MidiNote>) {
+        if let Some(edit) = self.notes_edit(node, &notes) {
+            self.session.apply(Command::Edit(edit));
+        }
+    }
+
+    /// The edit that makes `node`'s clips hold `notes`, if any is needed.
+    fn notes_edit(&self, node: NodeId, notes: &[MidiNote]) -> Option<Edit> {
         let snapshot = self.session.snapshot();
-        let Some(owner) = snapshot.node(node) else {
-            return;
-        };
+        let owner = snapshot.node(node)?;
         let bar = Ticks::from_beats(4);
         let next = crate::clip_edit::next_clip_id(snapshot);
-        let mut edits = crate::timeline::place_notes(node, &owner.clips, &notes, bar, next);
-        let edit = match edits.len() {
-            0 => return,
-            1 => edits.remove(0),
-            _ => Edit::Batch(edits),
-        };
-        self.session.apply(Command::Edit(edit));
+        let mut edits = crate::timeline::place_notes(node, &owner.clips, notes, bar, next);
+        match edits.len() {
+            0 => None,
+            1 => Some(edits.remove(0)),
+            _ => Some(Edit::Batch(edits)),
+        }
+    }
+
+    /// The edit a note drag makes if let go now: the notes as previewed.
+    pub(crate) fn note_drag_edit(&self) -> Option<Edit> {
+        let (editor, clip) = self.editor_clip()?;
+        if matches!(editor.drag, None | Some(NoteDrag::Box { .. })) {
+            return None;
+        }
+        let (notes, _) = editor.preview.as_ref()?;
+        if *notes == clip.notes {
+            return None;
+        }
+        self.notes_edit(editor.target, notes)
     }
 
     /// After an edit lands, the selection follows the notes it held.

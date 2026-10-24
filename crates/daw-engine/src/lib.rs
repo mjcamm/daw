@@ -42,7 +42,7 @@ pub use project::{
     DEFAULT_TEMPO_BPM, DeviceParams, FIRST_INSTRUMENT, FIRST_NODE, MAX_EFFECTS, MAX_INSTRUMENTS,
     MAX_NODES, MAX_PLUGIN_PARAMS, MAX_TEMPO_BPM, MIN_TEMPO_BPM, NodeExt, Project, song, synth_node,
 };
-pub use schedule::{EffectState, NodeRender, RenderState, ScheduledNote};
+pub use schedule::{EffectState, NodeRender, RenderState, ScheduledNote, compile_signals};
 
 use audio::{AudioMsg, AudioQueues, SharedStatus};
 use daw_automation::{Automation, Signals};
@@ -119,6 +119,9 @@ pub struct Engine {
     learning: Option<DeviceId>,
     /// Knobs being turned in plugin windows.
     turning: BTreeMap<(DeviceId, u32), Turn>,
+    /// The drag being heard ([`Command::Preview`]), applied to the song
+    /// but not in its history.
+    preview: Option<Preview>,
     /// Whether render workers run at audio priority (not for exports).
     realtime_workers: bool,
 }
@@ -135,6 +138,13 @@ struct Turn {
     /// they stop for [`TURN_PAUSE`].
     held: bool,
     last: std::time::Instant,
+}
+
+/// A previewed edit and the edit that takes it back out.
+#[derive(Debug, Clone)]
+struct Preview {
+    edit: Edit,
+    inverse: Edit,
 }
 
 /// How long moves without a begin and end must pause to count as one turn.
@@ -198,6 +208,7 @@ impl Engine {
             retired,
             learning: None,
             turning: BTreeMap::new(),
+            preview: None,
             delay_rooms: BTreeMap::new(),
             realtime_workers,
         };
@@ -275,10 +286,22 @@ impl Engine {
     pub fn apply(&mut self, command: Command) -> Result<(), CommandError> {
         // A knob still turning in a plugin window is one step of its own,
         // before whatever changes the song or its history next.
+        // The song as it was before a drag's preview: what edits apply to.
+        let mut dropped = false;
         if matches!(command, Command::Edit(_) | Command::Undo | Command::Redo) {
             self.end_turns();
+            dropped = self.drop_preview();
         }
         match command {
+            // Not a change the front end shows: no new revision.
+            Command::Preview(edit) => return self.preview(edit),
+            Command::CancelPreview => {
+                if self.drop_preview() {
+                    self.publish_state();
+                    self.maintain();
+                }
+                return Ok(());
+            }
             Command::Play => {
                 self.playing = true;
                 self.outbox.push_back(AudioMsg::SetPlaying(true));
@@ -345,17 +368,26 @@ impl Engine {
                 self.content_revision += 1;
             }
             Command::Edit(edit) => {
-                self.history.edit(&mut self.project, edit)?;
+                if let Err(e) = self.history.edit(&mut self.project, edit) {
+                    self.dropped_anyway(dropped);
+                    return Err(e);
+                }
                 self.publish_state();
                 self.content_revision += 1;
             }
             Command::Undo => {
-                self.history.undo(&mut self.project)?;
+                if let Err(e) = self.history.undo(&mut self.project) {
+                    self.dropped_anyway(dropped);
+                    return Err(e);
+                }
                 self.publish_state();
                 self.content_revision += 1;
             }
             Command::Redo => {
-                self.history.redo(&mut self.project)?;
+                if let Err(e) = self.history.redo(&mut self.project) {
+                    self.dropped_anyway(dropped);
+                    return Err(e);
+                }
                 self.publish_state();
                 self.content_revision += 1;
             }
@@ -732,6 +764,21 @@ impl Engine {
     /// The project as a file, ready to save. Running plugins are asked for
     /// their state (a call to their host process each).
     pub fn to_file(&mut self) -> ProjectFile {
+        // The song without a drag's preview, which is not part of it yet.
+        let preview = self.preview.as_ref().map(|p| p.edit.clone());
+        self.drop_preview();
+        let file = self.file();
+        if let Some(edit) = preview {
+            let inverse = self
+                .project
+                .apply(edit.clone())
+                .expect("a preview applies again where it applied before");
+            self.preview = Some(Preview { edit, inverse });
+        }
+        file
+    }
+
+    fn file(&mut self) -> ProjectFile {
         let mut file = ProjectFile::new(&self.project, self.loop_range);
         file.loop_enabled = self.loop_enabled;
         file.set_plugin_states(&self.plugins.states(&self.project));
@@ -748,6 +795,7 @@ impl Engine {
         let places = file.window_places();
         let (project, loop_range) = file.into_project()?;
         self.project = project;
+        self.preview = None;
         // Before the new state, so the old song's plugins go quiet first.
         self.plugins.replace_song(states, places, &mut self.outbox);
         self.history = History::default();
@@ -760,6 +808,53 @@ impl Engine {
         self.content_revision += 1;
         self.maintain();
         Ok(())
+    }
+
+    /// Applies a drag's edit in place of the last one's, heard at once.
+    fn preview(&mut self, edit: Edit) -> Result<(), CommandError> {
+        if self.preview.as_ref().is_some_and(|p| p.edit == edit) {
+            return Ok(());
+        }
+        let last = self.preview.as_ref().map(|p| p.edit.clone());
+        self.drop_preview();
+        match self.project.apply(edit.clone()) {
+            Ok(inverse) => self.preview = Some(Preview { edit, inverse }),
+            Err(e) => {
+                // Rejected: the last preview stays.
+                if let Some(edit) = last {
+                    let inverse = self
+                        .project
+                        .apply(edit.clone())
+                        .expect("a preview applies again where it applied before");
+                    self.preview = Some(Preview { edit, inverse });
+                }
+                return Err(e);
+            }
+        }
+        self.publish_state();
+        self.maintain();
+        Ok(())
+    }
+
+    /// A rejected edit still ends the drag it followed: the song sounds as
+    /// it was before the preview.
+    fn dropped_anyway(&mut self, dropped: bool) {
+        if dropped {
+            self.publish_state();
+            self.maintain();
+        }
+    }
+
+    /// Takes a preview back out of the song; true if there was one. The
+    /// caller sends the new state.
+    fn drop_preview(&mut self) -> bool {
+        let Some(preview) = self.preview.take() else {
+            return false;
+        };
+        self.project
+            .apply(preview.inverse)
+            .expect("a preview's inverse applies to the song it made");
+        true
     }
 
     fn set_loop(&mut self, range: Option<LoopRange>, enabled: bool) {

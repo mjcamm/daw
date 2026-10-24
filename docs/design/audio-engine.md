@@ -12,6 +12,12 @@ How the engine fits together, for picking up work on it. Feature details live in
 
 They meet only through two lock-free `rtrb` queues (`AudioMsg` in, retired states out) and `SharedStatus` atomics (position, meters). `Engine::maintain` delivers messages and frees garbage; the UI calls it every frame. `Engine::reconnect` builds a new processor for a new device setup and keeps everything else.
 
+## Drags are heard as they move (previews)
+
+`Command::Preview(edit)` applies an edit at once, so a drag sounds as it goes: the engine takes the last preview back out (its inverse), applies the new one to the song as it was before the drag, and sends the new state. A preview is not in the undo history, bumps no revision (the front end keeps drawing its own preview, so panes don't all redraw) and isn't saved (`to_file` takes it out and puts it back). The drag ends with the usual `Command::Edit` (which drops the preview first, then lands as one undo step) or `Command::CancelPreview`; undo and redo drop it too. A rejected preview keeps the last one. Knobs turned in plugin windows work the same way through `Engine::window_edits`.
+
+In the UI, every drag reports the edit it would make if let go now (`ProjectView::drag_edit`, which chains each drag's own `*_drag_edit`); `ProjectView::render` sends it once a frame through `Session::preview`, and each release sends the same function's edit. A new drag only needs its `*_drag_edit` added to `drag_edit` to be heard. Cost: the song compiled once a frame while the pointer moves (0.5 ms on the full-size song, `perf_drag_preview`). Loop-region drags still apply on release (they are not edits).
+
 ## A block's life (`audio.rs`)
 
 1. `process` wraps the block in `daw_rt::realtime` (debug builds abort on any allocation) and `without_denormals`.

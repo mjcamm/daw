@@ -32,6 +32,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Double-click a combined block on a parent: the editor opens on the parent there | – |
 | Click a clip selects it; Shift+click adds or removes; a press on empty lane clears | – |
 | Drag clips to move (snapped, between rows); Ctrl copies; Alt flips snap; Escape cancels | – |
+| A clip drag is heard as it moves; Escape puts it back | `live_drags::a_clip_drag_is_heard_as_it_moves_and_escape_puts_it_back` |
 | Drag a clip's edge to resize (trim and reveal for audio) | – |
 | Drag the top of a clip's right end (or its loop icon, shown on hover or selection) to loop it: whole repeats, linked; repeats softer with a line at each cycle end (`clip-loops.md`) | `arrange::dragging_the_top_of_a_clips_end_loops_it` |
 | Dropping clips below the last row makes a new node of their kind | – |
@@ -114,7 +115,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 
 | Behaviour | Test |
 |---|---|
-| Fader and pan (double-click resets); mute and solo | – |
+| Fader and pan follow the pointer and are heard while dragged; each drag is one undo step | `live_drags::a_fader_follows_the_pointer_and_is_heard_while_dragged`, `live_drags::a_pan_follows_the_pointer_and_is_heard_while_dragged` |
+| Fader and pan double-click resets; mute and solo | – |
 | + Instrument and + Effect open the device browser (Built-in \| Plugins, plugins under vendor headings); search and Enter add a plugin | `browser::a_plugin_effect_is_found_by_search_and_added_with_enter` |
 | The device browser opens on the side used last; arrows and Enter pick; Escape or a click outside closes | `browser::the_browser_remembers_its_side_and_works_from_the_keys` |
 | Effect slots switch and remove | – |
@@ -129,6 +131,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 |---|---|
 | Menus open on press (like native menus); pressing an open menu's trigger closes it | `menus::a_menu_opens_on_press_and_its_trigger_closes_it` |
 | Space plays and stops | – |
+| Every drag that changes the song (sliders, blocks, notes and velocities, clips, notes-signal and audio-clip settings) is heard as it moves and lands as one undo step; every slider's thumb stays under the pointer (Shift: five times finer) | `live_drags::*` |
 | Loop strip on every ruler (`loop-strip.md`): drag draws a fresh loop, snapped to the page's grid (Slide: unsnapped), and switches looping on | `loop_strip::dragging_on_the_loop_strip_draws_a_loop_that_plays`, `loop_strip::sliding_leaves_the_loop_off_the_grid` |
 | Any drag on the strip but a handle draws a fresh loop, inside the loop too | `loop_strip::a_drag_inside_the_loop_draws_a_fresh_one` |
 | Drag a loop's start or end handle to move that end | `loop_strip::dragging_a_handle_moves_only_that_end` |

@@ -17,6 +17,7 @@
 - **Looping clips** (2026-10-20, `docs/design/clip-loops.md`): MIDI and audio clips loop like blocks, with linked repeats; expanded at compile time, so the audio thread is unchanged.
 - **Tempo** (2026-10-21): typed in a box beside the transport.
 - **Export** (2026-10-23, `docs/design/export.md`): File → Export… (Ctrl+E): WAV (16 dithered / 24 / 32 float) or MP3 (192 / 256 / 320 kbps, LAME behind `daw-host`'s `mp3` feature, LGPL: settle before release), whole song (to the last clip's end) or the loop, tail until silent or off. Renders a copy of the song offline on its own thread and plugin host (`daw_host::export`), sample-for-sample the live sound, latency trimmed; the app stays usable; cancel leaves no file.
+- **Drags are heard as they move** (2026-10-24, the user's request; `audio-engine.md`, previews): faders, pans, every slider, blocks and points on Parameters and Signals, notes and velocities, clip moves, notes-signal and audio-clip settings play as they're dragged (`Command::Preview`), still one undo step each. Sliders' thumbs follow the pointer (a drag the slider's length covers the range; Shift five times finer). Loop drags still apply on release.
 - **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
 The project file is at **version 19** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
@@ -75,6 +76,9 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - **Parent first** (the user's call, reversing the earlier "parents below"): on Arrange the Song is at the top and each parent sits above its children; on the mixer each parent strip sits left of its children. Map bars start at the parent's row (or strip) with the chevron; the Song has no bar.
 
 ## Waiting on the user (try it)
+
+- **Looped clips and signals** (2026-10-24): loop a clip that a notes signal reads: the Signals page lane and listening layers should show a hit at every repeat (the sound already followed the repeats; only the drawing missed them). Hover a looped clip's loop zone on Arrange: the loop cursor shows above the clip.
+- **Live drags** (2026-10-24): during playback, drag a fader and a pan (the thumb should stay under the pointer), a layer's mix, a block's points, a notes signal's envelope, notes and velocities in the piano roll, and clips on Arrange: each should be heard as it moves. Ctrl+Z after each should undo the whole drag. Claude checked faders, pans and clips in tests, not by ear.
 
 - **Export** (2026-10-23): Ctrl+E, export a song with plugins as WAV and as MP3 and listen to both; try Loop, Tail Off, Cancel mid-way, and playing or editing while it renders. Claude checked the files' contents in tests, not by ear.
 - **Device browser and plugin effects** (2026-10-21): "+ Effect" on a strip, Plugins, search, add one of your effects (OTT, ValhallaRoom…), play, save, reopen the song: the plugin should come back with its settings (no editor windows yet; the state round trip is tested with the test plugin).

@@ -47,6 +47,8 @@ pub struct Session {
     /// The snapshot before the current one, so a view can still draw what
     /// an edit just removed while it animates away.
     previous: Option<Snapshot>,
+    /// Whether the engine is playing a drag's preview.
+    previewing: bool,
     /// Each node's meter as displayed: peaks that fall back smoothly.
     meters: BTreeMap<NodeId, Meter>,
     folder: PathBuf,
@@ -125,6 +127,7 @@ impl Session {
         Ok(Self {
             snapshot: engine.snapshot(),
             previous: None,
+            previewing: false,
             engine,
             audio: info.filter(|_| output.is_some()),
             output,
@@ -371,6 +374,12 @@ impl Session {
         }
     }
 
+    /// The engine, to see what it plays (a drag's preview included).
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
+
     /// What a plugin effect lists, as if it ran (tests run no plugin host).
     #[cfg(all(test, feature = "ui-tests"))]
     pub fn show_plugin_params(
@@ -382,9 +391,31 @@ impl Session {
         self.tick();
     }
 
+    /// Hears what a drag would do if let go now (`None`: nothing), so
+    /// sound follows the pointer. Called once per frame while dragging; the
+    /// release lands the drag with an edit as usual.
+    pub fn preview(&mut self, edit: Option<Edit>) {
+        match edit {
+            // A rejected preview (rare: the release reports it) keeps the
+            // last one.
+            Some(edit) => {
+                self.previewing |= self.engine.apply(Command::Preview(edit)).is_ok();
+            }
+            None if self.previewing => {
+                self.previewing = false;
+                self.apply(Command::CancelPreview);
+            }
+            None => {}
+        }
+    }
+
     /// Sends a command. Rejected commands change nothing, so the UI just
     /// reports them.
     pub fn apply(&mut self, command: Command) {
+        // An edit, undo or redo ends a preview, landed or not.
+        if matches!(command, Command::Edit(_) | Command::Undo | Command::Redo) {
+            self.previewing = false;
+        }
         if let Err(e) = self.engine.apply(command) {
             eprintln!("command rejected: {e}");
         }

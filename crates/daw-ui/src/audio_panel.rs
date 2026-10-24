@@ -142,6 +142,8 @@ enum PanelDrag {
         node: NodeId,
         setting: Setting,
         origin: Point<Pixels>,
+        /// The slider's length, so its thumb follows the pointer.
+        length: f32,
         original: AudioClip,
         preview: AudioClip,
     },
@@ -297,12 +299,13 @@ impl ProjectView {
             Some(PanelDrag::Setting {
                 setting,
                 origin,
+                length,
                 original,
                 preview,
                 ..
             }) => {
                 let moved = (position.x - origin.x) / px(1.);
-                let at = slider::dragged(setting.position(original), moved, fine);
+                let at = slider::dragged(setting.position(original), moved, *length, fine);
                 *preview = setting.at(original, at);
                 true
             }
@@ -310,25 +313,31 @@ impl ProjectView {
         }
     }
 
+    /// The edit a panel drag makes if let go now: a changed setting.
+    pub(crate) fn audio_drag_edit(&self) -> Option<Edit> {
+        match &self.audio_editor.as_ref()?.drag {
+            Some(PanelDrag::Setting {
+                clip,
+                node,
+                original,
+                preview,
+                ..
+            }) if preview != original => Some(Edit::SetAudioClip {
+                id: *clip,
+                node: *node,
+                clip: preview.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     /// Ends a panel drag: a setting sends one edit.
     pub(crate) fn finish_audio_drag(&mut self) {
-        let Some(editor) = &mut self.audio_editor else {
-            return;
-        };
-        if let Some(PanelDrag::Setting {
-            clip,
-            node,
-            original,
-            preview,
-            ..
-        }) = editor.drag.take()
-            && preview != original
-        {
-            self.session.apply(Command::Edit(Edit::SetAudioClip {
-                id: clip,
-                node,
-                clip: preview,
-            }));
+        if let Some(edit) = self.audio_drag_edit() {
+            self.session.apply(Command::Edit(edit));
+        }
+        if let Some(editor) = &mut self.audio_editor {
+            editor.drag = None;
         }
     }
 
@@ -867,12 +876,13 @@ impl ProjectView {
         );
         let original = clip.clone();
         let length =
-            INFO_WIDTH - 2. * 10. - 2. - 2. * ROW_PADDING - LABEL_WIDTH - VALUE_WIDTH - 16.;
+            (INFO_WIDTH - 2. * 10. - 2. - 2. * ROW_PADDING - LABEL_WIDTH - VALUE_WIDTH - 16.)
+                .max(40.);
         let slider = slider::slider(
             ("clip-setting", setting as usize),
             Axis::Horizontal,
             setting.position(clip) as f32,
-            length.max(40.),
+            length,
             active,
             theme,
         )
@@ -906,6 +916,7 @@ impl ProjectView {
                     node: editor.node,
                     setting,
                     origin: event.position,
+                    length,
                     original: original.clone(),
                     preview: original.clone(),
                 });

@@ -193,8 +193,19 @@ impl ProjectView {
 
     /// Ends a clip drag: lands the clips as one edit if they can go there.
     pub(crate) fn finish_clip_drag(&mut self) {
-        let landing = self
-            .clip_plan()
+        let landing = self.clip_drag_landing();
+        self.clip_drag = None;
+        if let Some((edit, landed)) = landing {
+            self.session.apply(Command::Edit(edit));
+            // The clips just placed (copies included) are the selection.
+            self.selected_clips = landed.into_iter().collect();
+        }
+    }
+
+    /// The edit a clip drag makes if let go now, and the clips it places;
+    /// none where the clips can't go.
+    pub(crate) fn clip_drag_landing(&self) -> Option<(Edit, Vec<ClipId>)> {
+        self.clip_plan()
             .filter(|(_, plan)| plan.allowed)
             .map(|(drag, plan)| {
                 let snapshot = self.session.snapshot();
@@ -231,13 +242,7 @@ impl ProjectView {
                     .collect();
                 let moving = drag.moving();
                 clip_edit::land(snapshot, &landings, &moving, extra)
-            });
-        self.clip_drag = None;
-        if let Some((edit, landed)) = landing {
-            self.session.apply(Command::Edit(edit));
-            // The clips just placed (copies included) are the selection.
-            self.selected_clips = landed.into_iter().collect();
-        }
+            })
     }
 
     /// Escape: drops a drag without changing anything.

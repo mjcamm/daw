@@ -1220,6 +1220,7 @@ impl ProjectView {
                         .top(px(y - LOOP_CURSOR / 2.))
                         .child(icon(Icon::Loop, theme.accent, LOOP_CURSOR))
                 });
+                let hide_cursor = loop_cursor.is_some();
                 let press_spans = spans.clone();
                 let lane = div()
                     .debug_selector(|| format!("arrange-lane-{}", id.0))
@@ -1234,9 +1235,7 @@ impl ProjectView {
                     // lane adds a one-bar clip there and opens the editor
                     // on it.
                     .when(resize_cursor, |d| d.cursor_ew_resize())
-                    .when_some(loop_cursor, |d, cursor| {
-                        d.cursor_none(gpui::CursorStyle::Arrow).child(cursor)
-                    })
+                    .when(hide_cursor, |d| d.cursor_none(gpui::CursorStyle::Arrow))
                     // Which clip and part the pointer is on: redraw when that
                     // changes, and with every move over a loop zone (its
                     // drawn cursor follows the pointer).
@@ -1294,7 +1293,9 @@ impl ProjectView {
                             .top_0()
                             .left_0()
                             .size_full(),
-                    );
+                    )
+                    // The drawn loop cursor last, above the clips.
+                    .children(loop_cursor);
                 animated(layout, zoom.row_height, lane).into_any_element()
             })
             .collect();

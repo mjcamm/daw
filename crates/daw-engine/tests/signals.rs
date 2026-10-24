@@ -5,10 +5,10 @@
 
 use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
-    AudioProcessor, BlendMode, Block, BlockId, ClipId, Command, DeviceId, DeviceRef, Edit, Effect,
-    EffectKind, Engine, EngineConfig, FIRST_INSTRUMENT, FIRST_NODE, Layer, LayerId, LoopRange,
-    MidiClip, MidiNote, NotesSource, ParamId, Shape, Signal, SignalId, SignalSource, SignalUse,
-    Ticks,
+    AudioProcessor, BlendMode, Block, BlockId, ClipId, ClipLoop, Command, DeviceId, DeviceRef,
+    Edit, Effect, EffectKind, Engine, EngineConfig, FIRST_INSTRUMENT, FIRST_NODE, Layer, LayerId,
+    LoopRange, MidiClip, MidiNote, NotesSource, ParamId, Shape, Signal, SignalId, SignalSource,
+    SignalUse, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, render};
 
@@ -182,6 +182,30 @@ fn every_listening_parameter_ducks_at_every_kick() {
         }
         for (id, value, base) in values_at(&mut engine, &mut processor, kick + 0.75) {
             assert!((value - base).abs() < 1e-9, "{id:?} recovered");
+        }
+    }
+}
+
+/// A looped clip's repeats hit the signal too, not only its first cycle.
+#[test]
+fn a_looped_clips_repeats_hit_the_signal() {
+    let (mut engine, mut processor) = kick_ducking();
+    // The first two beats, looped out to all eight.
+    let snapshot = engine.snapshot();
+    let mut clip = snapshot.node(FIRST_NODE).unwrap().clips[0].1.clone();
+    clip.notes.retain(|n| n.start < beats(2.0));
+    clip.looping = Some(ClipLoop::new(beats(2.0)));
+    apply(
+        &mut engine,
+        Edit::SetClip {
+            id: ClipId(1),
+            node: FIRST_NODE,
+            clip,
+        },
+    );
+    for kick in [2.0, 5.0, 7.0] {
+        for (id, value, _) in values_at(&mut engine, &mut processor, kick) {
+            assert_eq!(value, 0.0, "{id:?} at beat {kick}, in a repeat");
         }
     }
 }

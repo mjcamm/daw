@@ -94,11 +94,12 @@ impl NotesField {
         }
     }
 
-    /// `original` after dragging this field `dx` pixels sideways. Ranges
-    /// stay valid: a minimum never passes its maximum, nor the other way.
-    pub fn dragged(self, original: &NotesSource, dx: f32, fine: bool) -> NotesSource {
+    /// `original` after dragging this field `dx` pixels sideways, on a
+    /// slider `length` long. Ranges stay valid: a minimum never passes its
+    /// maximum, nor the other way.
+    pub fn dragged(self, original: &NotesSource, dx: f32, length: f32, fine: bool) -> NotesSource {
         let mut source = original.clone();
-        let slid = |value: f64| slider::dragged(value, dx, fine);
+        let slid = |value: f64| slider::dragged(value, dx, length, fine);
         let semitones = |pitch: u8| {
             let step = if fine { 5. } else { 1. } * PIXELS_PER_SEMITONE;
             (f32::from(pitch) + (dx / step).round()).clamp(0., 127.) as u8
@@ -162,6 +163,8 @@ pub struct NotesDrag {
     pub signal: SignalId,
     pub field: NotesField,
     pub origin: Point<Pixels>,
+    /// The slider's length, so its thumb follows the pointer.
+    pub length: f32,
     pub original: NotesSource,
     pub preview: NotesSource,
 }
@@ -293,23 +296,28 @@ impl ProjectView {
         }
         if let Some(drag) = &mut self.notes_drag {
             let dx = (position.x - drag.origin.x) / px(1.);
-            drag.preview = drag.field.dragged(&drag.original, dx, fine);
+            drag.preview = drag.field.dragged(&drag.original, dx, drag.length, fine);
             return true;
         }
         false
     }
 
+    /// The edit an inspector drag makes if let go now: a changed setting.
+    pub(crate) fn inspector_drag_edit(&self) -> Option<Edit> {
+        let drag = self.notes_drag.as_ref()?;
+        (drag.preview != drag.original).then(|| Edit::SetNotesSource {
+            id: drag.signal,
+            source: drag.preview.clone(),
+        })
+    }
+
     /// Ends an inspector drag, sending a changed setting as one edit.
     pub(crate) fn finish_inspector_drag(&mut self) {
         self.inspector_resize = None;
-        if let Some(drag) = self.notes_drag.take()
-            && drag.preview != drag.original
-        {
-            self.session.apply(Command::Edit(Edit::SetNotesSource {
-                id: drag.signal,
-                source: drag.preview,
-            }));
+        if let Some(edit) = self.inspector_drag_edit() {
+            self.session.apply(Command::Edit(edit));
         }
+        self.notes_drag = None;
     }
 
     /// The page with the inspector and its tray beside it.
@@ -651,11 +659,12 @@ impl ProjectView {
             .as_ref()
             .is_some_and(|d| d.signal == id && d.field == field);
         let original = source.clone();
+        let length = slider_length(self.inspector_width);
         let slider = slider::slider(
             ("notes-slider", field as usize),
             Axis::Horizontal,
             field.position(source) as f32,
-            slider_length(self.inspector_width),
+            length,
             active,
             theme,
         )
@@ -666,6 +675,7 @@ impl ProjectView {
                     signal: id,
                     field,
                     origin: event.position,
+                    length,
                     original: original.clone(),
                     preview: original.clone(),
                 });
@@ -719,6 +729,7 @@ impl ProjectView {
                         signal: id,
                         field,
                         origin: event.position,
+                        length: slider::SCRUB_LENGTH,
                         original: original.clone(),
                         preview: original.clone(),
                     });
@@ -828,6 +839,7 @@ mod tests {
 
     #[test]
     fn ranges_stay_valid_while_dragging() {
+        const SCRUB: f32 = slider::SCRUB_LENGTH;
         let source = NotesSource {
             lowest: 36,
             highest: 38,
@@ -835,17 +847,17 @@ mod tests {
             velocity_max: 0.6,
             ..NotesSource::new(daw_engine::FIRST_NODE)
         };
-        let lowest = NotesField::Lowest.dragged(&source, 600., false);
+        let lowest = NotesField::Lowest.dragged(&source, 600., SCRUB, false);
         assert_eq!(lowest.lowest, 38, "stops at the highest");
-        let highest = NotesField::Highest.dragged(&source, -600., false);
+        let highest = NotesField::Highest.dragged(&source, -600., SCRUB, false);
         assert_eq!(highest.highest, 36, "stops at the lowest");
-        let up = NotesField::Highest.dragged(&source, 4. * PIXELS_PER_SEMITONE, false);
+        let up = NotesField::Highest.dragged(&source, 4. * PIXELS_PER_SEMITONE, SCRUB, false);
         assert_eq!(up.highest, 42);
-        let min = NotesField::VelocityMin.dragged(&source, 500., false);
+        let min = NotesField::VelocityMin.dragged(&source, 500., SCRUB, false);
         assert!((min.velocity_min - 0.6).abs() < 1e-9, "stops at the max");
-        let max = NotesField::VelocityMax.dragged(&source, -500., false);
+        let max = NotesField::VelocityMax.dragged(&source, -500., SCRUB, false);
         assert!((max.velocity_max - 0.2).abs() < 1e-9, "stops at the min");
-        let sustain = NotesField::Sustain.dragged(&source, 100., false);
+        let sustain = NotesField::Sustain.dragged(&source, 100., SCRUB, false);
         assert!((sustain.sustain - 0.5).abs() < 1e-9);
     }
 

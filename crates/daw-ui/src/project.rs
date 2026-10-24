@@ -558,6 +558,9 @@ impl Render for ProjectView {
             self.autoscroll_note_drag();
         }
         self.end_note_preview();
+        // A drag sounds as it would land, once a frame; a drag dropped
+        // with Escape stops sounding.
+        self.preview_drag();
 
         // While something follows the pointer, the pane it started in
         // redraws each frame (others whose size changes redraw on their

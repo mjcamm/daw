@@ -339,16 +339,20 @@ pub(crate) struct BlockDrag {
 pub(crate) struct BaseDrag {
     param: ParamId,
     origin_y: Pixels,
+    /// The slider's length, so its thumb follows the pointer.
+    length: f32,
     original: f64,
     preview: f64,
 }
 
 impl BaseDrag {
-    /// A resting-value drag starting at `origin_y` (dragging up raises it).
-    pub(crate) fn new(param: ParamId, origin_y: Pixels, original: f64) -> Self {
+    /// A resting-value drag starting at `origin_y` (dragging up raises it)
+    /// on a slider `length` long.
+    pub(crate) fn new(param: ParamId, origin_y: Pixels, length: f32, original: f64) -> Self {
         Self {
             param,
             origin_y,
+            length,
             original,
             preview: original,
         }
@@ -360,6 +364,8 @@ impl BaseDrag {
 pub(crate) struct MixDrag {
     layer: LayerId,
     origin_y: Pixels,
+    /// The slider's length, so its thumb follows the pointer.
+    length: f32,
     original: f64,
     preview: f64,
 }
@@ -898,12 +904,12 @@ impl ProjectView {
         }
         if let Some(drag) = &mut self.base_drag {
             let up = (drag.origin_y - position.y) / px(1.);
-            drag.preview = slider::dragged(drag.original, up, modifiers.shift);
+            drag.preview = slider::dragged(drag.original, up, drag.length, modifiers.shift);
             return;
         }
         if let Some(drag) = &mut self.mix_drag {
             let up = (drag.origin_y - position.y) / px(1.);
-            drag.preview = slider::dragged(drag.original, up, modifiers.shift);
+            drag.preview = slider::dragged(drag.original, up, drag.length, modifiers.shift);
             return;
         }
         let snap = self.snap_for(modifiers);
@@ -938,6 +944,46 @@ impl ProjectView {
         };
     }
 
+    /// The edit the drag in progress makes if let go now, whatever is
+    /// being dragged. Heard while dragging ([`Self::preview_drag`]) and
+    /// sent on release, so what plays is what lands.
+    pub(crate) fn drag_edit(&self) -> Option<Edit> {
+        self.inspector_drag_edit()
+            .or_else(|| self.clip_drag_landing().map(|(edit, _)| edit))
+            .or_else(|| self.mixer_drag_edit())
+            .or_else(|| self.note_drag_edit())
+            .or_else(|| self.audio_drag_edit())
+            .or_else(|| self.combined_drag_edit())
+            .or_else(|| self.parameters_drag_edit())
+    }
+
+    /// Plays the drag in progress as it would land, once per frame.
+    pub(crate) fn preview_drag(&mut self) {
+        let edit = self.drag_edit();
+        self.session.preview(edit);
+    }
+
+    /// The edit a drag on Parameters (or a fader) makes if let go now.
+    fn parameters_drag_edit(&self) -> Option<Edit> {
+        if let Some(drag) = &self.mix_drag {
+            return (drag.preview != drag.original).then_some(Edit::SetLayerMix {
+                id: drag.layer,
+                mix: drag.preview,
+            });
+        }
+        if let Some(drag) = &self.base_drag {
+            return (drag.preview != drag.original).then_some(Edit::SetParam {
+                param: drag.param,
+                value: drag.preview,
+            });
+        }
+        let drag = self.block_drag.as_ref()?;
+        (drag.preview != drag.original).then(|| Edit::SetBlock {
+            id: drag.id,
+            block: drag.preview.clone(),
+        })
+    }
+
     /// Ends a drag, sending the change as one edit.
     pub(crate) fn finish_drag(&mut self) {
         self.frame_drag = None;
@@ -948,30 +994,14 @@ impl ProjectView {
         self.finish_note_drag();
         self.finish_audio_drag();
         self.finish_combined_drag();
-        if let Some(drag) = self.mix_drag.take()
-            && drag.preview != drag.original
-        {
-            self.session.apply(Command::Edit(Edit::SetLayerMix {
-                id: drag.layer,
-                mix: drag.preview,
-            }));
+        if let Some(edit) = self.parameters_drag_edit() {
+            self.session.apply(Command::Edit(edit));
         }
-        if let Some(drag) = self.base_drag.take()
-            && drag.preview != drag.original
-        {
-            self.session.apply(Command::Edit(Edit::SetParam {
-                param: drag.param,
-                value: drag.preview,
-            }));
-        }
-        if let Some(drag) = self.block_drag.take()
-            && drag.preview != drag.original
-        {
-            self.session.apply(Command::Edit(Edit::SetBlock {
-                id: drag.id,
-                block: drag.preview,
-            }));
-        }
+        self.mix_drag = None;
+        self.base_drag = None;
+        self.block_drag = None;
+        // A drag that changed nothing in the end stops sounding changed.
+        self.session.preview(None);
     }
 
     /// The resting value being dragged for `param`, if it is.
@@ -1019,12 +1049,7 @@ impl ProjectView {
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                this.base_drag = Some(BaseDrag {
-                    param: param_id,
-                    origin_y: event.position.y,
-                    original,
-                    preview: original,
-                });
+                this.base_drag = Some(BaseDrag::new(param_id, event.position.y, length, original));
             }),
         )
     }
@@ -1073,6 +1098,7 @@ impl ProjectView {
                 this.mix_drag = Some(MixDrag {
                     layer,
                     origin_y: event.position.y,
+                    length,
                     original,
                     preview: original,
                 });
@@ -2721,6 +2747,7 @@ mod tests {
         let drag = MixDrag {
             layer: LayerId(1),
             origin_y: px(0.),
+            length: 60.,
             original: 1.0,
             preview: 0.3,
         };

@@ -124,16 +124,13 @@ fn signal_notes(snapshot: &Snapshot, node: NodeId) -> Vec<SignalNote> {
         .into_iter()
         .flat_map(|n| &n.clips)
         .flat_map(|(_, clip)| {
-            clip.notes.iter().filter_map(move |note| {
-                // Only the part of a note inside its clip plays.
-                let start = note.start.max(daw_engine::Ticks::ZERO);
-                let end = (note.start + note.length).min(clip.length);
-                (start < end).then(|| SignalNote {
-                    start: (clip.start + start).as_beats(),
-                    end: (clip.start + end).as_beats(),
-                    pitch: note.pitch,
-                    velocity: note.velocity,
-                })
+            // As the engine plays them: only what is inside the clip, and a
+            // loop's repeats.
+            clip.played_notes().into_iter().map(move |note| SignalNote {
+                start: (clip.start + note.start).as_beats(),
+                end: (clip.start + note.start + note.length).as_beats(),
+                pitch: note.pitch,
+                velocity: note.velocity,
             })
         })
         .collect()
@@ -784,6 +781,112 @@ mod tests {
             signal,
             listeners: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_looped_clips_repeats_reach_its_notes_signal() {
+        let beat = daw_engine::Ticks::from_beats;
+        let clip = daw_engine::MidiClip {
+            start: beat(0),
+            length: beat(8),
+            notes: vec![daw_engine::MidiNote {
+                start: beat(0),
+                length: beat(1),
+                pitch: 36,
+                velocity: 100,
+            }],
+            looping: Some(daw_engine::ClipLoop::new(beat(2))),
+        };
+        let snapshot = snapshot_with(vec![Edit::AddClip {
+            node: FIRST_NODE,
+            id: daw_engine::ClipId(1),
+            clip,
+        }]);
+        let starts: Vec<f64> = signal_notes(&snapshot, FIRST_NODE)
+            .iter()
+            .map(|n| n.start)
+            .collect();
+        assert_eq!(starts, vec![0., 2., 4., 6.], "a hit at every repeat");
+    }
+
+    /// A note `len` beats long at `at`, pitch 36.
+    fn kick(at: f64, len: f64) -> daw_engine::MidiNote {
+        daw_engine::MidiNote {
+            start: daw_engine::Ticks::from_beats_f64(at),
+            length: daw_engine::Ticks::from_beats_f64(len),
+            pitch: 36,
+            velocity: 100,
+        }
+    }
+
+    /// Signals drawn on the page are the ones the engine plays, for every
+    /// way a clip can loop: whole repeats, a last repeat cut short, a cycle
+    /// started part way in, notes crossing the cycle's or the clip's end.
+    #[test]
+    fn signals_read_looped_clips_as_the_engine_plays_them() {
+        let beats = daw_engine::Ticks::from_beats_f64;
+        let clip = |start: f64, length: f64, notes, looping| daw_engine::MidiClip {
+            start: beats(start),
+            length: beats(length),
+            notes,
+            looping,
+        };
+        let clips = [
+            // Two beats looped to eight: four repeats.
+            clip(
+                0.,
+                8.,
+                vec![kick(0., 0.5), kick(1., 0.5)],
+                Some(daw_engine::ClipLoop::new(beats(2.))),
+            ),
+            // A three-beat cycle over seven beats, starting a beat into the
+            // cycle; one note crosses the cycle's end.
+            clip(
+                8.,
+                7.,
+                vec![kick(0., 0.5), kick(2.5, 1.)],
+                Some(daw_engine::ClipLoop {
+                    cycle: beats(3.),
+                    phase: beats(1.),
+                }),
+            ),
+            // Not looped: a note running past the clip's end is cut there.
+            clip(16., 2., vec![kick(1.5, 2.)], None),
+        ];
+        let mut edits: Vec<Edit> = clips
+            .into_iter()
+            .enumerate()
+            .map(|(i, clip)| Edit::AddClip {
+                node: FIRST_NODE,
+                id: daw_engine::ClipId(i as u64 + 1),
+                clip,
+            })
+            .collect();
+        edits.push(add(
+            1,
+            Signal {
+                name: "Kicks".to_owned(),
+                color: 0,
+                source: SignalSource::Notes(NotesSource::new(FIRST_NODE)),
+            },
+        ));
+        let (mut engine, _processor) = Engine::new(EngineConfig::default());
+        for edit in edits {
+            engine.apply(Command::Edit(edit)).unwrap();
+        }
+        let snapshot = engine.snapshot();
+        assert_eq!(
+            compile_all(&snapshot),
+            daw_engine::compile_signals(engine.project()),
+            "the page's signals differ from what the engine plays"
+        );
+        // And the repeats are there: a hit on every beat of the first clip.
+        let starts: Vec<f64> = signal_notes(&snapshot, FIRST_NODE)
+            .iter()
+            .map(|n| n.start)
+            .take_while(|s| *s < 8.)
+            .collect();
+        assert_eq!(starts, vec![0., 1., 2., 3., 4., 5., 6., 7.]);
     }
 
     #[test]

@@ -105,6 +105,8 @@ pub enum MixerDrag {
     Pan {
         param: ParamId,
         origin_x: Pixels,
+        /// The slider's length, so its thumb follows the pointer.
+        length: f32,
         original: f64,
         preview: f64,
     },
@@ -138,7 +140,7 @@ pub fn map_height(levels: usize) -> f32 {
     levels.min(MAP_VISIBLE_ROWS) as f32 * MAP_ROW + 2. * MAP_PAD
 }
 
-fn volume_id(node: NodeId) -> ParamId {
+pub(crate) fn volume_id(node: NodeId) -> ParamId {
     ParamId {
         node,
         device: DeviceRef::Channel,
@@ -146,7 +148,7 @@ fn volume_id(node: NodeId) -> ParamId {
     }
 }
 
-fn pan_id(node: NodeId) -> ParamId {
+pub(crate) fn pan_id(node: NodeId) -> ParamId {
     ParamId {
         node,
         device: DeviceRef::Channel,
@@ -953,6 +955,7 @@ impl ProjectView {
                     active,
                     theme,
                 )
+                .debug_selector(move || format!("pan-{}", param.node.0))
                 .tooltip(tooltip::text("Pan · double-click to centre"))
                 .on_click(cx.listener(move |this, event: &ClickEvent, _, _| {
                     if event.click_count() >= 2 {
@@ -968,6 +971,7 @@ impl ProjectView {
                         this.mixer_drag = Some(MixerDrag::Pan {
                             param,
                             origin_x: event.position.x,
+                            length,
                             original: resting,
                             preview: resting,
                         });
@@ -1041,6 +1045,7 @@ impl ProjectView {
                     active,
                     theme,
                 )
+                .debug_selector(move || format!("fader-{}", param.node.0))
                 .tooltip(tooltip::text("Volume · double-click for 0 dB"))
                 .on_click(cx.listener(move |this, event: &ClickEvent, _, _| {
                     if event.click_count() >= 2 {
@@ -1053,7 +1058,8 @@ impl ProjectView {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, _, _| {
-                        this.base_drag = Some(BaseDrag::new(param, event.position.y, resting));
+                        this.base_drag =
+                            Some(BaseDrag::new(param, event.position.y, length, resting));
                     }),
                 ),
             )
@@ -1261,12 +1267,13 @@ impl ProjectView {
         match drag {
             MixerDrag::Pan {
                 origin_x,
+                length,
                 original,
                 preview,
                 ..
             } => {
                 let dx = (position.x - *origin_x) / px(1.);
-                *preview = detented(slider::dragged(*original, dx, fine));
+                *preview = detented(slider::dragged(*original, dx, *length, fine));
             }
             MixerDrag::Width { origin_x, original } => {
                 let dx = (position.x - *origin_x) / px(1.);
@@ -1283,21 +1290,28 @@ impl ProjectView {
         true
     }
 
-    /// Ends a mixer drag; a pan change is one edit.
-    pub(crate) fn finish_mixer_drag(&mut self) {
-        if let Some(MixerDrag::Pan {
-            param,
-            original,
-            preview,
-            ..
-        }) = self.mixer_drag.take()
-            && preview != original
-        {
-            self.session.apply(Command::Edit(Edit::SetParam {
+    /// The edit a mixer drag makes if let go now: a changed pan.
+    pub(crate) fn mixer_drag_edit(&self) -> Option<Edit> {
+        match self.mixer_drag {
+            Some(MixerDrag::Pan {
+                param,
+                original,
+                preview,
+                ..
+            }) if preview != original => Some(Edit::SetParam {
                 param,
                 value: preview,
-            }));
+            }),
+            _ => None,
         }
+    }
+
+    /// Ends a mixer drag; a pan change is one edit.
+    pub(crate) fn finish_mixer_drag(&mut self) {
+        if let Some(edit) = self.mixer_drag_edit() {
+            self.session.apply(Command::Edit(edit));
+        }
+        self.mixer_drag = None;
     }
 }
 

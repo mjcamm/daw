@@ -6,6 +6,7 @@
 mod arrange;
 mod browser;
 mod export;
+mod live_drags;
 mod loop_strip;
 mod menus;
 mod perf;
@@ -132,6 +133,16 @@ impl Harness {
             modifiers: Modifiers::none(),
             button: MouseButton::Left,
             click_count: 1,
+        });
+        self.redraw();
+    }
+
+    /// Moves the pointer with the left button held (after [`Self::press`]).
+    pub fn move_held(&mut self, to: Point<Pixels>) {
+        self.cx.simulate_event(gpui::MouseMoveEvent {
+            position: to,
+            modifiers: Modifiers::none(),
+            pressed_button: Some(MouseButton::Left),
         });
         self.redraw();
     }

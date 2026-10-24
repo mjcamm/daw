@@ -70,6 +70,7 @@ Release, high priority, best frame: Arrange full 5.7–6.4 ms, Arrange pane alon
 - **Culling:** `paint::visible_x` / `visible_y` give what is near the screen (a quarter screen either side); scrolling redraws the pane the same frame. Painters also skip what is outside the content mask.
 - **Live layer** (`live.rs`): panes place `live_slot` markers (playheads, meters, fader markers, parameter values); the markers record their box when laid out; the shell paints them all every frame in one canvas. Slots of panes not shown are dropped each frame.
 - **Rule for new UI:** nothing inside a pane may read the song position, meters or the clock without going through the live layer or `animate()`; anything that changes outside input or the song must redraw panes itself (`invalidate_all`); anything that looks different under the pointer (beyond a GPUI `.hover()` style) calls `hover_changed` when that look changes; a new drag that previews in another pane joins the "redraw all" list in `ProjectView::render`.
+- **Drags are heard as they move** (`audio-engine.md`, previews): the engine plays a drag's edit each frame without a new revision, so hearing a drag redraws nothing more; its cost is the song compiled once a frame (`perf_drag_preview`, 1 ms budget). Note that a drag frame on the mixer is about 8 ms on the full-size song (the whole mixer pane redraws each frame of a drag, as before).
 
 ## GPUI facts this rests on
 
