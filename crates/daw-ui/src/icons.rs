@@ -2,7 +2,8 @@
 //! embedded in the binary and served to GPUI as assets.
 //!
 //! To add an icon: download it from the pinned `lucide-static` version into
-//! `assets/icons/`, then add a variant below.
+//! `assets/icons/`, then add a variant below. The one exception is
+//! `metronome.svg`, from `lucide-static@1.61.0` (0.460.0 has none).
 
 use gpui::{AssetSource, Hsla, SharedString, Styled, Svg, px, svg};
 use std::borrow::Cow;
@@ -39,10 +40,13 @@ pub enum Icon {
     Group,
     Search,
     Learn,
+    Metronome,
+    Volume,
+    VolumeOff,
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 30] = [
+const ICONS: [(Icon, &str, &[u8]); 33] = [
     (
         Icon::Learn,
         "icons/crosshair.svg",
@@ -192,6 +196,21 @@ const ICONS: [(Icon, &str, &[u8]); 30] = [
         Icon::Group,
         "icons/group.svg",
         include_bytes!("../assets/icons/group.svg"),
+    ),
+    (
+        Icon::Metronome,
+        "icons/metronome.svg",
+        include_bytes!("../assets/icons/metronome.svg"),
+    ),
+    (
+        Icon::Volume,
+        "icons/volume-2.svg",
+        include_bytes!("../assets/icons/volume-2.svg"),
+    ),
+    (
+        Icon::VolumeOff,
+        "icons/volume-x.svg",
+        include_bytes!("../assets/icons/volume-x.svg"),
     ),
 ];
 

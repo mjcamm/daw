@@ -206,6 +206,10 @@ struct PluginRun {
 #[derive(Debug)]
 pub(crate) enum AudioMsg {
     SetPlaying(bool),
+    /// The metronome's settings.
+    SetMetronome(daw_protocol::Metronome),
+    /// One accented click now.
+    PreviewClick,
     Locate(f64),
     SetLoop(Option<(f64, f64)>),
     SwapState(Box<RenderState>),
@@ -358,6 +362,8 @@ pub struct AudioProcessor {
     /// Frames of the test tone still to play, and how far it has played.
     tone_left: u32,
     tone_played: u32,
+    /// The click track, over the output.
+    metronome: crate::metronome::MetronomePlayer,
     from_control: rtrb::Consumer<AudioMsg>,
     garbage: rtrb::Producer<Box<RenderState>>,
     retired: Retired,
@@ -431,6 +437,7 @@ impl AudioProcessor {
             frames_processed: 0,
             tone_left: 0,
             tone_played: 0,
+            metronome: crate::metronome::MetronomePlayer::new(sample_rate),
             from_control,
             garbage,
             retired,
@@ -480,7 +487,17 @@ impl AudioProcessor {
         });
         for chunk in out.chunks_mut(CHUNK_FRAMES * self.channels) {
             let frames = chunk.len() / self.channels;
+            // Where the chunk starts, for the beats it crosses.
+            let (start, chunk_start) = (self.transport.clone(), self.frames_processed);
             self.render(frames, deadline);
+            // Over the Song's channel, never through it.
+            self.metronome
+                .schedule(&start, chunk_start, frames as u64, self.state.latency);
+            self.metronome.render(
+                chunk_start,
+                &mut self.left[..frames],
+                &mut self.right[..frames],
+            );
             self.add_test_tone(frames);
             let (left, right) = (&self.left[..frames], &self.right[..frames]);
             self.status.output.record(peak(left), peak(right));
@@ -543,13 +560,17 @@ impl AudioProcessor {
                 AudioMsg::SetPlaying(playing) => {
                     if !playing {
                         self.release_all();
+                        self.metronome.clear();
                     }
                     self.transport.set_playing(playing);
                 }
                 AudioMsg::Locate(beats) => {
                     self.release_all();
+                    self.metronome.clear();
                     self.transport.locate(beats);
                 }
+                AudioMsg::SetMetronome(settings) => self.metronome.set(settings),
+                AudioMsg::PreviewClick => self.metronome.preview(),
                 AudioMsg::SetLoop(range) => self.transport.set_loop(range),
                 AudioMsg::TestTone => {
                     self.tone_left = (TEST_TONE_SECONDS * self.sample_rate) as u32;

@@ -17,6 +17,7 @@ pub mod compensation;
 pub mod devices;
 mod file;
 mod history;
+mod metronome;
 mod parallel;
 mod plugins;
 mod project;
@@ -27,12 +28,12 @@ mod upgrade;
 
 pub use audio::{AudioProcessor, CONTROL_FRAMES};
 pub use daw_protocol::{
-    AudioClip, BlendMode, Block, BlockId, ClipId, ClipLoop, Command, CommandError,
+    AudioClip, BlendMode, Block, BlockId, ClickSound, ClipId, ClipLoop, Command, CommandError,
     DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, DeviceSnapshot, Edit, Effect, EffectKind,
     Instrument, InstrumentKind, InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId,
-    LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, MidiClip,
-    MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId,
-    ParamSnapshot, ParamState, Peaks, Piece, PluginData, PluginParam, PluginParamInfo,
+    LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, Metronome,
+    MidiClip, MidiNote, MinMax, Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource,
+    ParamId, ParamSnapshot, ParamState, Peaks, Piece, PluginData, PluginParam, PluginParamInfo,
     PluginSnapshot, PluginSpec, PluginState, PluginWindow, SEAM_FADE, SampleId, SampleRef,
     SampleSnapshot, SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId,
     SignalSnapshot, SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
@@ -122,6 +123,8 @@ pub struct Engine {
     /// The drag being heard ([`Command::Preview`]), applied to the song
     /// but not in its history.
     preview: Option<Preview>,
+    /// The click track's settings (an app setting, not in the song).
+    metronome: Metronome,
     /// Whether render workers run at audio priority (not for exports).
     realtime_workers: bool,
 }
@@ -209,6 +212,7 @@ impl Engine {
             learning: None,
             turning: BTreeMap::new(),
             preview: None,
+            metronome: Metronome::default(),
             delay_rooms: BTreeMap::new(),
             realtime_workers,
         };
@@ -333,6 +337,12 @@ impl Engine {
                 });
             }
             Command::TestTone => self.outbox.push_back(AudioMsg::TestTone),
+            Command::SetMetronome(settings) => {
+                self.metronome = settings.clamped();
+                self.outbox
+                    .push_back(AudioMsg::SetMetronome(self.metronome));
+            }
+            Command::PreviewClick => self.outbox.push_back(AudioMsg::PreviewClick),
             Command::OpenPluginWindow { device: effect } => {
                 let title = self
                     .window_title(effect)
@@ -486,6 +496,7 @@ impl Engine {
                 .collect(),
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
+            metronome: self.metronome,
         };
         for node in &mut snapshot.nodes {
             let Some(project_node) = self.project.node(node.id) else {

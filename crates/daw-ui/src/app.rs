@@ -51,6 +51,7 @@ enum TopMenu {
 pub(crate) enum Section {
     Audio,
     Appearance,
+    Metronome,
     Plugins,
 }
 
@@ -88,23 +89,41 @@ pub struct AppView {
     /// and when the driver or device changes (asking the system is slow).
     choices: DeviceChoices,
     drivers: Vec<String>,
+    /// A metronome setting's slider being dragged.
+    pub(crate) metronome_drag: Option<crate::metronome_settings::SettingDrag>,
     _screen_events: Subscription,
     _appearance: Subscription,
 }
 
 impl AppView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::with(
+            StoredPreferences::load_default(),
+            RecentProjects::load_default(),
+            window,
+            cx,
+        );
+        view.start_scan(cx);
+        view
+    }
+
+    /// The app with these preferences and recent projects, on the launch
+    /// page, scanning no plugins (tests give it files of their own).
+    pub(crate) fn with(
+        preferences: StoredPreferences,
+        recent: RecentProjects,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let appearance = cx.observe_window_appearance(window, |this: &mut Self, window, cx| {
             this.apply_theme(window, cx);
         });
-        let recent = RecentProjects::load_default();
-        let preferences = StoredPreferences::load_default();
         cx.set_global(Theme::for_preference(
             preferences.preferences.appearance,
             window.appearance(),
         ));
         let (screen, events) = launch_screen(&recent, window, cx);
-        let mut view = Self {
+        Self {
             screen,
             recent,
             preferences,
@@ -115,12 +134,11 @@ impl AppView {
             open_choice: None,
             choices: DeviceChoices::default(),
             drivers: Vec::new(),
+            metronome_drag: None,
             scan: Default::default(),
             _screen_events: events,
             _appearance: appearance,
-        };
-        view.start_scan(cx);
-        view
+        }
     }
 
     pub(crate) fn save_preferences(&self) {
@@ -165,8 +183,17 @@ impl AppView {
         }
     }
 
-    fn show_project(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn show_project(
+        &mut self,
+        mut session: Session,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.remember(&session);
+        // The click as the user left it, whichever song opens.
+        session.apply(daw_engine::Command::SetMetronome(
+            self.preferences.preferences.metronome,
+        ));
         let view = cx.new(|cx| ProjectView::new(session, window, cx));
         self._screen_events = cx.subscribe_in(
             &view,
@@ -182,6 +209,11 @@ impl AppView {
                         eprintln!("could not update recent projects: {e}");
                     }
                     this.show_launch(window, cx);
+                }
+                ProjectEvent::Metronome(metronome) => {
+                    this.preferences.preferences.metronome = *metronome;
+                    this.save_preferences();
+                    cx.notify();
                 }
             },
         );
@@ -214,7 +246,7 @@ impl AppView {
         self.apply_theme(window, cx);
     }
 
-    fn open_preferences(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_preferences(&mut self, cx: &mut Context<Self>) {
         self.open_menu = None;
         self.preferences_open = true;
         self.open_choice = None;
@@ -457,10 +489,12 @@ impl AppView {
             )
             .child(nav(Section::Audio, "Audio"))
             .child(nav(Section::Appearance, "Appearance"))
+            .child(nav(Section::Metronome, "Metronome"))
             .child(nav(Section::Plugins, "Plugins"));
         let body = match self.section {
             Section::Audio => self.render_audio_settings(theme, cx).into_any_element(),
             Section::Appearance => self.render_appearance(theme, cx).into_any_element(),
+            Section::Metronome => self.render_metronome_settings(theme, cx).into_any_element(),
             Section::Plugins => self.render_plugin_settings(theme, cx).into_any_element(),
         };
         let close = div()
@@ -941,7 +975,11 @@ impl AppView {
 }
 
 /// A setting: its name on the left, its control on the right.
-fn setting_row(theme: &Theme, label: &'static str, control: AnyElement) -> impl IntoElement {
+pub(crate) fn setting_row(
+    theme: &Theme,
+    label: &'static str,
+    control: AnyElement,
+) -> impl IntoElement {
     div()
         .flex()
         .items_center()

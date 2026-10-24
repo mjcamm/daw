@@ -65,6 +65,10 @@ pub enum Command {
     /// Play a short 440 Hz tone (A4) at -12 dB through the output, over
     /// whatever is playing, to check the audio device.
     TestTone,
+    /// Set the metronome: an app setting, not part of the song or undo.
+    SetMetronome(Metronome),
+    /// Play one accented click of the metronome's sound now, to try it.
+    PreviewClick,
     /// Start (`on`) or end a note played straight away on a node's
     /// instruments, to hear it while editing. Not part of the song or undo.
     PreviewNote {
@@ -467,6 +471,76 @@ pub struct Snapshot {
     pub samples: Vec<SampleSnapshot>,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// The metronome as set ([`Command::SetMetronome`]).
+    pub metronome: Metronome,
+}
+
+/// The metronome (click track): a click on every beat while playing,
+/// higher on each bar's first. Heard over the output after the Song's
+/// channel, so its fader and effects never change it, and never in exports.
+/// An app setting kept with the preferences, not in the song.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Metronome {
+    pub on: bool,
+    /// Level, `0..=100`.
+    pub volume: u8,
+    pub sound: ClickSound,
+    /// Each bar's first beat higher and louder.
+    pub accent: bool,
+    /// Semitones up or down from the sound's own pitch, `-12..=12`.
+    pub pitch: i8,
+}
+
+impl Metronome {
+    pub const MAX_VOLUME: u8 = 100;
+    pub const PITCH_RANGE: i8 = 12;
+
+    /// The same settings with volume and pitch kept in range.
+    pub fn clamped(self) -> Self {
+        Self {
+            volume: self.volume.min(Self::MAX_VOLUME),
+            pitch: self.pitch.clamp(-Self::PITCH_RANGE, Self::PITCH_RANGE),
+            ..self
+        }
+    }
+}
+
+impl Default for Metronome {
+    fn default() -> Self {
+        Self {
+            on: false,
+            volume: 70,
+            sound: ClickSound::default(),
+            accent: true,
+            pitch: 0,
+        }
+    }
+}
+
+/// The metronome's sound, made by the engine (no sample files).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum ClickSound {
+    #[default]
+    Beep,
+    Wood,
+    Tick,
+    Cowbell,
+}
+
+impl ClickSound {
+    pub const ALL: [Self; 4] = [Self::Beep, Self::Wood, Self::Tick, Self::Cowbell];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Beep => "Beep",
+            Self::Wood => "Wood",
+            Self::Tick => "Tick",
+            Self::Cowbell => "Cowbell",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

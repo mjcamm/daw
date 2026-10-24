@@ -138,6 +138,9 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 |---|---|
 | Menus open on press (like native menus); pressing an open menu's trigger closes it | `menus::a_menu_opens_on_press_and_its_trigger_closes_it` |
 | Space plays and stops | – |
+| The metronome button beside the transport switches the click on and off (lit when on); kept for every song (`metronome.md`) | `metronome::the_metronome_button_switches_the_click`, `metronome::the_transport_switch_is_kept_in_the_preferences` |
+| Hovering the volume button opens a vertical slider for the click's level; it stays while over the button or the slider, or while held; the click follows the drag | `metronome::hovering_the_volume_button_opens_its_slider` |
+| Preferences → Metronome: sound (picking one plays it), accent on beat 1, pitch and volume; kept in the preferences and heard at once | `metronome::the_metronome_page_sets_the_click_and_keeps_it` |
 | Every drag that changes the song (sliders, blocks, notes and velocities, clips, notes-signal and audio-clip settings) is heard as it moves and lands as one undo step; every slider's thumb stays under the pointer (Shift: five times finer) | `live_drags::*` |
 | Loop strip on every ruler (`loop-strip.md`): drag draws a fresh loop, snapped to the page's grid (Slide: unsnapped), and switches looping on | `loop_strip::dragging_on_the_loop_strip_draws_a_loop_that_plays`, `loop_strip::sliding_leaves_the_loop_off_the_grid` |
 | Any drag on the strip but a handle draws a fresh loop, inside the loop too | `loop_strip::a_drag_inside_the_loop_draws_a_fresh_one` |

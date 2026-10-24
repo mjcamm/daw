@@ -9,6 +9,7 @@ mod export;
 mod live_drags;
 mod loop_strip;
 mod menus;
+mod metronome;
 mod parameters;
 mod perf;
 mod piano_roll;

@@ -597,25 +597,7 @@ impl ProjectView {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Div {
-        let track = if on { theme.active } else { theme.control };
-        let knob = div()
-            .absolute()
-            .top(px(2.))
-            .left(px(if on { 13. } else { 2. }))
-            .size(px(11.))
-            .rounded(px(5.5))
-            .bg(theme.on_accent)
-            .shadow_sm();
-        let toggle = div()
-            .id(("notes-switch", switch as usize))
-            .relative()
-            .w(px(26.))
-            .h(px(15.))
-            .flex_none()
-            .rounded(px(7.5))
-            .bg(track)
-            .cursor_pointer()
-            .child(knob)
+        let toggle = crate::switch::switch(("notes-switch", switch as usize), on, theme)
             .tooltip(tooltip::text(switch.tooltip(on)))
             .on_click(cx.listener(move |this, _, _, _| this.flip_notes_switch(id, switch)));
         section_label(switch.label(), theme)

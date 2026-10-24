@@ -35,6 +35,8 @@ pub struct Preferences {
     pub audio: AudioSettings,
     /// Plugin folders searched besides the standard ones.
     pub plugin_folders: Vec<PathBuf>,
+    /// The click track: on or off, volume, sound, accent, pitch.
+    pub metronome: daw_engine::Metronome,
 }
 
 /// The audio setup the user chose. Each `None` leaves it to the system (or
@@ -113,6 +115,27 @@ mod tests {
             StoredPreferences::load(path).preferences.appearance,
             Appearance::Dark
         );
+    }
+
+    #[test]
+    fn the_metronome_is_kept_and_older_files_take_its_defaults() {
+        let path = scratch("metronome");
+        let mut stored = StoredPreferences::load(path.clone());
+        stored.preferences.metronome = daw_engine::Metronome {
+            on: true,
+            volume: 35,
+            sound: daw_engine::ClickSound::Cowbell,
+            accent: false,
+            pitch: -5,
+        };
+        stored.save().unwrap();
+        let loaded = StoredPreferences::load(path.clone()).preferences.metronome;
+        assert_eq!(loaded, stored.preferences.metronome);
+        // A file from before the metronome.
+        std::fs::write(&path, r#"{"appearance":"Dark"}"#).unwrap();
+        let older = StoredPreferences::load(path).preferences;
+        assert_eq!(older.appearance, Appearance::Dark);
+        assert_eq!(older.metronome, daw_engine::Metronome::default());
     }
 
     #[test]

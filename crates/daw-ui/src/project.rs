@@ -95,6 +95,8 @@ pub(crate) struct Rename {
 pub enum ProjectEvent {
     /// Go back to the launch page.
     Close,
+    /// The metronome changed from the transport: the app keeps it.
+    Metronome(daw_engine::Metronome),
 }
 
 pub struct ProjectView {
@@ -134,6 +136,11 @@ pub struct ProjectView {
     /// and loop icon follow, so they are right after a drag or an edit
     /// moves a clip under a still pointer.
     pub(crate) arrange_pointer: Option<gpui::Point<Pixels>>,
+    /// The pointer over the metronome's volume button or its popover.
+    pub(crate) volume_hover: crate::metronome_ui::VolumeHover,
+    pub(crate) volume_drag: Option<crate::metronome_ui::VolumeDrag>,
+    /// Metronome settings changed and not yet handed to the app to keep.
+    pub(crate) metronome_to_keep: Option<daw_engine::Metronome>,
     /// A hover effect changed (a cursor, a preview): the pane under the
     /// pointer redraws. Plain moves redraw nothing otherwise.
     pub(crate) hover_changed: bool,
@@ -337,6 +344,9 @@ impl ProjectView {
             scissors_at: None,
             arrange_hover: Cell::new(None),
             arrange_pointer: None,
+            volume_hover: Default::default(),
+            volume_drag: None,
+            metronome_to_keep: None,
             hover_changed: false,
             lane_hover: Cell::new(None),
             roll_hovered: false,
@@ -562,6 +572,8 @@ impl Render for ProjectView {
         // A drag sounds as it would land, once a frame; a drag dropped
         // with Escape stops sounding.
         self.preview_drag();
+        // A metronome volume drag that landed: the app keeps it.
+        self.keep_metronome(cx);
 
         // While something follows the pointer, the pane it started in
         // redraws each frame (others whose size changes redraw on their
@@ -1252,6 +1264,7 @@ impl ProjectView {
             || self.combined_drag.is_some()
             || self.note_editor.as_ref().is_some_and(|e| e.dragging())
             || self.audio_dragging()
+            || self.volume_drag.is_some()
     }
 
     /// While something is being dragged, follows the mouse anywhere in the

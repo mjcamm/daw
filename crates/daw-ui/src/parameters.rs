@@ -952,6 +952,7 @@ impl ProjectView {
             || self.drag_note_editor(position, modifiers)
             || self.drag_audio_editor(position, modifiers.shift)
             || self.drag_combined(position, modifiers)
+            || self.drag_metronome_volume(position, modifiers.shift)
         {
             return;
         }
@@ -1047,6 +1048,7 @@ impl ProjectView {
         self.finish_note_drag();
         self.finish_audio_drag();
         self.finish_combined_drag();
+        self.finish_metronome_drag();
         if let Some(edit) = self.parameters_drag_edit() {
             self.session.apply(Command::Edit(edit));
         }

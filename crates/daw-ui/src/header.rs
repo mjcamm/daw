@@ -246,6 +246,7 @@ impl ProjectView {
                     .child(play)
                     .child(loop_button),
             )
+            .child(self.render_metronome(theme, cx))
             .child(position)
             .child(self.render_tempo(theme, cx))
     }
@@ -467,7 +468,11 @@ impl ProjectView {
     }
 }
 
-fn transport_button(id: &'static str, theme: &Theme, active: bool) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn transport_button(
+    id: &'static str,
+    theme: &Theme,
+    active: bool,
+) -> gpui::Stateful<gpui::Div> {
     let hover: Hsla = theme.hover;
     let mut active_bg = theme.accent;
     active_bg.a = 0.18;
