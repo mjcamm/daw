@@ -59,8 +59,8 @@ use gpui::{
 };
 use project::{
     CancelDrag, CopyNotes, DeleteSelection, ExportSong, NudgeDown, NudgeLeft, NudgeRight, NudgeUp,
-    OctaveDown, OctaveUp, PasteNotes, Quantize, Redo, Save, SelectAll, TogglePlay, ToolPen,
-    ToolScissors, ToolSelect, Undo,
+    OctaveDown, OctaveUp, PasteNotes, PlayFromLoopStart, Quantize, Redo, Save, SelectAll,
+    TogglePlay, ToolPen, ToolScissors, ToolSelect, Undo,
 };
 use theme::Theme;
 
@@ -74,6 +74,7 @@ fn key_bindings() -> Vec<KeyBinding> {
     let not_typing = Some("Workspace && !TextInput");
     vec![
         KeyBinding::new("space", TogglePlay, not_typing),
+        KeyBinding::new("shift-space", PlayFromLoopStart, not_typing),
         KeyBinding::new("secondary-s", Save, project),
         KeyBinding::new("secondary-e", ExportSong, project),
         KeyBinding::new("secondary-z", Undo, not_typing),

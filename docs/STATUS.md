@@ -63,7 +63,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - **Inspector:** the tray icon at the far right lights up when the selection has settings; click to open or close, drag the panel's left edge to resize.
 - **Rulers:** the top half is the loop strip (drag to draw a loop, handles move its ends); click below it to locate.
 - **Timeline pages:** scrollbars with zoom sliders at their ends; wheel scrolls vertically, Shift+wheel sideways; Ctrl+wheel zooms rows, Ctrl+Shift+wheel zooms time, about the pointer (2026-10-24).
-- **Shortcuts:** Space play/stop, Ctrl+S save, Ctrl+Z / Ctrl+Shift+Z undo/redo, Delete removes what is selected (notes, then clips, then the node; never a parent's inherited block, which only moves; a block on Parameters and Signals), 1 / 3 pointer / scissors (1 / 2 / 3 select, pen, scissors over the piano roll), Q quantize, Alt flips snap while dragging. Autosave every 30 s (`project.autosave.json`, removed on save).
+- **Shortcuts:** Space play/stop, Shift+Space play from the loop's start (the song's start without a loop), Ctrl+S save, Ctrl+Z / Ctrl+Shift+Z undo/redo, Delete removes what is selected (notes, then clips, then the node; never a parent's inherited block, which only moves; a block on Parameters and Signals), 1 / 3 pointer / scissors (1 / 2 / 3 select, pen, scissors over the piano roll), Q quantize, Alt flips snap while dragging. Autosave every 30 s (`project.autosave.json`, removed on save).
 
 ## Model notes worth knowing
 

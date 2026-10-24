@@ -30,6 +30,7 @@ actions!(
     daw,
     [
         TogglePlay,
+        PlayFromLoopStart,
         Save,
         Undo,
         Redo,
@@ -421,6 +422,18 @@ impl ProjectView {
         self.session.apply(command);
     }
 
+    /// Shift+Space: plays from the loop's start (kept while looping is off),
+    /// or the song's start without a loop; while playing, jumps there.
+    pub(crate) fn play_from_loop_start(&mut self) {
+        let start = self
+            .session
+            .snapshot()
+            .loop_range
+            .map_or(daw_engine::Ticks::ZERO, |range| range.start);
+        self.session.apply(Command::Locate { position: start });
+        self.session.apply(Command::Play);
+    }
+
     /// The transport's loop button: looping on or off, keeping the region.
     pub(crate) fn toggle_loop(&mut self) {
         let snapshot = self.session.snapshot();
@@ -650,6 +663,9 @@ impl Render for ProjectView {
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &TogglePlay, _, _| this.toggle_play()))
+            .on_action(cx.listener(|this, _: &PlayFromLoopStart, _, _| {
+                this.play_from_loop_start();
+            }))
             .on_action(cx.listener(|this, _: &Save, _, _| this.save()))
             .on_action(cx.listener(|this, _: &ExportSong, window, cx| {
                 this.open_export(window, cx);
