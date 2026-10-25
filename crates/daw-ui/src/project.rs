@@ -104,6 +104,10 @@ pub enum ProjectEvent {
     Stamps(Vec<daw_host::stamps::Stamp>),
 }
 
+/// Every signal compiled, with the song revision and the audio signals'
+/// lines (the session's count) they were compiled for.
+pub(crate) type SignalCache = ((u64, u64), Rc<daw_automation::Signals>);
+
 pub struct ProjectView {
     pub(crate) session: Session,
     pub(crate) page: Page,
@@ -232,11 +236,20 @@ pub struct ProjectView {
     /// A notes signal setting being dragged in the inspector; one edit on
     /// release.
     pub(crate) notes_drag: Option<crate::inspector::NotesDrag>,
+    /// An audio signal setting being dragged in the inspector; one edit on
+    /// release.
+    pub(crate) follow_drag: Option<crate::follow_inspector::FollowDrag>,
     /// A signal just jumped to from elsewhere, highlighted briefly.
     pub(crate) signal_highlight: Option<(SignalId, std::time::Instant)>,
     /// Every signal compiled, for drawing what listening layers do; kept
     /// until the engine's state changes.
-    pub(crate) signal_cache: std::cell::RefCell<Option<(u64, Rc<daw_automation::Signals>)>>,
+    pub(crate) signal_cache: std::cell::RefCell<Option<SignalCache>>,
+    /// An audio signal's line for a settings drag's preview, kept while
+    /// the preview stays the same.
+    pub(crate) follow_preview:
+        std::cell::RefCell<Option<(daw_engine::AudioSource, daw_automation::CompiledSignal)>>,
+    /// The audio signals' lines last drawn, by the session's count.
+    pub(crate) drawn_lines: u64,
     /// Which step the add-layer menu shows.
     pub(crate) layer_menu: crate::parameters::LayerMenu,
     /// The parameter chosen in an add-parameter menu, now picking its first
@@ -403,7 +416,10 @@ impl ProjectView {
             inspector_width: crate::inspector::DEFAULT_WIDTH,
             inspector_resize: None,
             notes_drag: None,
+            follow_drag: None,
             signal_cache: std::cell::RefCell::default(),
+            follow_preview: std::cell::RefCell::default(),
+            drawn_lines: 0,
             layer_menu: crate::parameters::LayerMenu::Kind,
             pending_param: None,
             frame_drag: None,
@@ -589,6 +605,12 @@ impl Render for ProjectView {
             self.drawn_revision = revision;
             self.invalidate_all(cx);
         }
+        // New audio signal lines came in: everything that draws them.
+        let lines = self.session.loudness().1;
+        if lines != self.drawn_lines {
+            self.drawn_lines = lines;
+            self.invalidate_all(cx);
+        }
         if !cx.has_active_drag() {
             self.file_hover = None;
         }
@@ -632,10 +654,12 @@ impl Render for ProjectView {
         // every pane. A new drag that previews elsewhere belongs here.
         let busy = self.dragging() || cx.has_active_drag();
         if busy {
-            // A notes signal's settings in the inspector preview on the
-            // page's lanes too.
-            let everywhere =
-                self.notes_drag.is_some() || self.block_setting_drag() || self.shape_curve_drag();
+            // A notes or audio signal's settings in the inspector preview
+            // on the page's lanes too.
+            let everywhere = self.notes_drag.is_some()
+                || self.follow_drag.is_some()
+                || self.block_setting_drag()
+                || self.shape_curve_drag();
             match self.pressed_pane.filter(|_| self.dragging() && !everywhere) {
                 Some(kind) => self.invalidate(kind, cx),
                 None => self.invalidate_all(cx),
@@ -791,6 +815,7 @@ impl ProjectView {
                         return;
                     }
                     let revision = view.session.snapshot().revision;
+                    let lines = view.session.loudness().1;
                     view.session.tick();
                     let snapshot = view.session.snapshot();
                     // Quieter than a meter shows (-60 dB) is silence.
@@ -799,7 +824,8 @@ impl ProjectView {
                         .meters()
                         .values()
                         .any(|m| crate::layout::meter_height(m.left.max(m.right)) > 0.);
-                    if sounding || snapshot.playing || snapshot.revision != revision {
+                    let new_lines = view.session.loudness().1 != lines;
+                    if sounding || snapshot.playing || snapshot.revision != revision || new_lines {
                         cx.notify();
                     }
                 });
@@ -1324,6 +1350,7 @@ impl ProjectView {
             || self.loop_drag.is_some()
             || self.inspector_resize.is_some()
             || self.notes_drag.is_some()
+            || self.follow_drag.is_some()
             || self.clip_drag.is_some()
             || self.mixer_drag.is_some()
             || self.combined_drag.is_some()

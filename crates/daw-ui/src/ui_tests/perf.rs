@@ -448,6 +448,39 @@ fn perf_signals() {
     check("signals", t, 6., 15.);
 }
 
+/// The Signals page with an audio signal following the stems, its line
+/// worked out over the whole song.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_signals_with_audio() {
+    let mut h = Harness::new("perf-signals-audio");
+    heavy_song(&mut h);
+    h.view.update(h.cx, |view, _| {
+        let stems = view
+            .session()
+            .snapshot()
+            .nodes
+            .iter()
+            .find(|n| n.name == "Stems")
+            .expect("the stems")
+            .id;
+        view.session.apply_or_panic(Command::Edit(Edit::AddSignal {
+            id: SignalId(9_000),
+            signal: Signal {
+                name: "Stems audio".into(),
+                color: 2,
+                source: SignalSource::Audio(daw_engine::AudioSource::new(stems)),
+            },
+            listeners: Vec::new(),
+        }));
+        view.session.finish_lines();
+        view.page = Page::Signals;
+    });
+    h.redraw();
+    let t = measure(&mut h, "signals with audio");
+    check("signals with audio", t, 6., 15.);
+}
+
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timings need a release build")]
 fn perf_signals_with_shape_panel() {

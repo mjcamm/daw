@@ -23,9 +23,9 @@ const BLOCK_FRAMES: usize = 1024;
 /// Where the loudness is kept, in the project folder.
 const FILE: &str = "signal-loudness.bin";
 const MAGIC: &[u8; 4] = b"DAWL";
-const FILE_VERSION: u32 = 1;
+const FILE_VERSION: u32 = 2;
 /// Stored as 0 for silence, else half-dB steps up from this.
-const STORED_FLOOR_DB: f32 = -115.0;
+const STORED_FLOOR_DB: f32 = -103.0;
 
 /// Everything an analysis needs; it owns a copy of the song, so it can run
 /// on another thread.
@@ -196,7 +196,7 @@ pub fn load(folder: &Path, song: u64) -> Option<Loudness> {
     })
 }
 
-/// A peak in half-dB steps: 0 is silence, 1 is -115 dB, 255 is +12 dB.
+/// A peak in half-dB steps: 0 is silence, 1 is -103 dB, 255 is +24 dB.
 fn quantize(peak: f32) -> u8 {
     if peak.is_nan() || peak <= 0.0 {
         return 0;

@@ -54,6 +54,12 @@ pub enum Live {
         travel: f32,
         inset: f32,
     },
+    /// A signal's level at the song position: a bar filling from the
+    /// left as it rises from the centre line to the top.
+    Level {
+        signal: Rc<daw_automation::CompiledSignal>,
+        color: Hsla,
+    },
     /// A parameter's value at the song position, as text, right-aligned.
     Value {
         automation: Rc<Automation>,
@@ -208,6 +214,14 @@ impl LiveLayer {
                     )
                     .corner_radii(px(1.)),
                 );
+            }
+            Live::Level { signal, color } => {
+                window.paint_quad(fill(b, theme.control).corner_radii(px(3.)));
+                let level = ((signal.sample(now.beat).0 - 0.5) * 2.).clamp(0., 1.) as f32;
+                if level > 0. {
+                    let filled = Bounds::new(b.origin, size(b.size.width * level, b.size.height));
+                    window.paint_quad(fill(filled, *color).corner_radii(px(3.)));
+                }
             }
             Live::Value { automation, format } => {
                 let text: SharedString = format(automation.value_at(now.beat)).into();

@@ -1076,7 +1076,8 @@ impl ProjectView {
                     .on_click(cx.listener(move |this, _, _, _| this.publish_notes(node_id)))
             }
             NodeKind::Midi => unavailable("publish-midi", "Publish MIDI Signal", "no notes"),
-            NodeKind::Audio => unavailable("publish-audio", "Publish Audio Signal", "coming later"),
+            NodeKind::Audio => menu::item(theme, "publish-audio", "Publish Audio Signal", "")
+                .on_click(cx.listener(move |this, _, _, _| this.publish_audio(node_id))),
         }
         .debug_selector(|| "arrange-publish-signal".into());
         let hover = theme.hover;

@@ -77,7 +77,7 @@ fn shape(h: &mut Harness) -> NotesSource {
         .source
     {
         SignalSource::Notes(source) => source.clone(),
-        SignalSource::Drawn(_) => panic!("a notes signal"),
+        SignalSource::Drawn(_) | SignalSource::Audio(_) => panic!("a notes signal"),
     }
 }
 

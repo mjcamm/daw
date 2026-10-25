@@ -4,6 +4,7 @@
 //! `./scripts/full-test.sh`.
 
 mod arrange;
+mod audio_signals;
 mod browser;
 mod export;
 mod live_drags;
@@ -92,6 +93,17 @@ impl Harness {
     pub fn animation_frame(&mut self) {
         self.view.update(self.cx, |_, cx| cx.notify());
         self.cx.run_until_parked();
+    }
+
+    /// Lets rows that slide in or out (new and removed nodes) arrive, then
+    /// draws everything where it ends up.
+    pub fn settle_rows(&mut self) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < crate::motion::DURATION {
+            std::thread::yield_now();
+        }
+        self.redraw_all();
+        self.redraw_all();
     }
 
     /// One frame with everything rebuilt, as after an edit.

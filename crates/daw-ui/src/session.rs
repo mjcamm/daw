@@ -63,6 +63,8 @@ pub struct Session {
     last_autosave: Instant,
     /// Why audio is unavailable, if it is.
     pub audio_error: Option<String>,
+    /// Audio signals' lines, worked out in the background.
+    lines: crate::lines::Lines,
 }
 
 impl Session {
@@ -128,6 +130,7 @@ impl Session {
             Err(e) => (None, Some(e.to_string())),
         };
         let revision = engine.content_revision();
+        let lines = crate::lines::Lines::new(&engine.to_file(), revision, &folder);
         Ok(Self {
             snapshot: engine.snapshot(),
             previous: None,
@@ -145,6 +148,7 @@ impl Session {
             autosaved_revision: revision,
             last_autosave: Instant::now(),
             audio_error,
+            lines,
         })
     }
 
@@ -177,6 +181,7 @@ impl Session {
             }
         }
         self.autosave_if_due();
+        self.lines.tick(&mut self.engine, &self.folder);
     }
 
     /// The audio setup running now; `None` without a device.
@@ -238,10 +243,24 @@ impl Session {
     }
 
     pub fn save(&mut self) -> std::io::Result<()> {
-        projects::save(&self.folder, &self.engine.to_file())?;
+        let song = self.engine.to_file();
+        projects::save(&self.folder, &song)?;
         self.saved_revision = self.engine.content_revision();
         self.autosaved_revision = self.saved_revision;
+        self.lines.save(&song, self.saved_revision, &self.folder);
         Ok(())
+    }
+
+    /// Each audio signal's source node's loudness over the song, as last
+    /// worked out, and a number that changes whenever it does.
+    pub fn loudness(&self) -> (&std::sync::Arc<daw_host::analysis::Loudness>, u64) {
+        (self.lines.loudness(), self.lines.version())
+    }
+
+    /// Waits for the audio signals' lines to be worked out, for tests.
+    #[cfg(all(test, feature = "ui-tests"))]
+    pub fn finish_lines(&mut self) {
+        self.lines.finish(&mut self.engine, &self.folder);
     }
 
     /// An export of the song as it is now, at the engine's sample rate.

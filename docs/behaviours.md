@@ -53,7 +53,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Toolbar: + (MIDI or Audio node), group into a new node, duplicate, delete | – |
 | Drag a node row onto a row or a map bar to move or nest it | – |
 | Chevrons fold a parent (shared with the mixer); pulling the map scrolls it | – |
-| Signal button: Publish MIDI Signal on a MIDI node (its notes), Publish Audio Signal on an audio node (greyed until Phase 6); lists the node's signals with go-to | `arrange::the_signal_button_publishes_by_the_nodes_kind` |
+| Signal button: Publish MIDI Signal on a MIDI node (its notes), Publish Audio Signal on an audio node (its sound before its effects); lists the node's signals with go-to | `arrange::the_signal_button_publishes_by_the_nodes_kind`, `audio_signals::an_audio_nodes_signal_draws_its_loudness_once_worked_out` |
 | Click the ruler (below its loop strip) to locate | – |
 | Click a node to select it (enables Parameters, points the editor at it) | – |
 | Track → Import Audio…: each file on a new audio node at the playhead | – |
@@ -91,7 +91,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 
 | Behaviour | Test |
 |---|---|
-| + Add Parameter; + Add Layer menu: Manual drawn or Listen to signal › | – |
+| + Add Parameter; + Add Layer menu: Manual drawn or Listen to signal › (never an audio signal from a node the parameter's node is inside) | – (the rule: `signals::tests::a_node_never_listens_to_an_audio_signal_from_a_node_it_is_inside`) |
 | + Add Parameter on a plugin lists its parameters in its groups; search and Enter pick one, then its first layer's type (one undo) | `plugin_params::a_plugin_parameter_is_found_by_search_and_gets_a_layer_in_one_undo` |
 | A plugin's parameter list: arrows move; Escape or a click outside closes; parameters with layers aren't offered | `plugin_params::the_plugin_parameter_list_works_from_the_keys_and_closes` |
 | Learn beside a plugin's + Add Parameter opens its window and adds the next knob turned there, with a drawn layer; clicking again stops | `plugin_params::learn_opens_the_plugin_and_waits_for_a_knob_until_stopped` |
@@ -116,7 +116,8 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | + Add Signal makes a drawn signal; draw on its lane like a layer | – |
 | Colour bar picks a colour; double-click renames; × deletes | – |
 | Uses chip lists listening layers with go-to | – |
-| Click a row selects it; a notes signal's settings show in the inspector | – |
+| Click a row selects it; a notes or audio signal's settings show in the inspector | – |
+| An audio signal's lane (and every layer listening to it) shows its line, worked out in the background once edits settle; kept beside the song, so a reopened song shows it at once | `audio_signals::an_audio_nodes_signal_draws_its_loudness_once_worked_out` |
 
 ## Shape panel (`curve-editor.md`)
 
@@ -136,6 +137,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Tray button opens and closes it; lights when the selection has settings | – |
 | Drag the left edge resizes it | – |
 | Notes signal: pitch range and velocity clamp switches (its shape is in the Signals page's bottom panel) | – |
+| Audio signal: Attack, Release, Floor and Ceiling on sliders (double-click resets; the floor stays a decibel under the ceiling), the line redrawn as they move, one undo step each; a Level bar shows the signal at the song position while playing | `audio_signals::an_audio_signals_follower_is_set_in_the_inspector` |
 | A selected node on Arrange shows its mixer strip | – |
 
 ## Mixer (`mixer.md`)

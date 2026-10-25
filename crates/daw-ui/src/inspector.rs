@@ -196,7 +196,7 @@ impl ProjectView {
     /// Whether the selection has anything to show in the inspector.
     fn has_inspector_content(&self) -> bool {
         self.inspected_signal()
-            .is_some_and(|s| matches!(s.source, SignalSource::Notes(_)))
+            .is_some_and(|s| matches!(s.source, SignalSource::Notes(_) | SignalSource::Audio(_)))
             || self.strip_node().is_some()
             || self.inspected_block().is_some()
     }
@@ -230,11 +230,18 @@ impl ProjectView {
             drag.preview = drag.field.dragged(&drag.original, dx, drag.length, fine);
             return true;
         }
+        if let Some(drag) = &mut self.follow_drag {
+            drag.follow(position, fine);
+            return true;
+        }
         false
     }
 
     /// The edit an inspector drag makes if let go now: a changed setting.
     pub(crate) fn inspector_drag_edit(&self) -> Option<Edit> {
+        if let Some(drag) = &self.follow_drag {
+            return drag.edit();
+        }
         let drag = self.notes_drag.as_ref()?;
         (drag.preview != drag.original).then(|| Edit::SetNotesSource {
             id: drag.signal,
@@ -249,6 +256,7 @@ impl ProjectView {
             self.session.apply(Command::Edit(edit));
         }
         self.notes_drag = None;
+        self.follow_drag = None;
     }
 
     /// The page with the inspector and its tray beside it.
@@ -369,7 +377,9 @@ impl ProjectView {
                     SignalSource::Drawn(_) => {
                         empty(theme, "Select a block of this signal to see its settings.")
                     }
-                    SignalSource::Audio(_) => empty(theme, "Audio signal settings come next."),
+                    SignalSource::Audio(source) => self
+                        .follow_settings(signal, source, theme, cx)
+                        .into_any_element(),
                 },
                 None if self.page == Page::Arrange => {
                     empty(theme, "Select a node to see its strip.")
@@ -702,7 +712,7 @@ pub(crate) fn labeled_row(label: &'static str, separated: bool, theme: &Theme) -
         )
 }
 
-fn hint(text: &'static str, theme: &Theme) -> Div {
+pub(crate) fn hint(text: &'static str, theme: &Theme) -> Div {
     div()
         .px(px(14.))
         .pt(px(6.))

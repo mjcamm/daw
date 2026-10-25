@@ -612,7 +612,7 @@ fn the_signal_button_publishes_by_the_nodes_kind() {
             node: Node::new("Audio", 2).with_kind(NodeKind::Audio),
         }));
     });
-    h.redraw_all();
+    h.settle_rows();
     let open = |h: &mut Harness, node: NodeId| {
         let name: &'static str =
             Box::leak(format!("arrange-node-signals-{}", node.0).into_boxed_str());
@@ -632,11 +632,15 @@ fn the_signal_button_publishes_by_the_nodes_kind() {
         "reading the Synth's notes"
     );
 
-    // The audio node: Publish Audio Signal, not yet built, does nothing.
-    h.view.update(h.cx, |v, _| v.open_menu = None);
-    h.redraw_all();
+    // The audio node: its sound becomes an audio signal.
+    open(&mut h, FIRST_NODE);
     open(&mut h, audio);
     let at = h.bounds("arrange-publish-signal").center();
     h.click(at, 1);
-    assert_eq!(h.snapshot().signals.len(), 1, "no signal from audio yet");
+    let snapshot = h.snapshot();
+    assert_eq!(snapshot.signals.len(), 2, "an audio signal");
+    assert!(
+        matches!(&snapshot.signals[1].source, SignalSource::Audio(a) if a.node == audio),
+        "following the audio node"
+    );
 }

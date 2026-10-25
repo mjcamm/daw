@@ -482,7 +482,7 @@ impl AudioSource {
     pub const MAX_TIME_MS: f64 = 2_000.0;
     /// Lowest floor and highest ceiling.
     pub const MIN_DB: f64 = -96.0;
-    pub const MAX_DB: f64 = 12.0;
+    pub const MAX_DB: f64 = 24.0;
 
     /// A quick rise, a gentle fall, and -48 to 0 dB.
     pub fn new(node: NodeId) -> Self {

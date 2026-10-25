@@ -18,9 +18,10 @@ use crate::theme::{ContentColor, Theme};
 use crate::zoom::Zoom;
 use daw_automation::{CompiledSignal, SignalNote, Signals};
 use daw_engine::{
-    Command, Edit, NodeId, NodeSnapshot, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse,
-    Snapshot,
+    AudioSource, Command, Edit, NodeId, NodeSnapshot, Signal, SignalId, SignalSnapshot,
+    SignalSource, SignalUse, Snapshot,
 };
+use daw_host::analysis::Loudness;
 use gpui::{
     AnyElement, ClickEvent, Context, Div, FontWeight, MouseButton, Window, canvas, div, prelude::*,
     px,
@@ -62,9 +63,9 @@ fn next_signal_color(snapshot: &Snapshot) -> u8 {
         .unwrap_or((snapshot.signals.len() % usize::from(PALETTE_SIZE)) as u8)
 }
 
-/// "<node> notes", numbered if that name is taken.
-fn notes_signal_name(snapshot: &Snapshot, node: &NodeSnapshot) -> String {
-    let base = format!("{} notes", node.name);
+/// "<node> <kind>" ("notes" or "audio"), numbered if that name is taken.
+fn published_name(snapshot: &Snapshot, node: &NodeSnapshot, kind: &str) -> String {
+    let base = format!("{} {kind}", node.name);
     std::iter::once(base.clone())
         .chain((2..).map(|n| format!("{base} {n}")))
         .find(|name| !snapshot.signals.iter().any(|s| &s.name == name))
@@ -89,6 +90,22 @@ pub(crate) fn published_signals(
         .signals
         .iter()
         .filter(move |s| source_node(&s.source) == Some(node))
+}
+
+/// Whether layers on `listener` can hear `signal`: never an audio signal
+/// from a node `listener` is inside, since that sound is partly its own.
+pub(crate) fn can_listen(snapshot: &Snapshot, listener: NodeId, signal: &SignalSnapshot) -> bool {
+    let SignalSource::Audio(source) = &signal.source else {
+        return true;
+    };
+    let mut above = snapshot.node(listener).and_then(|n| n.parent);
+    while let Some(node) = above {
+        if node == source.node {
+            return false;
+        }
+        above = snapshot.node(node).and_then(|n| n.parent);
+    }
+    true
 }
 
 /// Whether a node has any notes to publish.
@@ -153,10 +170,26 @@ fn notes_for(snapshot: &Snapshot, source: &SignalSource) -> Vec<SignalNote> {
     }
 }
 
-/// Every signal compiled, as the engine plays them.
-fn compile_all(snapshot: &Snapshot) -> Signals {
+/// An audio signal's line as the last render of the song found it; silent
+/// until there is one.
+pub(crate) fn recorded(loudness: &Loudness, source: &AudioSource) -> CompiledSignal {
+    loudness
+        .line(source)
+        .map_or(CompiledSignal::Silent, |values| CompiledSignal::Recorded {
+            step_beats: loudness.step_beats(),
+            values,
+        })
+}
+
+/// Every signal compiled, as the engine plays them; audio signals as the
+/// last render of the song found them.
+fn compile_all(snapshot: &Snapshot, loudness: &Loudness) -> Signals {
     let mut signals = Signals::default();
     for signal in &snapshot.signals {
+        if let SignalSource::Audio(source) = &signal.source {
+            signals.insert(signal.id, recorded(loudness, source));
+            continue;
+        }
         let source = Signal {
             name: signal.name.clone(),
             color: signal.color,
@@ -174,17 +207,33 @@ impl ProjectView {
     /// compiled with the preview, so every lane and layer shows the change.
     pub(crate) fn compiled_signals(&self) -> Rc<Signals> {
         let snapshot = self.session.snapshot();
+        let (loudness, lines) = self.session.loudness();
+        let key = (snapshot.revision, lines);
         let signals = {
             let mut cache = self.signal_cache.borrow_mut();
             match &*cache {
-                Some((revision, signals)) if *revision == snapshot.revision => signals.clone(),
+                Some((drawn, signals)) if *drawn == key => signals.clone(),
                 _ => {
-                    let signals = Rc::new(compile_all(snapshot));
-                    *cache = Some((snapshot.revision, signals.clone()));
+                    let signals = Rc::new(compile_all(snapshot, loudness));
+                    *cache = Some((key, signals.clone()));
                     signals
                 }
             }
         };
+        if let Some(drag) = &self.follow_drag {
+            let mut preview = self.follow_preview.borrow_mut();
+            if preview
+                .as_ref()
+                .is_none_or(|(source, _)| *source != drag.preview)
+            {
+                *preview = Some((drag.preview.clone(), recorded(loudness, &drag.preview)));
+            }
+            let mut signals = (*signals).clone();
+            if let Some((_, line)) = &*preview {
+                signals.insert(drag.signal, line.clone());
+            }
+            return Rc::new(signals);
+        }
         let Some(drag) = &self.notes_drag else {
             return signals;
         };
@@ -279,7 +328,7 @@ impl ProjectView {
                     .px(px(12.))
                     .text_size(px(11.))
                     .text_color(theme.text_tertiary)
-                    .child("Nodes can publish their notes as signals from the Arrange page."),
+                    .child("Nodes publish MIDI or audio signals from the Arrange page."),
             )
             .child(
                 // Clicking the empty space below the signals clears the
@@ -318,7 +367,7 @@ impl ProjectView {
                         )
                         .into_any_element(),
                     SignalSource::Notes(_) | SignalSource::Audio(_) => {
-                        notes_lane(cell, signal.id, compiled.clone(), colors, zoom, theme)
+                        line_lane(cell, signal.id, compiled.clone(), colors, zoom, theme)
                             .into_any_element()
                     }
                 };
@@ -711,9 +760,28 @@ impl ProjectView {
         let edit = Edit::AddSignal {
             id: next_signal_id(snapshot),
             signal: Signal {
-                name: notes_signal_name(snapshot, source),
+                name: published_name(snapshot, source, "notes"),
                 color: next_signal_color(snapshot),
                 source: SignalSource::Notes(daw_engine::NotesSource::new(node)),
+            },
+            listeners: Vec::new(),
+        };
+        self.session.apply(Command::Edit(edit));
+    }
+
+    /// Publishes an audio node's sound as a new audio signal, followed
+    /// with a quick rise and a gentle fall.
+    pub(crate) fn publish_audio(&mut self, node: NodeId) {
+        let snapshot = self.session.snapshot();
+        let Some(source) = snapshot.node(node) else {
+            return;
+        };
+        let edit = Edit::AddSignal {
+            id: next_signal_id(snapshot),
+            signal: Signal {
+                name: published_name(snapshot, source, "audio"),
+                color: next_signal_color(snapshot),
+                source: SignalSource::Audio(AudioSource::new(node)),
             },
             listeners: Vec::new(),
         };
@@ -727,8 +795,9 @@ impl ProjectView {
     }
 }
 
-/// A notes signal's lane: the line its hits make, drawn, not edited.
-fn notes_lane(
+/// A notes or audio signal's lane: the line its hits or its source's
+/// loudness make, drawn, not edited.
+fn line_lane(
     cell: Div,
     id: SignalId,
     signals: Rc<Signals>,
@@ -887,7 +956,7 @@ mod tests {
         }
         let snapshot = engine.snapshot();
         assert_eq!(
-            compile_all(&snapshot),
+            compile_all(&snapshot, &Loudness::default()),
             daw_engine::compile_signals(engine.project()),
             "the page's signals differ from what the engine plays"
         );
@@ -920,11 +989,69 @@ mod tests {
     }
 
     #[test]
+    fn a_node_never_listens_to_an_audio_signal_from_a_node_it_is_inside() {
+        use daw_engine::{AudioSource, Node, NodeKind};
+        let (group, kick, bass) = (NodeId(60), NodeId(61), NodeId(62));
+        let audio = |name: &str| Node::new(name, 0).with_kind(NodeKind::Audio);
+        let follows = |id: u64, node: NodeId| {
+            add(
+                id,
+                Signal {
+                    name: format!("{id}"),
+                    color: 0,
+                    source: SignalSource::Audio(AudioSource::new(node)),
+                },
+            )
+        };
+        let snapshot = snapshot_with(vec![
+            Edit::AddNode {
+                id: group,
+                parent: NodeId::ROOT,
+                index: 0,
+                node: audio("Drums"),
+            },
+            Edit::AddNode {
+                id: kick,
+                parent: group,
+                index: 0,
+                node: audio("Kick"),
+            },
+            Edit::AddNode {
+                id: bass,
+                parent: NodeId::ROOT,
+                index: 0,
+                node: audio("Bass"),
+            },
+            follows(1, group),
+            follows(2, kick),
+            add(3, drawn("Sweep", 0)),
+        ]);
+        let signal = |id: u64| {
+            snapshot
+                .signals
+                .iter()
+                .find(|s| s.id == SignalId(id))
+                .unwrap()
+        };
+        assert!(!can_listen(&snapshot, kick, signal(1)), "inside the drums");
+        assert!(can_listen(&snapshot, group, signal(1)), "its own");
+        assert!(can_listen(&snapshot, group, signal(2)), "a child's");
+        assert!(can_listen(&snapshot, bass, signal(1)), "elsewhere");
+        assert!(
+            can_listen(&snapshot, kick, signal(3)),
+            "not an audio signal"
+        );
+    }
+
+    #[test]
     fn published_notes_signals_are_named_after_the_node() {
         let snapshot = snapshot_with(vec![]);
         let synth = snapshot.node(FIRST_NODE).unwrap();
         let node = synth.name.clone();
-        assert_eq!(notes_signal_name(&snapshot, synth), format!("{node} notes"));
+        assert_eq!(
+            published_name(&snapshot, synth, "notes"),
+            format!("{node} notes")
+        );
         let notes = |name: String, from: NodeId| Signal {
             name,
             color: 0,
@@ -937,7 +1064,7 @@ mod tests {
         ]);
         let synth = snapshot.node(FIRST_NODE).unwrap();
         assert_eq!(
-            notes_signal_name(&snapshot, synth),
+            published_name(&snapshot, synth, "notes"),
             format!("{node} notes 2")
         );
         let published: Vec<SignalId> = published_signals(&snapshot, FIRST_NODE)

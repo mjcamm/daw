@@ -316,7 +316,7 @@ mod tests {
             "floor above the ceiling"
         );
         assert_eq!(check(|s| s.floor_db = -120.0), range);
-        assert_eq!(check(|s| s.ceiling_db = 20.0), range);
+        assert_eq!(check(|s| s.ceiling_db = 30.0), range);
         assert_eq!(check(|s| s.ceiling_db = f64::NAN), range);
     }
 }

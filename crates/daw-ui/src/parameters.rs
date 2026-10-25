@@ -1838,7 +1838,12 @@ impl ProjectView {
                         .child("A layer keeps its type once added."),
                 ),
             LayerMenu::Signals => {
-                let signals = &self.session.snapshot().signals;
+                let snapshot = self.session.snapshot();
+                let signals: Vec<_> = snapshot
+                    .signals
+                    .iter()
+                    .filter(|s| crate::signals::can_listen(snapshot, param.node, s))
+                    .collect();
                 let back = menu_row(theme, "layer-kind-back", Icon::ChevronLeft, "Back", None)
                     .on_click(cx.listener(|this, _, _, _| {
                         this.layer_menu = LayerMenu::Kind;

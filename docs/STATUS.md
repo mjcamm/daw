@@ -1,6 +1,6 @@
 # Status and Next Steps
 
-*Last updated: 2026-10-25 (notes signals play drawn shapes). Read this first when picking up the project; then "In progress" below.*
+*Last updated: 2026-10-25 (audio signals). Read this first when picking up the project; then "In progress" below.*
 
 ## Where is done
 
@@ -20,10 +20,11 @@
 - **Metronome** (2026-10-24, `docs/design/metronome.md`): a click on every beat while playing, accented on beat 1, after the Song's channel and never in exports. Transport: metronome button and a volume button whose vertical slider opens on hover. Preferences → Metronome: sound (Beep, Wood, Tick, Cowbell), accent, pitch, volume; kept in the preferences for every song.
 - **Drags are heard as they move** (2026-10-24, the user's request; `audio-engine.md`, previews): faders, pans, every slider, blocks and points on Parameters and Signals, notes and velocities, clip moves, notes-signal and audio-clip settings play as they're dragged (`Command::Preview`), still one undo step each. Sliders' thumbs follow the pointer (a drag the slider's length covers the range; Shift five times finer). Loop drags still apply on release.
 - **Notes signals play a drawn shape** (2026-10-25, the user's design, a "shaper" feel; `docs/design/curve-editor.md`, `signals.md`): ADSR is gone. Each note plays a curve over a window of 1/8 to 4 bars, in **Trigger** (once through) or **Loop** (while held) mode; a new note restarts it; a 1/64-beat glide at every seam. Curves are points with Illustrator-style kinds: **Corner**, **Smooth** (handles in line) and **Broken** (handles free), Béziers held to one value per time. Clicking a notes signal on Signals opens the **shape panel** at the bottom: double-click adds or removes points, drag moves points and handles, the snap chip sets the grid, **stamps** (Ramp up/down, Triangle, Square, Sine, Duck) fill the whole window with their shape, and **Save as stamp** keeps one for every project (`stamps.json` beside the preferences; rename, ×, overflow under ›). Built as a reusable editor (`curve_editor.rs`, `curve_edit.rs`) so layer blocks and drawn signals can move onto it later (the user's wish; a separate step, needs their OK as it changes those lanes). File version 20: old ADSR becomes the nearest Trigger shape (sustain isn't held).
-- **"Signals", one name** (2026-10-25, the user's call): no more "motion signals". Signals come from a node by its kind: the signal button offers **Publish MIDI Signal** on a MIDI node (note triggers) or **Publish Audio Signal** on an audio node (its sound as data, greyed until Phase 6). Signals are data only; drawn signals stay; sidechains and sends with real audio will work like a normal bus, later. The design doc is now `docs/design/signals.md`.
+- **"Signals", one name** (2026-10-25, the user's call): no more "motion signals". Signals come from a node by its kind: the signal button offers **Publish MIDI Signal** on a MIDI node (note triggers) or **Publish Audio Signal** on an audio node (its sound as data). Signals are data only; drawn signals stay; sidechains and sends with real audio will work like a normal bus, later. The design doc is now `docs/design/signals.md`.
+- **Audio signals** (2026-10-25, Phase 6's signal part; designed with the user; `docs/design/signals.md`, From audio): an audio node's loudness as a signal, **always before its effects** (the user's call: nest it and follow the parent to hear effects). Follower in `daw-dsp` (Attack, Release, Floor, Ceiling; defaults 5 ms, 150 ms, -48 dB, 0 dB). The engine follows it live: each node renders after the sources it listens to, listeners read it at every control point, the same for any block size, threads, live or export; a listen that loops back hears nothing. **The lane is always current** (the user's call): after edits settle, the song is rendered in the background (`daw-host/src/analysis.rs`, like export) for each followed node's loudness, and the UI draws each signal's line from it for its own settings (settings drags redraw at once); kept beside the song as `signal-loudness.bin`. Inspector: the four settings on sliders and a Level bar. The Listen menu leaves out audio signals from a node the parameter's node is inside. File version 21.
 - **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
-The project file is at **version 20** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
+The project file is at **version 21** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
 ## Phase 8, VST3 hosting: built (2026-10-23)
 
@@ -80,6 +81,8 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 
 ## Waiting on the user (try it)
 
+- **Audio signals** (2026-10-25): import a drum loop (Track → Import Audio…), its signal button → Publish Audio Signal; on Signals the lane fills in a moment later. Click it: the inspector has Attack, Release, Floor, Ceiling and a Level bar (play to see it move). Put a Multiply layer listening to it, window inverted, on a pad's volume and listen for the duck; change the follower settings while playing. Move a clip on the drum node: the line redraws about half a second later. Save, reopen: the line is there at once. Claude checked the sound and the line in tests, not by ear or eye; not yet run with plugins in the followed branch.
+
 - **Shape panel** (2026-10-25): on Signals, publish a kick's notes as a signal (Arrange, signal button), click it: the panel opens at the bottom. Try the Duck stamp, Trigger vs Loop, the window sizes, double-click to add points, Smooth and Broken with their handles, Save as stamp then reopen the app (the stamp should still be there). Put a Multiply layer listening to it on a node's volume and listen for the pump, and for clicks when notes restart. Claude checked the curves in tests, not by ear or eye.
 
 - **Metronome** (2026-10-24): switch it on beside the transport and play; hover the volume button and drag its slider; Preferences → Metronome: pick each sound (it plays), switch the accent, move the pitch. Listen that the click sits on the beat with plugins that add latency, and loops. Claude checked timing and levels in tests, not by ear.
@@ -102,7 +105,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 
 ## Next up
 
-1. **Next phase, to choose with the user:** Phase 6 (audio signals: an audio node's loudness as data; next in the plan; sends and sidechains are not signals and come later as normal buses), Phase 9's stem export (mixdown export is built), or Phase 7 (built-in devices).
+1. **Next phase, to choose with the user:** Phase 9's stem export (mixdown export is built), Phase 7 (built-in devices), or sends and sidechains as normal buses (not signals; the user: "in later work"). Audio signals (Phase 6's signal part) are built.
 2. **Phase 5, rest:** a richer demo song (drums with a separate kick, a music parent). An effect's or instrument's settings in the inspector are on hold (the user's call).
 3. **Backfill UI tests** (`docs/behaviours.md`, "Building out the suite"): three so far (Arrange double-click, looping a clip, menus). Arrange and the piano roll first, as the most used; a few at a time alongside other work.
 4. Phase 4's "done when" walkthrough (kick ducking several parameters in the UI). Showing a node's pitches on notes lanes is deferred; the range picker is enough for now.
@@ -128,6 +131,8 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - **MP3 / LAME (LGPL):** decide whether to keep LAME compiled in, link it as a DLL, or build WAV-only (`docs/design/export.md`, Licence).
 
 ## Known gaps
+
+- **Audio signals:** the background render plays the whole song (all plugins) after each settled edit, even branches nothing follows; render only what followed nodes need if it costs too much. Plugin latency inside a followed branch isn't lined up yet (the follower hears the sound as it reaches the node). The drawn line holds each 32-frame period at its peak, so it can differ from what plays by a fraction of a millisecond of attack. Parameter values shown during playback read the drawn line.
 
 - **Fader taper, for later** (2026-10-25, raised with the user): the fader is even in dB from -60 to +12, so the quiet end takes half its height; most DAWs give more room near 0 dB. Changing it changes how saved volumes and volume automation map to dB. The fader, meters and dB marks all go through `layout::level_position`, so a new taper changes them together.
 
