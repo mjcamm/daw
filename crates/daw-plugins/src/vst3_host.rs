@@ -609,14 +609,17 @@ impl ParameterChanges {
     /// Takes a block's changes: knob moves from the window first (at the
     /// block's start), then the DAW's (in offset order per id).
     /// Allocation-free.
-    fn fill(&self, edits: &[(ParamID, f64)], changes: &[ParamChange]) {
+    fn fill(&self, edits: &[(ParamID, f64)], changes: &[ParamChange], bends: &[ParamChange]) {
         self.count.set(0);
         let edits = edits.iter().map(|&(id, value)| ParamChange {
             id,
             offset: 0,
             value,
         });
-        for change in edits.chain(changes.iter().copied()) {
+        let all = edits
+            .chain(changes.iter().copied())
+            .chain(bends.iter().copied());
+        for change in all {
             let used = self.count.get();
             let found = self.queues[..used]
                 .iter()
@@ -684,17 +687,29 @@ impl EventList {
         }
     }
 
-    /// Takes a block's notes; tunings go as the plugin takes bends
-    /// (`bends`). Allocation-free.
-    fn fill(&self, notes: &[NoteEvent], bends: &BendRoute) {
+    /// Takes a block's notes. Tunings go as the plugin takes bends
+    /// (`bends`): as tuning expressions, or (MPE) each note on a channel
+    /// of its own (`mpe`) with its tunings as that channel's pitch bend,
+    /// added to `bend_changes`. Allocation-free.
+    fn fill(
+        &self,
+        notes: &[NoteEvent],
+        bends: &BendRoute,
+        mpe: &mut Mpe,
+        bend_changes: &mut BendChanges,
+    ) {
         let mut events = self.events.borrow_mut();
         events.clear();
+        let mpe_params = match bends {
+            BendRoute::Mpe { params } => Some(params.as_slice()),
+            _ => None,
+        };
         for note in notes.iter().take(MAX_NOTE_EVENTS) {
             let mut event: Event = unsafe { std::mem::zeroed() };
             event.sampleOffset = note.offset as int32;
             if note.kind == NoteEvent::TUNE {
-                match bends {
-                    BendRoute::NoteExpression => {
+                match (bends, mpe_params) {
+                    (BendRoute::NoteExpression, _) => {
                         event.r#type = Event_::EventTypes_::kNoteExpressionValueEvent as uint16;
                         event.__field0.noteExpressionValue = NoteExpressionValueEvent {
                             typeId: NoteExpressionTypeIDs_::kTuningTypeID as NoteExpressionTypeID,
@@ -702,15 +717,38 @@ impl EventList {
                             value: tuning_value(note.tuning),
                         };
                     }
-                    // Still to come: MPE and channel pitch bend.
-                    BendRoute::Mpe { .. } | BendRoute::Channel { .. } | BendRoute::None => {
+                    (_, Some(params)) => {
+                        if let Some(&id) = mpe.channel_of(note.note).and_then(|c| params.get(c)) {
+                            bend_changes.push(ParamChange {
+                                id,
+                                offset: note.offset,
+                                value: mpe_bend_value(note.tuning),
+                            });
+                        }
                         continue;
                     }
+                    // Still to come: one pitch bend for the whole plugin.
+                    _ => continue,
                 }
             } else if note.kind == NoteEvent::START {
+                // MPE: a channel of its own, its bend back in the middle.
+                let channel = match mpe_params {
+                    Some(params) => {
+                        let channel = mpe.take(note.note);
+                        if let Some(&id) = params.get(channel) {
+                            bend_changes.push(ParamChange {
+                                id,
+                                offset: note.offset,
+                                value: mpe_bend_value(0.),
+                            });
+                        }
+                        channel
+                    }
+                    None => 0,
+                };
                 event.r#type = Event_::EventTypes_::kNoteOnEvent as uint16;
                 event.__field0.noteOn = NoteOnEvent {
-                    channel: 0,
+                    channel: channel as int16,
                     pitch: note.pitch as int16,
                     tuning: 0.0,
                     velocity: note.velocity,
@@ -718,9 +756,13 @@ impl EventList {
                     noteId: note.note,
                 };
             } else {
+                let channel = match mpe_params {
+                    Some(_) => mpe.free(note.note).unwrap_or(0),
+                    None => 0,
+                };
                 event.r#type = Event_::EventTypes_::kNoteOffEvent as uint16;
                 event.__field0.noteOff = NoteOffEvent {
-                    channel: 0,
+                    channel: channel as int16,
                     pitch: note.pitch as int16,
                     velocity: note.velocity,
                     noteId: note.note,
@@ -730,6 +772,75 @@ impl EventList {
             events.push(event);
         }
     }
+}
+
+/// MPE (`BendRoute::Mpe`): the member channel each sounding note holds.
+/// Channel 0 (MIDI's channel 1) stays MPE's manager channel; notes take
+/// 1 to 15, the one free longest first, so a note's release tail keeps
+/// its channel's bend as long as it can.
+#[derive(Debug, Default)]
+struct Mpe {
+    notes: [Option<i32>; 16],
+    /// When each channel was last taken or freed.
+    used: [u64; 16],
+    clock: u64,
+}
+
+impl Mpe {
+    /// A channel for `note`: the one free longest, or with every channel
+    /// busy (more than 15 notes) the one taken longest ago, shared.
+    fn take(&mut self, note: i32) -> usize {
+        self.clock += 1;
+        let free = (1..16)
+            .filter(|&c| self.notes[c].is_none())
+            .min_by_key(|&c| self.used[c]);
+        let channel = free
+            .or_else(|| (1..16).min_by_key(|&c| self.used[c]))
+            .unwrap_or(1);
+        self.notes[channel] = Some(note);
+        self.used[channel] = self.clock;
+        channel
+    }
+
+    fn channel_of(&self, note: i32) -> Option<usize> {
+        self.notes.iter().position(|n| *n == Some(note))
+    }
+
+    /// Frees `note`'s channel, returning it.
+    fn free(&mut self, note: i32) -> Option<usize> {
+        let channel = self.channel_of(note)?;
+        self.clock += 1;
+        self.notes[channel] = None;
+        self.used[channel] = self.clock;
+        Some(channel)
+    }
+}
+
+/// Pitch bend changes made from a block's tunings (MPE), made room for up
+/// front.
+#[derive(Debug)]
+struct BendChanges(Vec<ParamChange>);
+
+impl BendChanges {
+    fn new() -> Self {
+        Self(Vec::with_capacity(MAX_NOTE_EVENTS))
+    }
+
+    /// Allocation-free: changes past the room made are dropped.
+    fn push(&mut self, change: ParamChange) {
+        if self.0.len() < self.0.capacity() {
+            self.0.push(change);
+        }
+    }
+}
+
+/// How far an MPE channel's full pitch bend reaches each way, in
+/// semitones: MPE's default for member channels.
+const MPE_BEND_RANGE: f64 = 48.;
+
+/// A pitch bend parameter's value for `semitones`: 0.5 in the middle.
+fn mpe_bend_value(semitones: f32) -> f64 {
+    (0.5 + f64::from(semitones) / (2. * MPE_BEND_RANGE)).clamp(0., 1.)
 }
 
 /// VST3's normalised tuning for `semitones`: 0.5 in tune, the whole range
@@ -762,8 +873,11 @@ pub struct Vst3Instance {
     changes_ptr: ComPtr<IParameterChanges>,
     notes: ComWrapper<EventList>,
     notes_ptr: ComPtr<IEventList>,
-    /// How the plugin hears bent notes.
+    /// How the plugin hears bent notes; with MPE, the channel each note
+    /// holds and the pitch bends a block's tunings make.
     bends: BendRoute,
+    mpe: Mpe,
+    bend_changes: BendChanges,
     inputs: Vec<Bus>,
     outputs: Vec<Bus>,
     in_buses: Vec<AudioBusBuffers>,
@@ -894,6 +1008,8 @@ impl Vst3Instance {
             notes,
             notes_ptr,
             bends,
+            mpe: Mpe::default(),
+            bend_changes: BendChanges::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
             in_buses: Vec::new(),
@@ -1041,11 +1157,18 @@ impl Vst3Instance {
             edits[count] = edit;
             count += 1;
         }
-        self.changes.fill(&edits[..count], block.params());
+        self.bend_changes.0.clear();
+        self.notes.fill(
+            block.notes(),
+            &self.bends,
+            &mut self.mpe,
+            &mut self.bend_changes,
+        );
+        self.changes
+            .fill(&edits[..count], block.params(), &self.bend_changes.0);
         for change in block.params() {
             self.mirror.record(change.id, change.value);
         }
-        self.notes.fill(block.notes(), &self.bends);
 
         // The main buses read and write the shared block; others scratch.
         let (shared_in, shared_out) = block.channel_pointers();
@@ -1408,6 +1531,84 @@ fn group_names(units: &[(UnitID, UnitID, String)]) -> HashMap<UnitID, String> {
 mod tests {
     use super::*;
     use ParameterInfo_::ParameterFlags_::{kCanAutomate, kIsBypass, kIsHidden, kIsReadOnly};
+
+    /// MPE with channel `c`'s pitch bend as parameter `100 + c`.
+    fn mpe_route() -> BendRoute {
+        BendRoute::Mpe {
+            params: (100..116).collect(),
+        }
+    }
+
+    /// The notes' (on or off, channel, note id) as the plugin gets them,
+    /// and the pitch bend changes made.
+    fn play_mpe(notes: &[NoteEvent], mpe: &mut Mpe) -> (Vec<(bool, i16, i32)>, Vec<ParamChange>) {
+        let list = EventList::new();
+        let mut bends = BendChanges::new();
+        list.fill(notes, &mpe_route(), mpe, &mut bends);
+        let events = list
+            .events
+            .borrow()
+            .iter()
+            .map(|e| unsafe {
+                if u32::from(e.r#type) == Event_::EventTypes_::kNoteOnEvent as u32 {
+                    (true, e.__field0.noteOn.channel, e.__field0.noteOn.noteId)
+                } else {
+                    (false, e.__field0.noteOff.channel, e.__field0.noteOff.noteId)
+                }
+            })
+            .collect();
+        (events, bends.0)
+    }
+
+    #[test]
+    fn mpe_gives_each_note_a_channel_and_its_tunings_that_channels_bend() {
+        let mut mpe = Mpe::default();
+        let (events, bends) = play_mpe(
+            &[
+                NoteEvent::start(0, 7, 60, 1.),
+                NoteEvent::start(0, 8, 64, 1.),
+                NoteEvent::tune(32, 7, 60, 12.),
+                NoteEvent::tune(32, 8, 64, -24.),
+            ],
+            &mut mpe,
+        );
+        assert_eq!(events, [(true, 1, 7), (true, 2, 8)], "channels 2 and 3");
+        let at = |offset, id, semitones: f64| ParamChange {
+            id,
+            offset,
+            value: 0.5 + semitones / 96.,
+        };
+        assert_eq!(
+            bends,
+            [
+                at(0, 101, 0.),
+                at(0, 102, 0.),
+                at(32, 101, 12.),
+                at(32, 102, -24.)
+            ],
+            "each starts in the middle, then bends on its own channel"
+        );
+        let (events, _) = play_mpe(&[NoteEvent::end(10, 7, 60)], &mut mpe);
+        assert_eq!(events, [(false, 1, 7)], "ends on its channel");
+    }
+
+    #[test]
+    fn mpe_takes_the_channel_free_longest_and_shares_when_all_are_busy() {
+        let mut mpe = Mpe::default();
+        let first = mpe.take(1);
+        let second = mpe.take(2);
+        mpe.free(1);
+        // Channel 1 was just freed (its tail may ring): the next note takes
+        // a channel never used.
+        assert_ne!(mpe.take(3), first);
+        for note in 4..20 {
+            mpe.take(note);
+        }
+        assert!((1..16).all(|c| mpe.notes[c].is_some()), "all busy");
+        assert_eq!(mpe.channel_of(2), None, "the oldest note's channel went");
+        assert_ne!(second, 0);
+        assert!(mpe.notes[0].is_none(), "channel 1 is MPE's manager");
+    }
 
     #[test]
     fn only_automatable_visible_writable_parameters_are_offered() {

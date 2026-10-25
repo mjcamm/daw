@@ -44,6 +44,7 @@ Working knowledge of the VST3 API for hosting, kept because the official docs ar
 
 - **Note expression** (`INoteExpressionController`, on the controller): `getNoteExpressionCount(bus, channel)` and `getNoteExpressionInfo` list what a plugin takes per note. Sent as `kNoteExpressionValueEvent` events (`NoteExpressionValueEvent { typeId, noteId, value }`) in `inputEvents`, paired to a note by its `noteId`. Values are normalised; **tuning** (`kTuningTypeID` = 2) is `semitones = 240 × (value − 0.5)`: 0.5 in tune, ±120 across the range. Verified 2026-10-25: Serum 2 reads 0.75 as "60.0000", and a C tuned +12 this way plays exactly twice the cycles of the C.
 - Serum 2 lists Volume (0), Expr. X (1), Tuning (2) and Expr. Y (5).
+- **Serum 1** (the VST2-wrapped `Serum.vst3`) lists no note expressions but maps a separate pitch bend parameter per channel (1885959267 + channel): MPE works, with its bend range set in the patch (default ±2; a full bend measured a whole tone).
 - **Pitch bend is a parameter in VST3**, not an event: `IMidiMapping::getMidiControllerAssignment(bus, channel, kPitchBend = 129)` names the parameter that takes each MIDI channel's bend. A plugin that maps a different parameter per channel can take MPE (one note per channel); Serum 2 maps one parameter (516000001) for all 16 channels, so it cannot bend notes apart that way.
 - `NoteOnEvent.tuning` is in cents (*unverified*); not used here (expression events carry the bend from the note's first frame).
 
