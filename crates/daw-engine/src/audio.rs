@@ -22,7 +22,7 @@ use crate::project::{MAX_EFFECTS, MAX_INSTRUMENTS, MAX_NODES};
 use crate::samples::SampleData;
 use crate::schedule::{
     EffectState, Follow, InstrumentState, MAX_AUDIO_SIGNALS, MAX_NODE_FOLLOWS, NodeRender,
-    RenderState,
+    RenderState, ScheduledNote,
 };
 use crate::transport::Transport;
 use daw_automation::{Automation, Live, NoLive};
@@ -35,7 +35,9 @@ use daw_dsp::synth::{MAX_VOICES, Synth};
 use daw_plugins::block::{
     Context as PluginContext, DawBlock, MAX_PARAM_CHANGES, NoteEvent, Outcome, ParamChange,
 };
-use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId, SignalId};
+use daw_protocol::{
+    DeviceId, EffectKind, InstrumentKind, NodeId, SignalId, bend_semitones, curve_value,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1102,6 +1104,27 @@ impl InstrumentInstance {
         }
     }
 
+    /// Bends a sounding note: `now` semitones from its pitch at once,
+    /// gliding to `next` over `frames` (to the next control point).
+    fn tune(
+        &mut self,
+        note: u32,
+        now: f32,
+        next: f32,
+        frames: u32,
+        at: usize,
+        notes: &mut ChunkNotes,
+    ) {
+        let _ = (at, notes);
+        match self {
+            Self::Synth(synth) => synth.glide(note, now, next, frames),
+            // Plays one sample at its own pitch.
+            Self::Sampler(_) => {}
+            // Next: note expression, MPE or channel bend (`note-bends.md`).
+            Self::Plugin(_) => {}
+        }
+    }
+
     fn note_off(&mut self, note: u32, at: usize, notes: &mut ChunkNotes) {
         match self {
             Self::Synth(synth) => synth.note_off(note),
@@ -1285,6 +1308,40 @@ fn plugin_changes(
 struct PendingEnd {
     note_id: u32,
     end_beats: f64,
+    /// Where it is in the node's notes, and its start and pitch to check
+    /// that it still is: edits (a bend dragged as it plays) swap the notes.
+    index: usize,
+    start_beats: f64,
+    pitch: u8,
+    /// Whether it was last sent a bend, so losing its bend sends it home.
+    bent: bool,
+}
+
+impl PendingEnd {
+    /// Its note in the node's notes as they are now, if it is still there.
+    fn note<'a>(&self, node: &'a NodeRender) -> Option<&'a ScheduledNote> {
+        let same = |n: &&ScheduledNote| n.start_beats == self.start_beats && n.pitch == self.pitch;
+        if let Some(note) = node.notes.get(self.index).filter(same) {
+            return Some(note);
+        }
+        let from = node
+            .notes
+            .partition_point(|n| n.start_beats < self.start_beats);
+        node.notes[from..]
+            .iter()
+            .take_while(|n| n.start_beats == self.start_beats)
+            .find(same)
+    }
+}
+
+/// Semitones `note` is bent at `beat`; 0 when it is straight.
+fn bend_at(note: &ScheduledNote, beat: f64) -> f32 {
+    let Some(bend) = &note.bend else {
+        return 0.0;
+    };
+    let span = note.end_beats - note.start_beats;
+    let phase = ((beat - note.start_beats) / span).clamp(0.0, 1.0);
+    bend_semitones(curve_value(&bend.points, phase)) as f32
 }
 
 /// Plays one node: its notes into its instrument, then its bus through its
@@ -1484,7 +1541,10 @@ impl NodePlayer {
                 }
                 let mut next = (CONTROL_FRAMES - into_control).min(segment_end - done);
                 if playing {
-                    self.fire_due_events(node, &transport);
+                    if into_control == 0 {
+                        self.tune_notes(node, &transport);
+                    }
+                    self.fire_due_events(node, &transport, CONTROL_FRAMES - into_control);
                     let to_event = self.frames_to_next_event(node, &transport).max(1) as u64;
                     let to_edge = frames_to_clip_edge(&node.clips, &transport).max(1) as u64;
                     next = next.min(to_event).min(to_edge);
@@ -1906,14 +1966,16 @@ impl NodePlayer {
 
     /// Ends and starts every note due on the current frame. Afterwards every
     /// remaining event is in the future.
-    fn fire_due_events(&mut self, node: &NodeRender, transport: &Transport) {
+    /// `to_control` is the frames until the next control point.
+    fn fire_due_events(&mut self, node: &NodeRender, transport: &Transport, to_control: u64) {
         self.end_due_notes(transport);
-        while let Some(&note) = node.notes.get(self.cursor) {
+        while let Some(note) = node.notes.get(self.cursor) {
             if transport.frames_until(note.start_beats) > 0 {
                 break;
             }
+            let index = self.cursor;
             self.cursor += 1;
-            self.start_note(node, note.end_beats, note.pitch, note.velocity);
+            self.start_note(node, index, transport, to_control);
         }
         // Notes shorter than a frame end on the frame they start.
         self.end_due_notes(transport);
@@ -1936,7 +1998,23 @@ impl NodePlayer {
         }
     }
 
-    fn start_note(&mut self, node: &NodeRender, end_beats: f64, pitch: u8, velocity: u8) {
+    fn start_note(
+        &mut self,
+        node: &NodeRender,
+        index: usize,
+        transport: &Transport,
+        to_control: u64,
+    ) {
+        let note = &node.notes[index];
+        let (end_beats, pitch, velocity) = (note.end_beats, note.pitch, note.velocity);
+        let pending = PendingEnd {
+            note_id: self.next_note_id,
+            end_beats,
+            index,
+            start_beats: note.start_beats,
+            pitch,
+            bent: note.bend.is_some(),
+        };
         let note_id = self.next_note_id;
         self.next_note_id = self.next_note_id.wrapping_add(1);
         let slot = match self.pending_ends.iter().position(Option::is_none) {
@@ -1949,7 +2027,7 @@ impl NodePlayer {
                     .enumerate()
                     .filter_map(|(i, p)| p.map(|p| (i, p)))
                     .min_by(|(_, a), (_, b)| a.end_beats.total_cmp(&b.end_beats))
-                    .unwrap_or((0, PendingEnd { note_id, end_beats }));
+                    .unwrap_or((0, pending));
                 for ((_, instrument), notes) in self
                     .instruments
                     .iter_mut()
@@ -1960,7 +2038,14 @@ impl NodePlayer {
                 slot
             }
         };
-        self.pending_ends[slot] = Some(PendingEnd { note_id, end_beats });
+        self.pending_ends[slot] = Some(pending);
+        // A bent note starts where its bend starts, gliding on to the next
+        // control point, where `tune_notes` takes it on.
+        let bend = note.bend.is_some().then(|| {
+            let beat = transport.position();
+            let next = beat + to_control as f64 * transport.beats_per_frame();
+            (bend_at(note, beat), bend_at(note, next))
+        });
         // Each instrument plays only its own notes.
         for (((_, instrument), state), notes) in self
             .instruments
@@ -1970,6 +2055,43 @@ impl NodePlayer {
         {
             if state.plays.contains(pitch) {
                 instrument.note_on(note_id, pitch, velocity, self.at, notes);
+                if let Some((now, next)) = bend {
+                    instrument.tune(note_id, now, next, to_control as u32, self.at, notes);
+                }
+            }
+        }
+    }
+
+    /// At a control point, bends each sounding bent note from where its
+    /// bend is now to where it will be at the next control point. Each
+    /// note's bend is read from the notes as they are now, so a bend
+    /// changed while it plays is heard at once.
+    fn tune_notes(&mut self, node: &NodeRender, transport: &Transport) {
+        let beat = transport.position();
+        let next = beat + CONTROL_FRAMES as f64 * transport.beats_per_frame();
+        for slot in &mut self.pending_ends {
+            let Some(pending) = slot else {
+                continue;
+            };
+            let Some(note) = pending.note(node) else {
+                continue;
+            };
+            let bent = note.bend.is_some();
+            if !bent && !pending.bent {
+                continue;
+            }
+            pending.bent = bent;
+            let (now, then) = (bend_at(note, beat), bend_at(note, next));
+            for (((_, instrument), state), notes) in self
+                .instruments
+                .iter_mut()
+                .zip(&node.instruments)
+                .zip(self.plugin_notes.iter_mut())
+            {
+                if state.plays.contains(note.pitch) {
+                    let frames = CONTROL_FRAMES as u32;
+                    instrument.tune(pending.note_id, now, then, frames, self.at, notes);
+                }
             }
         }
     }

@@ -1,6 +1,6 @@
 # Bent Notes
 
-*Status: agreed with the user 2026-10-25. Step 1 (model and file) built; the rest to come.*
+*Status: agreed with the user 2026-10-25. Steps 1 (model and file) and 2 (engine and Synth) built; the piano roll next.*
 
 An original idea: rather than drawing pitch bend on a lane under the notes, the notes themselves bend. A note in the piano roll is a ribbon that follows its pitch over time, shaped with the same pen-style points and handles as the curve editor (`curve-editor.md`).
 
@@ -35,6 +35,7 @@ Bends must work on most instruments, built in, VST3 and later CLAP. The engine s
 - **Compile:** each scheduled note carries its bend; the curves sit in the immutable `RenderState`, so the audio thread reads and never allocates.
 - **Audio thread:** at each control point (`CONTROL_FRAMES`, the song-aligned 32-frame grid) every sounding bent note's tuning is read from song time, so it is the same for any block size, live or offline. A note starts with its start tuning in its note-on (no swoop from the home pitch).
 - **Built-in Synth:** each voice ramps its frequency to the new tuning across the 32 frames, so the bend is smooth and still block-size independent.
+- **Built** (`audio.rs`): a sounding note remembers its place in the node's notes with its start and pitch (`PendingEnd`), so after an edit swaps the notes it finds itself again and plays its new bend at once (a drag is heard as it moves); a note that loses its bend glides home. Each control point tunes a note from its bend there to its bend at the next point (`tune_notes`); a note starting between points glides to the next one. `InstrumentInstance::tune` is the one door: `Synth::glide` today, plugins in step 4. Tests: `daw-engine/tests/bends.rs` (a steady octave bend is bit-identical to the octave, glides rise, any block size, a bend changed mid-note).
 - **VST3**, best first, per plugin:
   1. **Note expression tuning** (`kTuningTypeID`) when the plugin lists it: per note, by note id, no range to match.
   2. **MPE**: each note on its own channel (2–16) with channel pitch bend through the plugin's MIDI mapping, ±48 semitones (the MPE default).

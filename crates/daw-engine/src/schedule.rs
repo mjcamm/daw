@@ -6,7 +6,7 @@ use crate::project::Project;
 use crate::samples::{SampleData, SamplePool};
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
 use daw_protocol::{
-    AudioSource, DeviceId, EffectKind, InstrumentKind, Node, NodeId, NodeKind, ParamState,
+    AudioSource, Curve, DeviceId, EffectKind, InstrumentKind, Node, NodeId, NodeKind, ParamState,
     SignalId, SignalSource,
 };
 use std::collections::BTreeMap;
@@ -106,12 +106,14 @@ pub struct EffectState {
 }
 
 /// A note at an absolute song position, in beats.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScheduledNote {
     pub start_beats: f64,
     pub end_beats: f64,
     pub pitch: u8,
     pub velocity: u8,
+    /// How it bends across `start_beats..end_beats` (`MidiNote::bend`).
+    pub bend: Option<Curve>,
 }
 
 fn compile_params(params: &[ParamState], signals: &Signals) -> Vec<Automation> {
@@ -303,6 +305,7 @@ pub fn schedule_notes(node: &Node) -> Vec<ScheduledNote> {
                     end_beats: (clip.start + note.start + note.length).as_beats(),
                     pitch: note.pitch,
                     velocity: note.velocity,
+                    bend: note.bend,
                 })
         })
         .collect();
@@ -558,7 +561,8 @@ mod tests {
                 start_beats: 4.5,
                 end_beats: 5.5,
                 pitch: 60,
-                velocity: 100
+                velocity: 100,
+                bend: None
             }]
         );
     }
