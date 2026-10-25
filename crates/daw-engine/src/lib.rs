@@ -30,16 +30,17 @@ pub use audio::{AudioProcessor, CONTROL_FRAMES};
 /// Checks a curve the way the engine does, for curves kept outside a song.
 pub use daw_automation::validate_curve;
 pub use daw_protocol::{
-    AudioClip, AudioSource, BlendMode, Block, BlockId, ClickSound, ClipId, ClipLoop, Command,
-    CommandError, Curve, CurvePoint, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, DeviceSnapshot,
-    Edit, Effect, EffectKind, Handle, HitMode, Instrument, InstrumentKind, InvalidBlock,
-    InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB,
-    MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, Metronome, MidiClip, MidiNote, MinMax, Node, NodeId,
-    NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot, ParamState, Peaks, Piece,
-    PluginData, PluginParam, PluginParamInfo, PluginSnapshot, PluginSpec, PluginState,
-    PluginWindow, PointKind, SEAM_FADE, SampleId, SampleRef, SampleSnapshot, SampleStatus, Scale,
-    Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot, SignalSource, SignalUse,
-    Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks,
+    AudioClip, AudioSource, BEND_RANGE, BlendMode, Block, BlockId, ClickSound, ClipId, ClipLoop,
+    Command, CommandError, Curve, CurvePoint, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef,
+    DeviceSnapshot, Edit, Effect, EffectKind, Handle, HitMode, Instrument, InstrumentKind,
+    InvalidBlock, InvalidClip, InvalidSignal, Layer, LayerId, LoopRange, MAX_CLIP_BPM,
+    MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, Meter, Metronome, MidiClip, MidiNote, MinMax,
+    Node, NodeId, NodeKind, NodeSnapshot, NoteSet, NotesSource, ParamId, ParamSnapshot, ParamState,
+    Peaks, Piece, PluginData, PluginParam, PluginParamInfo, PluginSnapshot, PluginSpec,
+    PluginState, PluginWindow, PointKind, SEAM_FADE, SampleId, SampleRef, SampleSnapshot,
+    SampleStatus, Scale, Segment, Shape, ShapePoint, Signal, SignalId, SignalSnapshot,
+    SignalSource, SignalUse, Snapshot, TICKS_PER_BEAT, TestPlugin, Ticks, bend_semitones,
+    bend_value, curve_value,
 };
 pub use file::{LoadError, ProjectFile};
 pub use project::{

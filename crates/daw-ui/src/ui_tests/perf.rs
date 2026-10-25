@@ -303,6 +303,53 @@ fn perf_arrange_with_piano_roll() {
     check("arrange + piano roll", t, 6., 30.);
 }
 
+/// Every note of the open synth bent (a curved rise and fall), the Bend
+/// tool's dots showing and rows tall enough for note names
+/// (`docs/design/note-bends.md`).
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_piano_roll_bends() {
+    use daw_engine::{Curve, CurvePoint, Handle, PointKind, bend_value};
+    let mut h = Harness::new("perf-bends");
+    let synth = heavy_song(&mut h);
+    let bend = Curve {
+        points: vec![
+            CurvePoint::corner(0., bend_value(-2.)),
+            CurvePoint::corner(0.5, bend_value(5.)).with_handles(
+                PointKind::Smooth,
+                Handle::new(-0.2, 0.),
+                Handle::new(0.2, 0.),
+            ),
+            CurvePoint::corner(1., bend_value(0.)),
+        ],
+    };
+    h.view.update(h.cx, |view, _| {
+        let clips = view
+            .session()
+            .snapshot()
+            .node(synth)
+            .expect("the synth")
+            .clips
+            .clone();
+        for (id, mut clip) in clips {
+            for note in &mut clip.notes {
+                note.bend = Some(bend.clone());
+            }
+            view.session.apply_or_panic(Command::Edit(Edit::SetClip {
+                id,
+                node: synth,
+                clip,
+            }));
+        }
+        view.open_node_editor(synth, 0.);
+        view.set_note_tool(crate::piano_roll::Tool::Bend);
+        view.notes_view.zoom.row_height = 18.;
+    });
+    h.redraw();
+    let t = measure(&mut h, "piano roll bends");
+    check("piano roll bends", t, 6., 10.);
+}
+
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timings need a release build")]
 fn perf_mixer() {

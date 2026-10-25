@@ -14,9 +14,9 @@ pub const PADDING: f32 = 12.;
 /// How close the pointer must be to grab a point or handle.
 const GRAB: f32 = 7.;
 /// Half the size of a drawn point.
-const POINT: f32 = 4.;
+pub(crate) const POINT: f32 = 4.;
 /// Radius of a drawn handle's end.
-const HANDLE: f32 = 3.;
+pub(crate) const HANDLE: f32 = 3.;
 /// Grid lines closer than this are not drawn.
 const MIN_GRID_GAP: f32 = 6.;
 
@@ -237,12 +237,7 @@ pub fn paint(
     let mut chosen = Shapes::default();
     for (i, p) in points.iter().enumerate() {
         let (x, y) = area.screen_at(p.at, p.value);
-        let (sides, turn, scale) = match p.kind {
-            // A square standing on its side: corners on the diagonals.
-            PointKind::Corner => (4, std::f32::consts::FRAC_PI_4, std::f32::consts::SQRT_2),
-            PointKind::Smooth => (12, 0., 1.),
-            PointKind::Broken => (4, 0., 1.3),
-        };
+        let (sides, turn, scale) = point_shape(p.kind);
         let outer = POINT * scale;
         let inner = (POINT - 1.5) * scale;
         if selected == Some(i) {
@@ -257,14 +252,26 @@ pub fn paint(
     chosen.paint(window, look.selected);
 }
 
+/// How a point of `kind` is drawn: (sides, turn, scale) for
+/// [`Shapes::polygon`]. Square corners, round smooth points, diamond
+/// broken ones.
+pub(crate) fn point_shape(kind: PointKind) -> (usize, f32, f32) {
+    match kind {
+        // A square standing on its side: corners on the diagonals.
+        PointKind::Corner => (4, std::f32::consts::FRAC_PI_4, std::f32::consts::SQRT_2),
+        PointKind::Smooth => (12, 0., 1.),
+        PointKind::Broken => (4, 0., 1.3),
+    }
+}
+
 /// Filled shapes gathered into one path.
 #[derive(Default)]
-struct Shapes(Option<gpui::Path<Pixels>>);
+pub(crate) struct Shapes(Option<gpui::Path<Pixels>>);
 
 impl Shapes {
     /// A regular polygon of `sides` around `x`, `y`, its corners `radius`
     /// out, the first `turn` radians round from straight up.
-    fn polygon(&mut self, x: f32, y: f32, radius: f32, sides: usize, turn: f32) {
+    pub(crate) fn polygon(&mut self, x: f32, y: f32, radius: f32, sides: usize, turn: f32) {
         let corner = |k: usize| {
             let angle = turn + k as f32 * std::f32::consts::TAU / sides as f32;
             point(px(x + radius * angle.sin()), px(y - radius * angle.cos()))
@@ -282,7 +289,7 @@ impl Shapes {
         }
     }
 
-    fn paint(self, window: &mut Window, color: Hsla) {
+    pub(crate) fn paint(self, window: &mut Window, color: Hsla) {
         if let Some(path) = self.0 {
             window.paint_path(path, color);
         }

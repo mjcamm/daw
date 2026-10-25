@@ -871,7 +871,7 @@ fn preview(curve: Curve, line: gpui::Hsla) -> impl IntoElement {
 
 /// A row of choices, the chosen one lit. Each choice: label, chosen,
 /// enabled, tooltip, and what choosing it does.
-fn segments<F: Fn(&mut ProjectView) + 'static>(
+pub(crate) fn segments<F: Fn(&mut ProjectView) + 'static>(
     theme: &Theme,
     name: &'static str,
     choices: Vec<(&'static str, bool, bool, &'static str, F)>,

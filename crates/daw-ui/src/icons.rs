@@ -34,6 +34,7 @@ pub enum Icon {
     Trash,
     Pointer,
     Scissors,
+    Spline,
     Layers,
     Fold,
     Unfold,
@@ -46,7 +47,7 @@ pub enum Icon {
 }
 
 /// Every embedded icon: its variant, asset path and file contents.
-const ICONS: [(Icon, &str, &[u8]); 33] = [
+const ICONS: [(Icon, &str, &[u8]); 34] = [
     (
         Icon::Learn,
         "icons/crosshair.svg",
@@ -176,6 +177,11 @@ const ICONS: [(Icon, &str, &[u8]); 33] = [
         Icon::Scissors,
         "icons/scissors.svg",
         include_bytes!("../assets/icons/scissors.svg"),
+    ),
+    (
+        Icon::Spline,
+        "icons/spline.svg",
+        include_bytes!("../assets/icons/spline.svg"),
     ),
     (
         Icon::Layers,

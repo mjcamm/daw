@@ -1,6 +1,6 @@
 # Bent Notes
 
-*Status: agreed with the user 2026-10-25. Steps 1 (model and file) and 2 (engine and Synth) built; the piano roll next.*
+*Status: agreed with the user 2026-10-25. Steps 1 (model and file), 2 (engine and Synth) and 3 (the piano roll) built; plugins next.*
 
 An original idea: rather than drawing pitch bend on a lane under the notes, the notes themselves bend. A note in the piano roll is a ribbon that follows its pitch over time, shaped with the same pen-style points and handles as the curve editor (`curve-editor.md`).
 
@@ -24,7 +24,8 @@ An original idea: rather than drawing pitch bend on a lane under the notes, the 
 - **Always drawn bent:** outside Bend mode a bent note is still a ribbon; only the dots and handles belong to the tool.
 - **Kinds:** while a bend point is selected, the header shows the same **Corner | Smooth | Broken** toggle as the shape panel.
 - **Labels:** each note's name at its start once rows are tall enough; while dragging a dot, its pitch beside it ("F3 · +5").
-- **Painted:** ribbons, dots and handles go in the notes canvas (`ui-speed.md`); hit-testing walks only visible notes.
+- **Painted:** ribbons, dots and handles go in the notes canvas (`ui-speed.md`); only what is on screen is painted.
+- **Built** (`daw-ui/src/bend_edit.rs`, pure and tested: where a note sits, hits, the edits; `piano_roll.rs`: the tool, drags, drawing). A ribbon is the note's line a row thick (measured up and down, so it shows the pitches it covers at each moment), filled and outlined as one path each. The dots are the shape editor's points (`curve_editor::Shapes`, `point_shape`), the kind toggle its `segments`. A bend dragged back flat on the note's pitch is removed (`tidy`). A dot's pitch is heard as it crosses each semitone. Moving notes now moves them by the rows the pointer travels, so a bent note grabbed off its own row doesn't jump. Box selections find bent notes along their lines. A folded roll draws a semitone as one row, so a bend there reads as rows rather than exact pitches. UI tests `ui_tests/bends.rs`; speed scene `perf_piano_roll_bends` (every note of a full-size song's synth bent, dots and labels on: 5.8 ms a full redraw against 5.0 without, budget 6 / 10 ms).
 - **No cutting in Bend mode** (the user's call). Scissors on a bent note in its own tool: later.
 - **Later:** bent notes in Arrange's clip drawings (agreed, a later step).
 

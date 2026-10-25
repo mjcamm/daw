@@ -78,6 +78,14 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Tree panel: click a name selects the node; pen picks the drawing target | – |
 | Fold shows only played pitches | – |
 | × closes the panel; its top edge resizes it | – |
+| Bend tool (4): drag a note's end dot up or down to bend it (a straight glide, snapped to semitones); heard as it moves, one undo step | `bends::dragging_the_end_dot_bends_the_note_and_undoes_in_one_step` |
+| Drag a note's front dot down and it slides up into the note; it stays the same note | `bends::dragging_the_front_dot_down_slides_up_into_the_note` |
+| An end dot dragged sideways changes the note's length; its bend stretches with it | `bends::an_end_dot_dragged_sideways_resizes_the_note` |
+| Double-click a note's line to add a bend point; double-click a point to remove it (never the ends) | `bends::double_clicks_add_and_remove_bend_points` |
+| With the Bend tool, dragging a note anywhere off its dots (a click on its line too) moves it whole, bend and all | `bends::dragging_a_bent_note_off_its_dots_moves_it_whole` |
+| Corner, Smooth or Broken for the selected bend point; a curved point's handles drag to shape the bend | `bends::a_selected_bend_point_turns_smooth_and_its_handle_curves_the_bend` |
+| Bent notes draw along their bends in every tool, and the other tools (and box selections) find them there | `bends::the_select_tool_finds_a_bent_note_along_its_line` |
+| Each note's name shows at its start once rows are 16 px or taller | – |
 
 ## Audio panel (`audio-clips.md`)
 

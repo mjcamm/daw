@@ -6,7 +6,17 @@ use gpui::{Pixels, Point, point, px};
 
 /// The editor open on the synth, its one clip holding a single note C4
 /// over the first two beats. Returns where (beat, pitch) is on screen.
-fn editor_with_one_note(name: &str) -> (Harness, impl Fn(&mut Harness, f64) -> Point<Pixels>) {
+pub(super) fn editor_with_one_note(
+    name: &str,
+) -> (Harness, impl Fn(&mut Harness, f64) -> Point<Pixels>) {
+    editor_with_one_note_at(name, crate::piano_roll::DEFAULT_HEIGHT)
+}
+
+/// As [`editor_with_one_note`], the panel `height` tall.
+pub(super) fn editor_with_one_note_at(
+    name: &str,
+    height: f32,
+) -> (Harness, impl Fn(&mut Harness, f64) -> Point<Pixels>) {
     let mut h = Harness::new(name);
     h.view.update(h.cx, |view, _| {
         let (id, clip) = view
@@ -33,6 +43,7 @@ fn editor_with_one_note(name: &str) -> (Harness, impl Fn(&mut Harness, f64) -> P
         view.open_node_editor(FIRST_NODE, 0.);
         // Already slid up: the grid stays put while the test points at it.
         if let Some(editor) = &mut view.note_editor {
+            editor.height = height;
             editor.opened = std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or(editor.opened);

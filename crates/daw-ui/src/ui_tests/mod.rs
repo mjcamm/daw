@@ -5,6 +5,7 @@
 
 mod arrange;
 mod audio_signals;
+mod bends;
 mod browser;
 mod export;
 mod live_drags;

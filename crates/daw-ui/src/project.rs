@@ -39,6 +39,7 @@ actions!(
         ToolSelect,
         ToolPen,
         ToolScissors,
+        ToolBend,
         NudgeUp,
         NudgeDown,
         OctaveUp,
@@ -748,6 +749,9 @@ impl Render for ProjectView {
                     crate::piano_roll::Tool::Scissors,
                     Some(crate::arrange::ArrangeTool::Scissors),
                 )
+            }))
+            .on_action(cx.listener(|this, _: &ToolBend, _, _| {
+                this.choose_tool(crate::piano_roll::Tool::Bend, None)
             }))
             .on_action(cx.listener(|this, _: &NudgeUp, _, _| this.nudge_notes(0, 1)))
             .on_action(cx.listener(|this, _: &NudgeDown, _, _| this.nudge_notes(0, -1)))

@@ -17,7 +17,8 @@
 |---|---|---|
 | Select | 1 | Click selects, Shift+click adds or removes, drag on empty grid boxes a selection; drag notes to move in time and pitch (snapped, Alt flips), edges (5 px) to resize, Ctrl to copy; double-click empty grid adds a note one grid step long, double-click a note deletes it |
 | Pen | 2 | Click empty grid to add a note and drag to set its length; click a note to delete it |
-| Scissors | 3 | Click a note to split it at the snapped position |
+| Scissors | 3 | Click a note to split it at the snapped position (a bent note's halves keep their parts of the bend) |
+| Bend | 4 | Bends notes by their dots (`note-bends.md`) |
 
 Also: Delete removes the selected notes (before clips or nodes); up and down move the selection a semitone, Shift for an octave; left and right a grid step; Ctrl+A selects all; Ctrl+C copies, Ctrl+V pastes at the playhead. Dragging a velocity bar sets that note's velocity, and the rest of the selection's alike (each from its own value).
 

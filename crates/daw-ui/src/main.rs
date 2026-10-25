@@ -4,6 +4,7 @@ mod app;
 mod arrange;
 mod audio_import;
 mod audio_panel;
+mod bend_edit;
 mod block_edit;
 mod block_inspector;
 mod browser;
@@ -66,7 +67,7 @@ use gpui::{
 use project::{
     CancelDrag, CopyNotes, DeleteSelection, ExportSong, NudgeDown, NudgeLeft, NudgeRight, NudgeUp,
     OctaveDown, OctaveUp, PasteNotes, PlayFromLoopStart, Quantize, Redo, Save, SelectAll,
-    TogglePlay, ToolPen, ToolScissors, ToolSelect, Undo,
+    TogglePlay, ToolBend, ToolPen, ToolScissors, ToolSelect, Undo,
 };
 use theme::Theme;
 
@@ -94,6 +95,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("1", ToolSelect, not_typing),
         KeyBinding::new("2", ToolPen, not_typing),
         KeyBinding::new("3", ToolScissors, not_typing),
+        KeyBinding::new("4", ToolBend, not_typing),
         KeyBinding::new("q", Quantize, not_typing),
         KeyBinding::new("up", NudgeUp, not_typing),
         KeyBinding::new("down", NudgeDown, not_typing),

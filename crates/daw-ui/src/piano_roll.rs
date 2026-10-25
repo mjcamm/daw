@@ -8,8 +8,11 @@
 //! the same frame as Arrange's (scrollbars with zoom sliders at their ends)
 //! scrolls and zooms it: sideways is time, up and down the key height.
 //! Every gesture is one undo step (`Edit::SetClip`); the rules live in
-//! `note_edit.rs`. The panel is meant to hold an audio editor later too.
+//! `note_edit.rs`, and bending notes in `bend_edit.rs`. The panel is meant
+//! to hold an audio editor later too.
 
+use crate::bend_edit::{self, BendHit, Place};
+use crate::curve_edit::Side;
 use crate::frame::Timeline;
 use crate::icons::{Icon, icon};
 use crate::inspector::note_name;
@@ -22,7 +25,9 @@ use crate::slider::Axis;
 use crate::theme::Theme;
 use crate::tooltip;
 use crate::zoom::Zoom;
-use daw_engine::{ClipId, Command, Edit, MidiClip, MidiNote, NodeId, Ticks};
+use daw_engine::{
+    ClipId, Command, Edit, MidiClip, MidiNote, NodeId, PointKind, Ticks, bend_semitones,
+};
 use gpui::{
     AnyElement, Bounds, Context, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, canvas,
     div, fill, point, prelude::*, px, size,
@@ -52,6 +57,8 @@ pub enum Tool {
     Select,
     Pen,
     Scissors,
+    /// Bends notes by their dots (`docs/design/note-bends.md`).
+    Bend,
 }
 
 /// A drag in the editor, previewed until release.
@@ -89,6 +96,22 @@ enum NoteDrag {
     Height {
         origin: Point<Pixels>,
         original: f32,
+    },
+    /// A note's bend point (one of its end dots or a point between),
+    /// dragged with the Bend tool. `heard` is the semitone last played.
+    BendPoint {
+        note: usize,
+        point: usize,
+        origin: Point<Pixels>,
+        original: Vec<MidiNote>,
+        heard: i32,
+    },
+    /// A handle of the selected bend point.
+    BendHandle {
+        note: usize,
+        point: usize,
+        side: Side,
+        original: Vec<MidiNote>,
     },
 }
 
@@ -142,6 +165,8 @@ pub struct NoteEditor {
     pub target: NodeId,
     pub tool: Tool,
     pub selection: Selection,
+    /// With the Bend tool, the selected bend point of the one selected note.
+    pub(crate) bend_point: Option<usize>,
     pub height: f32,
     /// Where the grid's content was drawn: its top-left is the clip start
     /// at pitch 127, and it moves as the grid scrolls.
@@ -196,6 +221,7 @@ impl NoteEditor {
             target: node,
             tool: Tool::Select,
             selection: Selection::new(),
+            bend_point: None,
             height,
             grid: Rc::default(),
             velocity: Rc::default(),
@@ -258,6 +284,65 @@ impl NoteEditor {
         let pitch = self.rows.pitch_at((y / zoom.row_height).floor());
         (beat, pitch)
     }
+
+    /// The selected bend point, as (note, point): the Bend tool's, on the
+    /// one selected note.
+    fn chosen_point(&self) -> Option<(usize, usize)> {
+        let note = match self.selection.len() {
+            1 => self.selection.first().copied(),
+            _ => None,
+        };
+        note.zip(self.bend_point)
+    }
+}
+
+/// Where `note` sits on the grid, if its row is shown.
+fn place_of(rows: &Rows, zoom: Zoom, note: &MidiNote) -> Option<Place> {
+    let row = rows.row_of(note.pitch)?;
+    Some(Place::of(
+        note,
+        row,
+        f64::from(zoom.pixels_per_beat),
+        f64::from(zoom.row_height),
+    ))
+}
+
+/// The notes a box from `from` to `to` touches (both in the frame the drag
+/// began in): straight notes by their rows and times, bent ones along
+/// their lines.
+fn notes_in_box(
+    editor: &NoteEditor,
+    notes: &[MidiNote],
+    zoom: Zoom,
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+) -> Selection {
+    let (b0, p0) = editor.at_press(from, zoom);
+    let (b1, p1) = editor.at_press(to, zoom);
+    let (x0, y0) = local(editor.drag_grid, from);
+    let (x1, y1) = local(editor.drag_grid, to);
+    let area = (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
+    let straight = note_edit::in_box(notes, b0, b1, p0, p1)
+        .into_iter()
+        .filter(|&i| notes[i].bend.is_none());
+    let bent = notes.iter().enumerate().filter_map(|(i, n)| {
+        let place = place_of(&editor.rows, zoom, n).filter(|_| n.bend.is_some())?;
+        bend_edit::crosses(n, place, area).then_some(i)
+    });
+    straight.chain(bent).collect()
+}
+
+/// `position` in the grid's own pixels, from its top-left at `origin`.
+fn local(origin: Point<Pixels>, position: Point<Pixels>) -> (f64, f64) {
+    (
+        f64::from((position.x - origin.x) / px(1.)),
+        f64::from((position.y - origin.y) / px(1.)),
+    )
+}
+
+/// The key a note bent `semitones` from `pitch` sounds nearest to.
+fn sounding(pitch: u8, semitones: i32) -> u8 {
+    (i32::from(pitch) + semitones).clamp(0, 127) as u8
 }
 
 fn is_black(pitch: u8) -> bool {
@@ -295,10 +380,38 @@ impl ProjectView {
         let (beat, pitch) = editor.at(at, zoom);
         let cell = self.note_grid.floor(Ticks::from_beats_f64(beat.max(0.)));
         let edge = matches!(
-            note_edit::hit(&clip.notes, beat, pitch, f64::from(zoom.pixels_per_beat)),
+            self.roll_hit(editor, &clip.notes, at),
             Some((_, note_edit::Part::Start | note_edit::Part::End))
         );
         Some((cell, pitch, edge))
+    }
+
+    /// The note under `position` and which part (`note_edit::hit`), with
+    /// bent notes found along their lines rather than on their rows.
+    fn roll_hit(
+        &self,
+        editor: &NoteEditor,
+        notes: &[MidiNote],
+        position: Point<Pixels>,
+    ) -> Option<(usize, Part)> {
+        let zoom = self.notes_view.zoom;
+        let (x, y) = local(editor.grid.get().origin, position);
+        let place = |i: usize| notes.get(i).and_then(|n| place_of(&editor.rows, zoom, n));
+        if let Some(i) = bend_edit::bent_at(notes, &place, x, y) {
+            let at = place(i)?;
+            let edge = note_edit::edge_inside(at.w);
+            let part = if at.x + at.w - x <= edge {
+                Part::End
+            } else if x - at.x <= edge {
+                Part::Start
+            } else {
+                Part::Body
+            };
+            return Some((i, part));
+        }
+        let (beat, pitch) = editor.at(position, zoom);
+        note_edit::hit(notes, beat, pitch, f64::from(zoom.pixels_per_beat))
+            .filter(|(i, _)| notes[*i].bend.is_none())
     }
 
     /// Readies the bottom panel under Arrange for this frame: the panel
@@ -608,7 +721,11 @@ impl ProjectView {
         let zoom = self.notes_view.zoom;
         let (beat, pitch) = editor.at(event.position, zoom);
         let notes = clip.notes.clone();
-        let hit = note_edit::hit(&notes, beat, pitch, f64::from(zoom.pixels_per_beat));
+        if editor.tool == Tool::Bend {
+            self.press_bend(event, notes);
+            return;
+        }
+        let hit = self.roll_hit(editor, &notes, event.position);
         let (node, tool) = (editor.target, editor.tool);
         let selection = editor.selection.clone();
         let snap = self.note_snap(event.modifiers.alt);
@@ -732,7 +849,135 @@ impl ProjectView {
                     self.commit_notes(notes, [index, second].into());
                 }
             }
+            Tool::Bend => {}
         }
+    }
+
+    /// A press with the Bend tool: a dot drags to bend its note (selecting
+    /// the point), a selected point's handle drags to curve it, the line
+    /// elsewhere moves the note whole (as the select tool does), empty grid
+    /// boxes a selection. Double-click the line to add a point, a point to
+    /// remove it.
+    fn press_bend(&mut self, event: &MouseDownEvent, notes: Vec<MidiNote>) {
+        let zoom = self.notes_view.zoom;
+        let ppb = f64::from(zoom.pixels_per_beat);
+        let snap = self.note_snap(event.modifiers.alt);
+        let Some(editor) = &mut self.note_editor else {
+            return;
+        };
+        let node = editor.target;
+        let (x, y) = local(editor.grid.get().origin, event.position);
+        let found = {
+            let rows = &editor.rows;
+            let place = |i: usize| notes.get(i).and_then(|n| place_of(rows, zoom, n));
+            bend_edit::hit(&notes, &place, editor.chosen_point(), x, y)
+        };
+        if event.click_count >= 2 {
+            let changed = match found {
+                Some(BendHit::Point { note, point }) => {
+                    bend_edit::remove_point(&notes[note], point).map(|n| (note, n, None))
+                }
+                Some(BendHit::Line { note }) => {
+                    let snap = |t: Ticks| snap.round(t);
+                    bend_edit::add_point(&notes[note], x, ppb, &snap)
+                        .map(|(n, point)| (note, n, Some(point)))
+                }
+                _ => None,
+            };
+            if let Some((note, bent, point)) = changed {
+                let mut out = notes;
+                out[note] = bent;
+                self.commit_notes(out, [note].into());
+                if let Some(editor) = &mut self.note_editor {
+                    editor.bend_point = point;
+                }
+            }
+            return;
+        }
+        match found {
+            Some(BendHit::Point { note, point }) => {
+                editor.selection = [note].into();
+                editor.bend_point = Some(point);
+                let n = &notes[note];
+                let semitones = bend_edit::points(n)
+                    .points
+                    .get(point)
+                    .map_or(0, |p| bend_semitones(p.value).round() as i32);
+                let (pitch, velocity) = (sounding(n.pitch, semitones), n.velocity);
+                editor.drag = Some(NoteDrag::BendPoint {
+                    note,
+                    point,
+                    origin: event.position,
+                    original: notes,
+                    heard: semitones,
+                });
+                self.preview_note(node, pitch, velocity);
+            }
+            Some(BendHit::Handle { note, point, side }) => {
+                editor.drag = Some(NoteDrag::BendHandle {
+                    note,
+                    point,
+                    side,
+                    original: notes,
+                });
+            }
+            Some(BendHit::Line { note }) => {
+                editor.bend_point = None;
+                if event.modifiers.shift {
+                    if !editor.selection.remove(&note) {
+                        editor.selection.insert(note);
+                    }
+                } else if !editor.selection.contains(&note) {
+                    editor.selection = [note].into();
+                }
+                if !editor.selection.contains(&note) {
+                    return;
+                }
+                let (pitch, velocity) = (notes[note].pitch, notes[note].velocity);
+                editor.drag = Some(NoteDrag::Move {
+                    origin: event.position,
+                    grabbed: note,
+                    original: notes,
+                    selection: editor.selection.clone(),
+                    copy: event.modifiers.secondary(),
+                    shift: 0,
+                });
+                self.preview_note(node, pitch, velocity);
+            }
+            None => {
+                editor.bend_point = None;
+                let original = if event.modifiers.shift {
+                    editor.selection.clone()
+                } else {
+                    Selection::new()
+                };
+                editor.selection = original.clone();
+                editor.drag = Some(NoteDrag::Box {
+                    from: event.position,
+                    to: event.position,
+                    original,
+                });
+            }
+        }
+    }
+
+    /// Switches the selected bend point to `kind` (the header's toggle).
+    fn set_bend_kind(&mut self, kind: PointKind) {
+        let Some((editor, clip)) = self.editor_clip() else {
+            return;
+        };
+        let Some((note, point)) = editor.chosen_point() else {
+            return;
+        };
+        let Some(n) = clip.notes.get(note) else {
+            return;
+        };
+        let Some(place) = place_of(&editor.rows, self.notes_view.zoom, n) else {
+            return;
+        };
+        let mut notes = clip.notes.clone();
+        notes[note] = bend_edit::set_kind(n, point, kind, place);
+        self.commit_notes(notes, [note].into());
     }
 
     /// A press in the velocity lane: drags the velocity of the note at the
@@ -792,6 +1037,12 @@ impl ProjectView {
         // The pitch is the row under the pointer now; distances are taken in
         // the frame the drag began in, so scrolling carries the notes along.
         let (_, pointer_pitch) = editor.at(position, zoom);
+        // The row a press began on, in the frame the drag began in.
+        let (rows, drag_grid) = (editor.rows.clone(), editor.drag_grid);
+        let press_pitch = |origin: Point<Pixels>| {
+            let (_, y) = local(drag_grid, origin);
+            rows.pitch_at((y as f32 / zoom.row_height).floor())
+        };
         editor.pointer = Some((position, modifiers));
         let screen = position;
         let position = position + (editor.drag_grid - editor.grid.get().origin);
@@ -817,10 +1068,11 @@ impl ProjectView {
                     return true;
                 }
                 let anchor = &original[*grabbed];
-                // The grabbed note's start lands on the grid; its pitch is
-                // the row under the pointer.
+                // The grabbed note's start lands on the grid; it moves as
+                // many rows as the pointer has (a bent note may be grabbed
+                // away from its own row).
                 let dt = snap.round(anchor.start + beats(position.x - origin.x)) - anchor.start;
-                let dpitch = i32::from(pointer_pitch) - i32::from(anchor.pitch);
+                let dpitch = i32::from(pointer_pitch) - i32::from(press_pitch(*origin));
                 let (notes, chosen) = if *copy {
                     note_edit::copied(original, selection, dt, dpitch)
                 } else {
@@ -890,6 +1142,58 @@ impl ProjectView {
             NoteDrag::Height { origin, original } => {
                 editor.height = (*original - (screen.y - origin.y) / px(1.)).max(MIN_HEIGHT);
             }
+            NoteDrag::BendPoint {
+                note,
+                point,
+                origin,
+                original,
+                heard,
+            } => {
+                if editor.preview.is_none() && still(*origin) {
+                    return true;
+                }
+                let n = &original[*note];
+                let Some(place) = place_of(&editor.rows, zoom, n) else {
+                    return true;
+                };
+                let (dx, dy) = local(*origin, position);
+                let snap = |t: Ticks| snap.round(t);
+                let drag = bend_edit::Drag {
+                    dx,
+                    dy,
+                    pixels_per_beat: f64::from(ppb),
+                    snap: &snap,
+                    free: modifiers.alt,
+                };
+                let bent = bend_edit::drag_point(n, *point, place, drag);
+                // The pitch under the dot is heard as it changes.
+                let semitones = bend_edit::points(&bent)
+                    .points
+                    .get(*point)
+                    .map_or(0, |p| bend_semitones(p.value).round() as i32);
+                if semitones != *heard {
+                    *heard = semitones;
+                    sound = Some((sounding(bent.pitch, semitones), bent.velocity));
+                }
+                let mut notes = original.clone();
+                notes[*note] = bent;
+                editor.preview = Some((notes, [*note].into()));
+            }
+            NoteDrag::BendHandle {
+                note,
+                point,
+                side,
+                original,
+            } => {
+                let n = &original[*note];
+                let Some(place) = place_of(&editor.rows, zoom, n) else {
+                    return true;
+                };
+                let (x, y) = local(editor.drag_grid, position);
+                let mut notes = original.clone();
+                notes[*note] = bend_edit::drag_handle(n, *point, *side, place, x, y);
+                editor.preview = Some((notes, [*note].into()));
+            }
         }
         let node = editor.target;
         if let Some((pitch, velocity)) = sound {
@@ -909,10 +1213,8 @@ impl ProjectView {
         let preview = editor.preview.take();
         if let NoteDrag::Box { from, to, original } = drag {
             let zoom = self.notes_view.zoom;
-            let (b0, p0) = editor.at_press(from, zoom);
-            let (b1, p1) = editor.at_press(to, zoom);
-            if let Some((_, clip)) = self.editor_clip() {
-                let mut chosen = note_edit::in_box(&clip.notes, b0, b1, p0, p1);
+            if let Some((editor, clip)) = self.editor_clip() {
+                let mut chosen = notes_in_box(editor, &clip.notes, zoom, from, to);
                 chosen.extend(original);
                 if let Some(editor) = &mut self.note_editor {
                     editor.selection = chosen;
@@ -930,10 +1232,7 @@ impl ProjectView {
         let Some(NoteDrag::Box { from, to, original }) = &editor.drag else {
             return None;
         };
-        let zoom = self.notes_view.zoom;
-        let (b0, p0) = editor.at_press(*from, zoom);
-        let (b1, p1) = editor.at_press(*to, zoom);
-        let mut chosen = note_edit::in_box(notes, b0, b1, p0, p1);
+        let mut chosen = notes_in_box(editor, notes, self.notes_view.zoom, *from, *to);
         chosen.extend(original.iter().copied());
         Some(chosen)
     }
@@ -951,6 +1250,7 @@ impl ProjectView {
                     | NoteDrag::Resize { .. }
                     | NoteDrag::Pen { .. }
                     | NoteDrag::Box { .. }
+                    | NoteDrag::BendPoint { .. }
             )
         );
         let Some((pointer, modifiers)) = editor.pointer.filter(|_| scrolls) else {
@@ -997,6 +1297,7 @@ impl ProjectView {
     pub(crate) fn set_note_tool(&mut self, tool: Tool) {
         if let Some(editor) = &mut self.note_editor {
             editor.tool = tool;
+            editor.bend_point = None;
         }
     }
 
@@ -1144,6 +1445,48 @@ impl ProjectView {
 
         let panel_height = editor.height * slide(editor.opened);
 
+        // The Bend tool's point kinds, for the selected bend point.
+        let chosen_kind = editor.chosen_point().and_then(|(note, point)| {
+            let note = shown_notes.get(note)?;
+            Some(bend_edit::points(note).points.get(point)?.kind)
+        });
+        let bend_kinds = (editor.tool == Tool::Bend).then(|| {
+            crate::shape_panel::segments(
+                theme,
+                "bend-kind",
+                [
+                    (
+                        "Corner",
+                        PointKind::Corner,
+                        "Corner: straight lines both sides",
+                    ),
+                    (
+                        "Smooth",
+                        PointKind::Smooth,
+                        "Smooth: curves through, its handles in line",
+                    ),
+                    (
+                        "Broken",
+                        PointKind::Broken,
+                        "Broken: curves both sides, each handle on its own",
+                    ),
+                ]
+                .into_iter()
+                .map(|(label, kind, tip)| {
+                    (
+                        label,
+                        chosen_kind == Some(kind),
+                        chosen_kind.is_some(),
+                        tip,
+                        move |this: &mut Self| this.set_bend_kind(kind),
+                    )
+                })
+                .collect(),
+                cx,
+            )
+            .debug_selector(|| "bend-kind".into())
+        });
+
         let hover = theme.hover;
         let tool_button = |id: &'static str, kind: Icon, tool: Tool, hint: &'static str| {
             let on = editor.tool == tool;
@@ -1182,7 +1525,9 @@ impl ProjectView {
             .child(tool_button("tool-select", Icon::Pointer, Tool::Select, "Select (1): drag to move, edges to resize, Ctrl to copy, double-click to add or delete"))
             .child(tool_button("tool-pen", Icon::Pencil, Tool::Pen, "Pen (2): click to add a note and drag its length, click a note to delete it"))
             .child(tool_button("tool-scissors", Icon::Scissors, Tool::Scissors, "Scissors (3): click a note to split it"))
+            .child(tool_button("tool-bend", Icon::Spline, Tool::Bend, "Bend (4): drag a note's dots to bend it, double-click its line to add a point and a point to remove it"))
             .child(fold_button)
+            .when_some(bend_kinds, |d, kinds| d.child(div().w(px(6.))).child(kinds))
             .child(div().w(px(12.)))
             .children(drawing_to)
             .child(div().flex_1())
@@ -1343,10 +1688,11 @@ impl ProjectView {
             .top_0()
             .left_0()
             .size_full();
+        let mut bent_notes: Vec<(MidiNote, Place, gpui::Hsla, gpui::Hsla)> = Vec::new();
         let note_quads: Vec<(Bounds<Pixels>, gpui::Hsla, gpui::Hsla)> = shown_notes
             .iter()
             .enumerate()
-            .map(|(i, n)| {
+            .filter_map(|(i, n)| {
                 let selected = selection.contains(&i);
                 let full = n.length.as_beats() as f32 * ppb;
                 let w = (full - 1.).max(3.);
@@ -1362,6 +1708,12 @@ impl ProjectView {
                 } else {
                     colors.outline
                 };
+                if n.bend.is_some() {
+                    if let Some(place) = place_of(&rows, zoom, n) {
+                        bent_notes.push((n.clone(), place, body, border));
+                    }
+                    return None;
+                }
                 let rect = Bounds::new(
                     point(
                         px(n.start.as_beats() as f32 * ppb),
@@ -1369,12 +1721,28 @@ impl ProjectView {
                     ),
                     size(px(w), px(key - 2.)),
                 );
-                (rect, body, border)
+                Some((rect, body, border))
             })
             .collect();
+        // Each note's name at its start, once rows are tall enough to read.
+        let labels: Vec<(f32, f32, gpui::SharedString)> = if key >= LABEL_KEY {
+            shown_notes
+                .iter()
+                .filter_map(|n| {
+                    let place = place_of(&rows, zoom, n)?;
+                    let top = place.line_at(n, place.x) - place.key / 2.;
+                    Some((place.x as f32, top as f32, note_name(n.pitch).into()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let label_color = theme.text;
+        // Clear of the Bend tool's front dot.
+        let label_inset = if editor.tool == Tool::Bend { 8. } else { 3. };
         let notes = canvas(
             |_, _, _| {},
-            move |bounds, (), window, _| {
+            move |bounds, (), window, cx| {
                 let visible = window.content_mask().bounds;
                 for (rect, body, border) in &note_quads {
                     let rect = Bounds::new(bounds.origin + rect.origin, rect.size);
@@ -1387,10 +1755,67 @@ impl ProjectView {
                         );
                     }
                 }
+                for (note, place, body, border) in &bent_notes {
+                    paint_ribbon(note, *place, *body, *border, bounds.origin, visible, window);
+                }
+                let origin = bounds.origin + point(px(label_inset), px(0.));
+                paint_labels(&labels, label_color, origin, visible, window, cx);
             },
         )
         .absolute()
         .size_full();
+        // The Bend tool's dots on every note, and the selected point's handles.
+        let dots = (editor.tool == Tool::Bend).then(|| {
+            let chosen = editor.chosen_point();
+            let curves: Vec<(daw_engine::Curve, Place, Option<usize>)> = shown_notes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| {
+                    let place = place_of(&rows, zoom, n)?;
+                    let point = chosen.filter(|(note, _)| *note == i).map(|(_, p)| p);
+                    Some((bend_edit::points(n), place, point))
+                })
+                .collect();
+            let look = (theme.text, theme.window, theme.accent);
+            canvas(
+                |_, _, _| {},
+                move |bounds, (), window, _| {
+                    paint_bend_dots(&curves, look, bounds.origin, window);
+                },
+            )
+            .absolute()
+            .size_full()
+        });
+        // While a dot is dragged, the pitch it is on beside it.
+        let dot_label = match (&editor.drag, &editor.preview) {
+            (Some(NoteDrag::BendPoint { note, point, .. }), Some((notes, _))) => {
+                notes.get(*note).and_then(|n| {
+                    let p = bend_edit::points(n).points.get(*point).copied()?;
+                    let place = place_of(&rows, zoom, n)?;
+                    let (x, y) = place.screen(p.at, p.value);
+                    let semitones = bend_semitones(p.value);
+                    Some((x, y, bend_label(n.pitch, semitones)))
+                })
+            }
+            _ => None,
+        }
+        .map(|(x, y, text)| {
+            div()
+                .absolute()
+                .left(px(x as f32 + 9.))
+                .top(px(y as f32 - 22.))
+                .px(px(5.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .bg(theme.sidebar)
+                .border_1()
+                .border_color(theme.edge)
+                .text_size(px(11.))
+                .text_color(theme.text)
+                .whitespace_nowrap()
+                .debug_selector(|| "bend-label".into())
+                .child(text)
+        });
         // What this drawing shows for the pointer, for the next move to
         // compare with.
         editor
@@ -1401,9 +1826,8 @@ impl ProjectView {
         let over_edge = edges
             && editor.drag.is_none()
             && editor.hover.is_some_and(|at| {
-                let (beat, pitch) = editor.at(at, self.notes_view.zoom);
                 matches!(
-                    note_edit::hit(&shown_notes, beat, pitch, f64::from(ppb)),
+                    self.roll_hit(editor, &shown_notes, at),
                     Some((_, note_edit::Part::Start | note_edit::Part::End))
                 )
             });
@@ -1491,6 +1915,8 @@ impl ProjectView {
                     .child(repeats)
                     .children(ghosts)
                     .child(notes)
+                    .children(dots)
+                    .children(dot_label)
                     .children(pen_preview)
                     .child(playhead)
                     .children(rubber)
@@ -1890,6 +2316,163 @@ impl ProjectView {
             editor.scroll_to = None;
         }
     }
+}
+
+/// Rows at least this tall show each note's name.
+const LABEL_KEY: f32 = 16.;
+
+/// A bent note's pitch as its dot shows it: "F3 · +5".
+fn bend_label(pitch: u8, semitones: f64) -> String {
+    let nearest = semitones.round();
+    let name = note_name(sounding(pitch, nearest as i32));
+    let amount = if (semitones - nearest).abs() < 0.005 {
+        format!("{nearest:+}")
+    } else {
+        format!("{semitones:+.2}")
+    };
+    format!("{name} · {amount}")
+}
+
+/// A bent note: its line a row thick, filled and outlined.
+#[allow(clippy::too_many_arguments)]
+fn paint_ribbon(
+    note: &MidiNote,
+    place: Place,
+    body: gpui::Hsla,
+    border: gpui::Hsla,
+    origin: Point<Pixels>,
+    visible: Bounds<Pixels>,
+    window: &mut gpui::Window,
+) {
+    let (left, right) = (
+        origin.x + px(place.x as f32),
+        origin.x + px((place.x + place.w) as f32),
+    );
+    if right < visible.left() || left > visible.right() {
+        return;
+    }
+    let line = bend_edit::line(note, place, 3.);
+    let half = ((place.key - 2.) / 2.) as f32;
+    let at = |x: f64, y: f64, dy: f32| origin + point(px(x as f32), px(y as f32 + dy));
+    let outline: Vec<Point<Pixels>> = line
+        .iter()
+        .map(|&(x, y)| at(x, y, -half))
+        .chain(line.iter().rev().map(|&(x, y)| at(x, y, half)))
+        .collect();
+    let top = outline.iter().map(|p| p.y).fold(px(f32::MAX), Pixels::min);
+    let bottom = outline.iter().map(|p| p.y).fold(px(f32::MIN), Pixels::max);
+    if bottom < visible.top() || top > visible.bottom() {
+        return;
+    }
+    for (mut builder, color) in [
+        (gpui::PathBuilder::fill(), body),
+        (gpui::PathBuilder::stroke(px(1.)), border),
+    ] {
+        builder.move_to(outline[0]);
+        for p in &outline[1..] {
+            builder.line_to(*p);
+        }
+        builder.close();
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, color);
+        }
+    }
+}
+
+/// Note names at their starts, those on screen.
+fn paint_labels(
+    labels: &[(f32, f32, gpui::SharedString)],
+    color: gpui::Hsla,
+    origin: Point<Pixels>,
+    visible: Bounds<Pixels>,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    if labels.is_empty() {
+        return;
+    }
+    let mut style = window.text_style();
+    style.color = color;
+    let font_size = px(9.);
+    style.font_size = font_size.into();
+    let line_height = px(LABEL_KEY - 2.);
+    for (x, y, text) in labels {
+        let at = origin + point(px(*x), px(*y + 1.));
+        let reach = Bounds::new(at, size(px(24.), line_height));
+        if !reach.intersects(&visible) {
+            continue;
+        }
+        let run = style.to_run(text.len());
+        let line = window
+            .text_system()
+            .shape_line(text.clone(), font_size, &[run], None);
+        let _ = line.paint(at, line_height, window, cx);
+    }
+}
+
+/// The Bend tool's dots: every point of every note on screen, shaped by
+/// kind as in the curve editor; the selected one filled, with its handles.
+fn paint_bend_dots(
+    curves: &[(daw_engine::Curve, Place, Option<usize>)],
+    (outline, hollow, selected): (gpui::Hsla, gpui::Hsla, gpui::Hsla),
+    origin: Point<Pixels>,
+    window: &mut gpui::Window,
+) {
+    use crate::curve_editor::{HANDLE, POINT, Shapes, point_shape};
+    let visible = window.content_mask().bounds;
+    let at = |x: f64, y: f64| origin + point(px(x as f32), px(y as f32));
+    let mut outlines = Shapes::default();
+    let mut insides = Shapes::default();
+    let mut chosen = Shapes::default();
+    for (curve, place, picked) in curves {
+        let (left, right) = (at(place.x, 0.).x, at(place.x + place.w, 0.).x);
+        if right + px(POINT * 2.) < visible.left() || left - px(POINT * 2.) > visible.right() {
+            continue;
+        }
+        for (i, p) in curve.points.iter().enumerate() {
+            let (x, y) = place.screen(p.at, p.value);
+            let centre = at(x, y);
+            if !visible.dilate(px(POINT * 2.)).contains(&centre) {
+                continue;
+            }
+            let (sides, turn, scale) = point_shape(p.kind);
+            let (cx, cy) = (x as f32 + origin.x / px(1.), y as f32 + origin.y / px(1.));
+            if *picked == Some(i) {
+                chosen.polygon(cx, cy, POINT * scale, sides, turn);
+                if p.has_handles() {
+                    for handle in [p.handle_in, p.handle_out] {
+                        if handle == daw_engine::Handle::NONE {
+                            continue;
+                        }
+                        let (hx, hy) = place.handle_end(p, handle);
+                        let mut arm = gpui::PathBuilder::stroke(px(1.));
+                        arm.move_to(centre);
+                        arm.line_to(at(hx, hy));
+                        if let Ok(path) = arm.build() {
+                            window.paint_path(path, selected);
+                        }
+                        let end = at(hx, hy);
+                        window.paint_quad(
+                            fill(
+                                Bounds::new(
+                                    end - point(px(HANDLE), px(HANDLE)),
+                                    size(px(2. * HANDLE), px(2. * HANDLE)),
+                                ),
+                                selected,
+                            )
+                            .corner_radii(px(HANDLE)),
+                        );
+                    }
+                }
+            } else {
+                outlines.polygon(cx, cy, POINT * scale, sides, turn);
+                insides.polygon(cx, cy, (POINT - 1.5) * scale, sides, turn);
+            }
+        }
+    }
+    outlines.paint(window, outline);
+    insides.paint(window, hollow);
+    chosen.paint(window, selected);
 }
 
 /// The editor's timeline length: past the song's last clip by eight bars,
