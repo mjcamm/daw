@@ -118,13 +118,24 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Uses chip lists listening layers with go-to | – |
 | Click a row selects it; a notes signal's settings show in the inspector | – |
 
+## Shape panel (`curve-editor.md`)
+
+| Behaviour | Test |
+|---|---|
+| Click a notes signal opens its shape in the bottom panel; × closes it; a drawn signal (or nothing) selected closes it | `shape::clicking_a_notes_signal_opens_its_shape_and_a_drawn_one_closes_it` |
+| Double-click empty space adds a point (snapped to the grid and eighths, Alt flips); double-click a point removes it; never the two ends | `shape::double_clicks_add_and_remove_points_on_the_grid` |
+| Drag a point to move it (between its neighbours; the ends only up and down); heard as it moves, one undo step | `shape::dragging_a_point_moves_it_heard_as_it_moves_and_undoes_in_one_step` |
+| Corner, Smooth or Broken for the selected point; a selected curved point's handles drag to bend (Smooth keeps them in line) | `shape::a_selected_point_turns_smooth_or_broken_and_its_handles_bend_the_curve` |
+| Trigger or Loop; the window (1/8 to 4 bars); the grid on its own snap chip | `shape::the_toolbar_sets_the_mode_and_the_window` |
+| A stamp card fills the window, once per grid cell; Save as stamp keeps the curve for every project; a saved stamp's × deletes it, double-click its name renames it; cards that don't fit go under › | `shape::stamps_fill_the_window_and_saved_ones_can_be_deleted` |
+
 ## Inspector (`inspector.md`)
 
 | Behaviour | Test |
 |---|---|
 | Tray button opens and closes it; lights when the selection has settings | – |
 | Drag the left edge resizes it | – |
-| Notes signal: envelope sliders; pitch range and velocity clamp switches | – |
+| Notes signal: pitch range and velocity clamp switches (its shape is in the Signals page's bottom panel) | – |
 | A selected node on Arrange shows its mixer strip | – |
 
 ## Mixer (`mixer.md`)
@@ -133,6 +144,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 |---|---|
 | Fader and pan follow the pointer and are heard while dragged; each drag is one undo step | `live_drags::a_fader_follows_the_pointer_and_is_heard_while_dragged`, `live_drags::a_pan_follows_the_pointer_and_is_heard_while_dragged` |
 | Fader and pan double-click resets; mute and solo | – |
+| Each strip's fader has dB marks beside it (12 to -60, 0 dB brighter, thinned on short faders); fader, meters and marks share one scale, -60 to +12 dB, meters red from 0 dB (as Studio One, Live, Logic) | `live_drags::strips_show_db_marks_beside_the_fader` |
 | + Instrument and + Effect open the device browser (Built-in \| Plugins, plugins under vendor headings); search and Enter add a plugin | `browser::a_plugin_effect_is_found_by_search_and_added_with_enter` |
 | The device browser opens on the side used last; arrows and Enter pick; Escape or a click outside closes | `browser::the_browser_remembers_its_side_and_works_from_the_keys` |
 | Effect slots switch and remove | – |

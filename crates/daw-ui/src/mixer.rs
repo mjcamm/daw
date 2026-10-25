@@ -49,6 +49,8 @@ const MAP_VISIBLE_ROWS: usize = 3;
 /// A pan within this of the centre snaps to it.
 const PAN_DETENT: f64 = 0.02;
 const METER_WIDTH: f32 = 4.;
+/// The dB marks' column beside a fader.
+const DB_SCALE_WIDTH: f32 = 18.;
 
 /// The mixer's view state: strip width, scrolling, and where the faders
 /// were last drawn.
@@ -315,6 +317,7 @@ impl ProjectView {
                 )
             })
             .relative()
+            .child(self.db_scale(id, place, theme))
             .child(self.fader(node, place, theme, cx))
             .child(self.meters(id, place));
 
@@ -1068,13 +1071,16 @@ impl ProjectView {
     }
 
     /// Stereo meters with a peak line that holds, then falls: drawn by
-    /// the live layer.
+    /// the live layer. They run over the fader's travel (inset by half its
+    /// thumb), on its scale, so a level lines up with the fader and the dB
+    /// marks.
     fn meters(&self, node: NodeId, place: StripPlace) -> gpui::Div {
         let length = self.fader_length(place);
         div()
             .flex_none()
             .w(px(METER_WIDTH * 2. + 2.))
             .h(px(length))
+            .py(px(slider::THUMB / 2.))
             .child(
                 self.live_slot(
                     place.pane(),
@@ -1082,6 +1088,60 @@ impl ProjectView {
                         node,
                         bar: METER_WIDTH,
                         gap: 2.,
+                    },
+                )
+                .size_full(),
+            )
+    }
+
+    /// The dB marks beside a fader: each level's number and a tick where
+    /// the fader (and its meters) put it, 0 dB brighter, in one drawing.
+    fn db_scale(&self, node: NodeId, place: StripPlace, theme: &Theme) -> gpui::Div {
+        let length = self.fader_length(place);
+        let travel = (length - slider::THUMB).max(0.);
+        let marks = crate::layout::db_marks(travel);
+        let (dim, bright, tick) = (theme.text_tertiary, theme.text_secondary, theme.hairline);
+        div()
+            .debug_selector(move || format!("db-marks-{}", node.0))
+            .flex_none()
+            .w(px(DB_SCALE_WIDTH))
+            .h(px(length))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, (), window, cx| {
+                        let font_size = px(9.);
+                        let line_height = font_size * 1.2;
+                        for (db, y) in &marks {
+                            let centre = bounds.bottom() - px(slider::THUMB / 2. + y);
+                            let color = if *db == 0 { bright } else { dim };
+                            // A short tick at the fader's side.
+                            window.paint_quad(gpui::fill(
+                                Bounds::new(
+                                    gpui::point(bounds.right() - px(3.), centre),
+                                    gpui::size(px(3.), px(1.)),
+                                ),
+                                if *db == 0 { bright } else { tick },
+                            ));
+                            let text: gpui::SharedString = db.to_string().into();
+                            let run = gpui::TextRun {
+                                len: text.len(),
+                                font: gpui::font(crate::theme::MONO_FONT),
+                                color,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+                            let line =
+                                window
+                                    .text_system()
+                                    .shape_line(text, font_size, &[run], None);
+                            let origin = gpui::point(
+                                bounds.right() - px(5.) - line.width,
+                                centre - line_height / 2.,
+                            );
+                            let _ = line.paint(origin, line_height, window, cx);
+                        }
                     },
                 )
                 .size_full(),

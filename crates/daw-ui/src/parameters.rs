@@ -978,6 +978,7 @@ impl ProjectView {
             || self.drag_mixer(position, modifiers.shift)
             || self.drag_note_editor(position, modifiers)
             || self.drag_audio_editor(position, modifiers.shift)
+            || self.drag_shape_editor(position, modifiers)
             || self.drag_combined(position, modifiers)
             || self.drag_metronome_volume(position, modifiers.shift)
         {
@@ -1039,6 +1040,7 @@ impl ProjectView {
             .or_else(|| self.mixer_drag_edit())
             .or_else(|| self.note_drag_edit())
             .or_else(|| self.audio_drag_edit())
+            .or_else(|| self.shape_drag_edit())
             .or_else(|| self.combined_drag_edit())
             .or_else(|| self.parameters_drag_edit())
     }
@@ -1079,6 +1081,7 @@ impl ProjectView {
         self.finish_mixer_drag();
         self.finish_note_drag();
         self.finish_audio_drag();
+        self.finish_shape_drag();
         self.finish_combined_drag();
         self.finish_metronome_drag();
         if let Some(edit) = self.parameters_drag_edit() {

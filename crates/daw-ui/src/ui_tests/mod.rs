@@ -15,6 +15,7 @@ mod perf;
 mod piano_roll;
 mod plugin_params;
 mod rulers;
+mod shape;
 mod transport;
 mod zoom;
 

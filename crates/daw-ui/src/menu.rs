@@ -17,9 +17,11 @@ pub enum OpenMenu {
     AddLayer(daw_engine::ParamId),
     /// A layer's blend mode.
     BlendMode(daw_engine::LayerId),
-    /// Snap or slide, and the snap grid: Arrange's (`notes: false`) or the
-    /// piano roll's.
-    Snap { notes: bool },
+    /// Snap or slide, and the snap grid: Arrange's, the piano roll's or the
+    /// shape panel's.
+    Snap(SnapFor),
+    /// The saved stamps that don't fit the shape panel's strip.
+    MoreStamps,
     /// A signal's colour swatches.
     SignalColor(daw_engine::SignalId),
     /// The layers listening to a signal.
@@ -30,6 +32,32 @@ pub enum OpenMenu {
     Sampler(daw_engine::DeviceId),
     /// Publishing a node as a signal, and the signals it publishes.
     NodeSignals(daw_engine::NodeId),
+}
+
+/// Which snap setting a snap chip shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapFor {
+    Arrange,
+    Notes,
+    Shape,
+}
+
+impl SnapFor {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Arrange => "snap",
+            Self::Notes => "note-snap",
+            Self::Shape => "shape-snap",
+        }
+    }
+
+    pub fn grid_id(self) -> &'static str {
+        match self {
+            Self::Arrange => "snap-grid",
+            Self::Notes => "note-snap-grid",
+            Self::Shape => "shape-snap-grid",
+        }
+    }
 }
 
 /// The floating panel. Place it where the menu should appear; close it with

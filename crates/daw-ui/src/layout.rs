@@ -67,13 +67,54 @@ pub fn timeline_bars<'a>(
     bars.max(MIN_BARS) as u32
 }
 
-/// Display height (0..=1) of a meter for a linear peak amplitude: -60 dB to
-/// 0 dB across the full height.
+/// Where a level of `db` sits on a strip, `0..=1` from the bottom: the
+/// volume's own scale (-60 to +12 dB). The fader, its meters and the dB
+/// marks beside them all use it, so one number means one height (as in
+/// Studio One, Live and Logic).
+pub fn level_position(db: f32) -> f32 {
+    let scale =
+        daw_engine::devices::CHANNEL_PARAMS[daw_engine::devices::channel::VOLUME as usize].scale;
+    if db < -60. {
+        return 0.;
+    }
+    (scale.to_normalized(f64::from(db)) as f32).clamp(0., 1.)
+}
+
+/// Display height (0..=1) of a meter for a linear peak amplitude, on the
+/// fader's scale ([`level_position`]); nothing below -60 dB.
 pub fn meter_height(peak: f32) -> f32 {
     if peak <= 0.0 {
         return 0.0;
     }
-    ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+    level_position(20.0 * peak.log10())
+}
+
+/// Whether a peak is at or over 0 dB (full scale): the meter shows it red.
+pub fn is_over(peak: f32) -> bool {
+    peak >= 1.0
+}
+
+/// The dB marks beside a fader, in order of how much they matter.
+const MARK_PRIORITY: [i32; 9] = [0, -12, -24, -48, 6, -6, -36, 12, -60];
+/// Closest two marks may sit, in pixels, before one drops out.
+pub const MIN_MARK_GAP: f32 = 11.;
+
+/// The marks for a fader with `travel` pixels of travel, top first: each
+/// level and its height above the travel's bottom. 0 dB always shows;
+/// others drop out where they would crowd it.
+pub fn db_marks(travel: f32) -> Vec<(i32, f32)> {
+    let mut marks: Vec<(i32, f32)> = Vec::new();
+    for db in MARK_PRIORITY {
+        let y = level_position(db as f32) * travel;
+        if marks
+            .iter()
+            .all(|(_, other)| (other - y).abs() >= MIN_MARK_GAP)
+        {
+            marks.push((db, y));
+        }
+    }
+    marks.sort_by(|a, b| b.1.total_cmp(&a.1));
+    marks
 }
 
 /// How quickly a meter falls when the signal drops, per 60 Hz frame:
@@ -168,12 +209,45 @@ mod tests {
     }
 
     #[test]
-    fn meters_span_sixty_decibels() {
-        assert_eq!(meter_height(0.0), 0.0);
-        assert_eq!(meter_height(1.0), 1.0);
-        assert_eq!(meter_height(2.0), 1.0);
-        assert!((meter_height(0.001) - 0.0).abs() < 1e-6);
-        assert!((meter_height(0.031_622_8) - 0.5).abs() < 1e-3);
+    fn meters_share_the_faders_scale() {
+        // The volume's range, -60 to +12 dB: 0 dB five sixths of the way up.
+        assert_eq!(level_position(-60.), 0.);
+        assert_eq!(level_position(12.), 1.);
+        assert!((level_position(0.) - 60. / 72.).abs() < 1e-6);
+        assert!((level_position(-24.) - 0.5).abs() < 1e-6);
+        assert_eq!(meter_height(0.0), 0.0, "silence");
+        assert_eq!(meter_height(0.0005), 0.0, "below -60 dB");
+        assert!(
+            (meter_height(1.0) - level_position(0.)).abs() < 1e-6,
+            "0 dB"
+        );
+        assert_eq!(meter_height(8.0), 1.0, "above +12 dB: full");
+        assert!(!is_over(0.99) && is_over(1.0), "red from 0 dB");
+    }
+
+    #[test]
+    fn db_marks_fit_the_fader_and_always_show_0_db() {
+        let all: Vec<i32> = db_marks(400.).iter().map(|(db, _)| *db).collect();
+        assert_eq!(
+            all,
+            vec![12, 6, 0, -6, -12, -24, -36, -48, -60],
+            "a tall fader"
+        );
+        for travel in [60., 120., 200., 400.] {
+            let marks = db_marks(travel);
+            assert!(marks.iter().any(|(db, _)| *db == 0), "{travel}: 0 dB");
+            for pair in marks.windows(2) {
+                assert!(
+                    pair[0].1 - pair[1].1 >= MIN_MARK_GAP - 1e-3,
+                    "{travel}: {pair:?} overlap"
+                );
+            }
+            // Each sits where the fader puts its level.
+            for (db, y) in &marks {
+                assert!((y - level_position(*db as f32) * travel).abs() < 1e-3);
+            }
+        }
+        assert!(db_marks(60.).len() < 9, "a short fader thins them out");
     }
 }
 

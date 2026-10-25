@@ -1960,7 +1960,7 @@ mod tests {
             Edit::SetNotesSource {
                 id: DUCK,
                 source: NotesSource {
-                    decay: Ticks(960),
+                    window: Ticks(960),
                     ..kick_envelope()
                 },
             },
@@ -2136,7 +2136,7 @@ mod tests {
             Edit::SetNotesSource {
                 id: DUCK,
                 source: NotesSource {
-                    sustain: 2.0,
+                    window: Ticks::ZERO,
                     ..kick_envelope()
                 },
             },
@@ -2145,7 +2145,7 @@ mod tests {
             err,
             CommandError::InvalidSignal {
                 id: DUCK,
-                reason: InvalidSignal::EnvelopeLevel
+                reason: InvalidSignal::Window
             }
         );
         let mut bad = block(20, 1);

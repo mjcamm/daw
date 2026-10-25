@@ -83,6 +83,8 @@ pub enum RenameTarget {
     Node(NodeId),
     Layer(LayerId),
     Signal(SignalId),
+    /// A saved stamp, by its place in the list.
+    Stamp(usize),
 }
 
 /// A name being edited in place.
@@ -92,12 +94,14 @@ pub(crate) struct Rename {
     _subscription: Subscription,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProjectEvent {
     /// Go back to the launch page.
     Close,
     /// The metronome changed from the transport: the app keeps it.
     Metronome(daw_engine::Metronome),
+    /// The saved stamps changed: the app keeps them for every project.
+    Stamps(Vec<daw_host::stamps::Stamp>),
 }
 
 pub struct ProjectView {
@@ -192,6 +196,14 @@ pub struct ProjectView {
     pub(crate) snap: Snap,
     /// The piano roll's own snap or slide and grid (finer than Arrange's).
     pub(crate) note_grid: Snap,
+    /// The shape panel's snap or slide and grid.
+    pub(crate) shape_grid: Snap,
+    /// The shape panel on the Signals page, if a notes signal's is open.
+    pub(crate) shape_editor: Option<crate::shape_panel::ShapeEditor>,
+    /// The user's saved stamps, kept by the app for every project.
+    pub(crate) saved_stamps: Vec<daw_host::stamps::Stamp>,
+    /// The saved stamps changed and the app has not been told yet.
+    pub(crate) stamps_to_keep: bool,
     pub(crate) selected_block: Option<BlockId>,
     /// A block being dragged, shown as a preview until the mouse is
     /// released; then it becomes one edit.
@@ -261,7 +273,7 @@ pub struct ProjectView {
     /// The song revision the panes last drew.
     pub(crate) drawn_revision: u64,
     /// Where each pane is on screen, for sending input to the right one.
-    pane_bounds: PaneBounds,
+    pub(crate) pane_bounds: PaneBounds,
     /// The pane the pointer was last over.
     hovered_pane: Option<PaneKind>,
     /// The pane the last press landed in: while a drag runs, only it
@@ -273,7 +285,7 @@ pub struct ProjectView {
 }
 
 /// Where each pane was laid out, written as the shell is drawn.
-type PaneBounds = Rc<std::cell::RefCell<Vec<(PaneKind, Bounds<Pixels>)>>>;
+pub(crate) type PaneBounds = Rc<std::cell::RefCell<Vec<(PaneKind, Bounds<Pixels>)>>>;
 
 /// The cached parts of the window (`pane.rs`).
 struct Panes {
@@ -369,6 +381,13 @@ impl ProjectView {
                 enabled: true,
                 grid: crate::block_edit::Grid::Sixteenth,
             },
+            shape_grid: Snap {
+                enabled: true,
+                grid: crate::block_edit::Grid::Sixteenth,
+            },
+            shape_editor: None,
+            saved_stamps: Vec::new(),
+            stamps_to_keep: false,
             selected_block: None,
             block_drag: None,
             base_drag: None,
@@ -493,6 +512,11 @@ impl ProjectView {
                 .find(|s| s.id == id)
                 .map(|s| s.name.clone())
                 .unwrap_or_default(),
+            RenameTarget::Stamp(index) => self
+                .saved_stamps
+                .get(index)
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
         };
         let input = cx.new(|cx| TextInput::new(&current, "Name", cx));
         window.focus(&input.read(cx).focus_handle(cx));
@@ -525,12 +549,19 @@ impl ProjectView {
     ) {
         if let (Some(rename), Some(name)) = (self.rename.take(), name) {
             let edit = match rename.target {
-                RenameTarget::Song => Edit::RenameSong { name },
-                RenameTarget::Node(node) => Edit::RenameNode { node, name },
-                RenameTarget::Layer(id) => Edit::RenameLayer { id, name },
-                RenameTarget::Signal(id) => Edit::RenameSignal { id, name },
+                RenameTarget::Song => Some(Edit::RenameSong { name }),
+                RenameTarget::Node(node) => Some(Edit::RenameNode { node, name }),
+                RenameTarget::Layer(id) => Some(Edit::RenameLayer { id, name }),
+                RenameTarget::Signal(id) => Some(Edit::RenameSignal { id, name }),
+                // Stamps are the user's, not the song's: no edit, no undo.
+                RenameTarget::Stamp(index) => {
+                    self.rename_stamp(index, name);
+                    None
+                }
             };
-            self.session.apply(Command::Edit(edit));
+            if let Some(edit) = edit {
+                self.session.apply(Command::Edit(edit));
+            }
         }
         self.rename = None;
         window.focus(&self.focus);
@@ -592,6 +623,7 @@ impl Render for ProjectView {
         self.preview_drag();
         // A metronome volume drag that landed: the app keeps it.
         self.keep_metronome(cx);
+        self.keep_stamps(cx);
 
         // While something follows the pointer, the pane it started in
         // redraws each frame (others whose size changes redraw on their
@@ -602,7 +634,8 @@ impl Render for ProjectView {
         if busy {
             // A notes signal's settings in the inspector preview on the
             // page's lanes too.
-            let everywhere = self.notes_drag.is_some() || self.block_setting_drag();
+            let everywhere =
+                self.notes_drag.is_some() || self.block_setting_drag() || self.shape_curve_drag();
             match self.pressed_pane.filter(|_| self.dragging() && !everywhere) {
                 Some(kind) => self.invalidate(kind, cx),
                 None => self.invalidate_all(cx),
@@ -939,21 +972,29 @@ impl ProjectView {
             PaneKind::Main,
             div().flex_1().min_h_0().min_w_0().flex().flex_col(),
         );
-        let column = if self.page == Page::Arrange {
-            let bottom = self.prepare_bottom_panel().map(|(height, sliding)| {
+        let prepared = match self.page {
+            Page::Arrange => self.prepare_bottom_panel(),
+            Page::Signals => self.prepare_shape_panel(),
+            _ => None,
+        };
+        let column = if prepared.is_some() || self.page == Page::Arrange {
+            let arrange = self.page == Page::Arrange;
+            let bottom = prepared.map(|(height, sliding)| {
                 if sliding {
                     window.request_animation_frame();
                 }
-                // Tool keys go to the panel while the pointer is on it.
                 div()
                     .id("note-panel")
                     .flex_none()
                     .h(px(height))
                     .flex()
                     .flex_col()
-                    .on_hover(cx.listener(|this, hovered: &bool, _, _| {
-                        this.roll_hovered = *hovered;
-                    }))
+                    // Tool keys go to the piano roll while the pointer is on it.
+                    .when(arrange, |d| {
+                        d.on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                            this.roll_hovered = *hovered;
+                        }))
+                    })
                     .child(self.pane_element(PaneKind::Bottom, div().size_full()))
             });
             div()
@@ -974,6 +1015,7 @@ impl ProjectView {
             shown.push(PaneKind::ArrangeList);
         }
         if self.page == Page::Arrange && (self.note_editor.is_some() || self.audio_editor.is_some())
+            || self.page == Page::Signals && self.shape_editor.is_some()
         {
             shown.push(PaneKind::Bottom);
         }
@@ -1016,7 +1058,9 @@ impl ProjectView {
                 other => placeholder(&theme, other).into_any_element(),
             },
             PaneKind::Bottom => {
-                let panel = if self.audio_editor.is_some() {
+                let panel = if self.page == Page::Signals {
+                    self.render_shape_panel(&theme, cx)
+                } else if self.audio_editor.is_some() {
                     self.render_audio_editor(&theme, cx)
                 } else {
                     self.render_note_editor(&theme, cx)
@@ -1285,6 +1329,7 @@ impl ProjectView {
             || self.combined_drag.is_some()
             || self.note_editor.as_ref().is_some_and(|e| e.dragging())
             || self.audio_dragging()
+            || self.shape_dragging()
             || self.volume_drag.is_some()
     }
 

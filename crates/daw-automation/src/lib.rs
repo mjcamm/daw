@@ -6,12 +6,14 @@
 //!
 //! Positions here are in beats. All values are normalized (`0..=1`).
 
+mod curve;
 mod shape;
 mod signal;
 mod stack;
 mod validate;
 
+pub use curve::curve_value;
 pub use shape::shape_value;
-pub use signal::{CompiledSignal, SignalNote, Signals};
+pub use signal::{CompiledSignal, GLIDE_BEATS, SignalNote, Signals};
 pub use stack::{Automation, CompiledBlock, CompiledLayer, blend};
-pub use validate::{validate_block, validate_notes_source};
+pub use validate::{validate_block, validate_curve, validate_notes_source};

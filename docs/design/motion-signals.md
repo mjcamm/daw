@@ -32,13 +32,16 @@ A lane of blocks with the same `Block` as a layer lane and the same gestures (do
 
 ### From notes
 
-Each note matching the pitch filter is a **hit** from 0 to +1, shaped by an envelope:
+Each note matching the pitch filter is a **hit** that plays a drawn **shape** (a curve, `curve-editor.md`) over a **window** of 1/8, 1/4, 1/2, 1, 2 or 4 bars, in song time. Replaced the ADSR envelope (the user's call, 2026-10-25: more powerful and fewer things to know; file version 20).
 
-- **ADSR:** attack up to the peak, decay to the sustain level, held while the note is held, release back to 0 after the note ends. A short note snaps back; a long one holds.
-- **Velocity:** a hit's peak is its note's velocity (`velocity / 127`). The optional **velocity clamp** (a switch, off by default) holds it between Min and Max (0 to 100 %); Min = Max = 100 % makes every hit reach +1. Replaced the earlier "velocity amount" at the user's request (file version 5).
+- **Two modes:** **Trigger** plays the whole shape once from each note's start, whatever the note's length. **Loop** repeats the shape from the note's start while the note is held, and stops when it ends.
+- **A new note restarts the shape** from the top, in either mode.
+- **The shape uses the full range,** top +1 to bottom -1, so a duck is drawn directly.
+- **Velocity** scales the shape towards the centre line: a hit's size is its note's velocity (`velocity / 127`), so a soft kick ducks less. The optional **velocity clamp** (a switch, off by default) holds it between Min and Max (0 to 100 %); Min = Max = 100 % plays every note full size (file version 5).
 - **Switched off keeps the values** (file version 6), so switching back on restores the range or clamp.
 - **Between hits** the signal rests at 0 (the centre line: no effect). It is always present.
-- **A new note restarts from wherever the line is**, so it never jumps.
+- **No clicks at the seams:** wherever a hit starts or ends, the line glides from where it was over 15 ticks (1/64 beat), so a restart or a stop never jumps.
+- **New notes signals** start in Trigger, a 1/8 bar window, straight from the top down to the centre (the old default's snappy hit). Older files' ADSR becomes the nearest Trigger shape: attack, decay and release as corner points on the smallest window that holds them (sustain is not held: a one-shot can't know the note's length).
 - **Pitch range** (optional, a switch, off by default): only notes in Lowest..Highest hit, so one drum note (the kick) can drive the signal. Off, every note hits.
 - **Source node:** the node that published it (`NotesSource.node`). Removing that node leaves the signal silent; undo restores both.
 
@@ -69,7 +72,7 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 - **Uses chip:** "Unused" (muted, inert), "1 use", "N uses". Clicking it lists Device › Parameter › Layer, each with a go-to icon: it opens the Parameters page scrolled to that layer, highlighted for a moment.
 - **"+ Add Signal"** below the list makes "Signal N", drawn, with an empty lane. Below it, hint text: *"Nodes can publish their notes as signals from the Arrange page."*
 - **Drawn signals** are edited exactly like layer lanes: the lane code is shared (`ProjectView::lane_cell`, `Lane::Layer` / `Lane::Signal`), including the block settings (now in the inspector). Block ids come from one pool across layers and signals.
-- **Notes signals** draw the line their hits make (read-only). Their settings live in the **inspector** (below), not a bottom bar. Still to design: faint note ticks on the lane.
+- **Notes signals** draw the line their hits make (read-only). Clicking one opens its **shape** in a bottom panel (`curve-editor.md`); its pitch range and velocity clamp live in the **inspector** (below). Still to design: faint note ticks on the lane.
 - **Selecting:** clicking a signal's row selects it (accent tint, like the node row); clicking the empty space below the list clears it. The inspector shows the selected signal.
 - **"SIGNALS"** heads the column beside the ruler.
 
@@ -77,7 +80,7 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 
 - **Arrange, node row** (built): a signal icon button (Lucide `radio`) left of M and S, tinted in the colour of the node's first published signal. It opens a menu: "Publish notes as motion signal" (greyed "no notes" without notes), "Publish sound as motion signal" and "Publish sound as audio signal" (greyed, "coming later" until Phase 6), then the node's signals, each with a colour dot and go-to icon. A node can publish several signals (kick and hat from one drum node). A new notes signal is "<node> notes", with every note, a short snappy hit and a velocity clamp of 0 to 100 %.
 - **Publishing stays on Arrange** (the user's call): the menu stays open and the new signal appears in it with its go-to icon. Go-to opens the Signals page with the signal selected and the inspector open.
-- **Inspector, notes signal** (built, `crates/daw-ui/src/inspector.rs`): header (colour dot, name, "Notes from <node>" with a go-to icon), then grouped panels: **Envelope** first (a graph of one note's hit, drawn by the engine's own code, then Attack, Decay, Sustain, Release sliders; times in beats, up to 4, on a square-root scale), then the two optional ones: **Pitch range** (Lowest, Highest as note names, middle C = C3, dragged sideways) and **Velocity clamp** (Min, Max). Pitch range and Velocity clamp have an on/off switch at the right of their heading (the user's call); off folds the rows away and a muted line says what happens instead. Seeing which pitches a node plays (note ticks on the lane) is left for later; the range picker is enough for now (the user's call). Dragging previews: the graph, the signal's lane and every listening layer redraw live; one edit on release.
+- **Inspector, notes signal** (built, `crates/daw-ui/src/inspector.rs`): header (colour dot, name, "Notes from <node>" with a go-to icon), then two optional grouped panels (the Envelope section went with ADSR, 2026-10-25; the shape is drawn in the Signals page's bottom panel, `curve-editor.md`): **Pitch range** (Lowest, Highest as note names, middle C = C3, dragged sideways) and **Velocity clamp** (Min, Max). Pitch range and Velocity clamp have an on/off switch at the right of their heading (the user's call); off folds the rows away and a muted line says what happens instead. Seeing which pitches a node plays (note ticks on the lane) is left for later; the range picker is enough for now (the user's call). Dragging previews: the graph, the signal's lane and every listening layer redraw live; one edit on release.
 - **Parameters, adding a layer** (built): "+ Add Layer", and the first layer from "+ Add Parameter", open a menu: **Manual drawn** or **Listen to signal ›**, which swaps the menu to the signals (colour dot and name, "‹ Back"; with none, a go-to row to the Signals page). The menu says "A layer keeps its type once added": **the type is fixed** (the user's call), and a listening layer stays on its signal. New layers are "Layer N".
 - **Parameters, layer row** (built): a chip shows the type. Drawn: pencil and "Drawn". Listening: an inbound arrow and the signal's name in its colour, then a **go-to icon** to the signal on the Signals page (highlighted for a moment). Hovering the chip explains it.
 - **Windows** (built): blocks on a listening layer draw in the signal's colour and show the signal through them; no points, no loop handle, no Repeat in the block's settings. Result rows include listening layers.

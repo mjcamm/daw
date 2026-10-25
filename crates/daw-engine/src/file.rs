@@ -36,7 +36,9 @@ pub const FORMAT: &str = "daw-project";
 /// Version 18 adds plugin parameters moved by layers (`plugin_params`).
 /// Version 19 adds plugin instruments (`InstrumentKind::Plugin`, with
 /// `plugin`, `plugin_params`, `state` and `window` as for effects).
-pub const VERSION: u32 = 19;
+/// Version 20 made notes signals play a drawn shape on every note (`mode`,
+/// `window`, `shape`) in place of the ADSR envelope.
+pub const VERSION: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -438,6 +440,9 @@ impl ProjectFile {
             if header.version < 13 {
                 crate::upgrade::merge_stacked_clips(&mut value);
             }
+            if header.version < 20 {
+                crate::upgrade::shape_hits(&mut value);
+            }
             return serde_json::from_value(value).map_err(LoadError::Json);
         }
         serde_json::from_str(json).map_err(LoadError::Json)
@@ -634,10 +639,19 @@ mod tests {
                         velocity_clamp: true,
                         lowest: 36,
                         highest: 37,
-                        attack: Ticks(10),
-                        decay: Ticks(480),
-                        sustain: 0.25,
-                        release: Ticks(120),
+                        mode: daw_protocol::HitMode::Loop,
+                        window: Ticks(1920),
+                        shape: daw_protocol::Curve {
+                            points: vec![
+                                daw_protocol::CurvePoint::corner(0.0, 0.0),
+                                daw_protocol::CurvePoint::corner(0.4, 0.8).with_handles(
+                                    daw_protocol::PointKind::Broken,
+                                    daw_protocol::Handle::new(-0.1, 0.05),
+                                    daw_protocol::Handle::new(0.2, -0.3),
+                                ),
+                                daw_protocol::CurvePoint::corner(1.0, 0.5),
+                            ],
+                        },
                         velocity_min: 0.5,
                         velocity_max: 0.9,
                     }),
@@ -971,7 +985,8 @@ mod tests {
         let SignalSource::Notes(source) = &project.signals[&SignalId(2)].source else {
             panic!("expected a notes signal");
         };
-        assert_eq!(source.decay, Ticks(480));
+        assert_eq!(source.window, Ticks(480));
+        assert_eq!(source.shape, daw_protocol::Curve::line(1.0, 0.5));
     }
 
     #[test]

@@ -5,10 +5,10 @@
 
 use daw_engine::devices::{channel, filter, instrument};
 use daw_engine::{
-    AudioProcessor, BlendMode, Block, BlockId, ClipId, ClipLoop, Command, DeviceId, DeviceRef,
-    Edit, Effect, EffectKind, Engine, EngineConfig, FIRST_INSTRUMENT, FIRST_NODE, Layer, LayerId,
-    LoopRange, MidiClip, MidiNote, NotesSource, ParamId, Shape, Signal, SignalId, SignalSource,
-    SignalUse, Ticks,
+    AudioProcessor, BlendMode, Block, BlockId, ClipId, ClipLoop, Command, Curve, DeviceId,
+    DeviceRef, Edit, Effect, EffectKind, Engine, EngineConfig, FIRST_INSTRUMENT, FIRST_NODE,
+    HitMode, Layer, LayerId, LoopRange, MidiClip, MidiNote, NotesSource, ParamId, Shape, Signal,
+    SignalId, SignalSource, SignalUse, Ticks,
 };
 use daw_testkit::{Rendered, VARIED_BLOCKS, render};
 
@@ -50,10 +50,9 @@ fn kick_envelope(decay: f64) -> NotesSource {
         velocity_clamp: true,
         lowest: KICK,
         highest: KICK,
-        attack: Ticks::ZERO,
-        decay: beats(decay),
-        sustain: 0.0,
-        release: Ticks::ZERO,
+        mode: HitMode::Trigger,
+        window: beats(decay),
+        shape: Curve::line(1.0, 0.5),
         velocity_min: 1.0,
         velocity_max: 1.0,
     }
@@ -140,6 +139,11 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
     (engine, processor)
 }
 
+/// Where a duck at `kick` is deepest: once the line has glided in.
+fn deepest(kick: f64) -> f64 {
+    kick + daw_automation::GLIDE_BEATS
+}
+
 /// Each listening parameter's value and resting value at song position `beat`.
 fn values_at(
     engine: &mut Engine,
@@ -174,8 +178,8 @@ fn every_listening_parameter_ducks_at_every_kick() {
     let (mut engine, mut processor) = kick_ducking();
     for kick in 0..8 {
         let kick = f64::from(kick);
-        for (id, value, _) in values_at(&mut engine, &mut processor, kick) {
-            assert_eq!(value, 0.0, "{id:?} at beat {kick}");
+        for (id, value, base) in values_at(&mut engine, &mut processor, deepest(kick)) {
+            assert!(value < base * 0.05, "{id:?} at beat {kick}: {value}");
         }
         for (id, value, base) in values_at(&mut engine, &mut processor, kick + 0.25) {
             assert!((value - base * 0.5).abs() < 1e-9, "{id:?} half way back");
@@ -204,8 +208,8 @@ fn a_looped_clips_repeats_hit_the_signal() {
         },
     );
     for kick in [2.0, 5.0, 7.0] {
-        for (id, value, _) in values_at(&mut engine, &mut processor, kick) {
-            assert_eq!(value, 0.0, "{id:?} at beat {kick}, in a repeat");
+        for (id, value, base) in values_at(&mut engine, &mut processor, deepest(kick)) {
+            assert!(value < base * 0.05, "{id:?} at beat {kick}, in a repeat");
         }
     }
 }
@@ -346,7 +350,7 @@ fn removing_the_signal_stops_the_ducking_and_undo_brings_it_back() {
         assert!((value - base).abs() < 1e-9, "{id:?} no longer ducks");
     }
     engine.apply(Command::Undo).unwrap();
-    for (id, value, _) in values_at(&mut engine, &mut processor, 2.0) {
-        assert_eq!(value, 0.0, "{id:?} ducks again");
+    for (id, value, base) in values_at(&mut engine, &mut processor, deepest(2.0)) {
+        assert!(value < base * 0.05, "{id:?} ducks again");
     }
 }

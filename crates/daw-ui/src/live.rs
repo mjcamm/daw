@@ -10,7 +10,7 @@
 //! laid out, and keeps it while the pane is reused. Each frame the live
 //! layer paints every recorded slot with the current values.
 
-use crate::layout::meter_height;
+use crate::layout::{is_over, meter_height};
 use crate::theme::{MONO_FONT, Theme};
 use daw_automation::Automation;
 use daw_engine::{Meter, NodeId};
@@ -181,7 +181,8 @@ impl LiveLayer {
                 let hold = meter_height(held);
                 if hold > 0. {
                     let y = b.bottom() - px(b.size.height / px(1.) * hold);
-                    let color = if hold > 0.98 {
+                    // Red at or over 0 dB.
+                    let color = if is_over(held) {
                         theme.meter_high
                     } else {
                         theme.text_secondary
@@ -262,7 +263,7 @@ fn meter_bar(
     let level = meter_height(peak);
     if level > 0. {
         let filled = px(height / px(1.) * level);
-        let color: Hsla = if level > 0.98 {
+        let color: Hsla = if is_over(peak) {
             theme.meter_high
         } else {
             theme.meter_low

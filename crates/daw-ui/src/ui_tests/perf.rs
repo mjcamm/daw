@@ -450,6 +450,43 @@ fn perf_signals() {
 
 #[test]
 #[cfg_attr(debug_assertions, ignore = "timings need a release build")]
+fn perf_signals_with_shape_panel() {
+    let mut h = Harness::new("perf-shape-panel");
+    heavy_song(&mut h);
+    h.view.update(h.cx, |view, _| {
+        let snapshot = view.session().snapshot();
+        let signal = snapshot
+            .signals
+            .iter()
+            .find(|s| s.name == "Notes")
+            .expect("a notes signal");
+        let SignalSource::Notes(source) = &signal.source else {
+            panic!("a notes signal");
+        };
+        // A dense shape: a triangle in every 1/16 of a 4-bar window.
+        let triangle = crate::stamps::built_in()[2].1.clone();
+        let source = NotesSource {
+            window: Ticks::from_bars(4),
+            shape: crate::curve_edit::stamp(&triangle, 64),
+            ..source.clone()
+        };
+        let id = signal.id;
+        view.session
+            .apply_or_panic(Command::Edit(Edit::SetNotesSource { id, source }));
+        view.page = Page::Signals;
+        view.select_signal(id);
+        if let Some(editor) = &mut view.shape_editor {
+            editor.opened -= std::time::Duration::from_secs(1);
+            editor.selected = Some(1);
+        }
+    });
+    h.redraw();
+    let t = measure(&mut h, "signals + shape panel");
+    check("signals + shape panel", t, 6., 15.);
+}
+
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timings need a release build")]
 fn perf_audio_panel() {
     let mut h = Harness::new("perf-audio-panel");
     heavy_song(&mut h);

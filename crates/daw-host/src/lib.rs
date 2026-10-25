@@ -11,6 +11,7 @@ pub mod export;
 pub mod plugins;
 pub mod preferences;
 pub mod projects;
+pub mod stamps;
 mod stats;
 
 pub use stats::{CallbackStats, Load};

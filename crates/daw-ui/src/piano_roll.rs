@@ -1202,7 +1202,7 @@ impl ProjectView {
                     ))
                     .on_click(cx.listener(|this, _, _, _| this.quantize_notes())),
             )
-            .child(div().text_size(px(12.)).child(self.render_snap(true, theme, cx)))
+            .child(div().text_size(px(12.)).child(self.render_snap(crate::menu::SnapFor::Notes, theme, cx)))
             .child(div().w(px(6.)))
             .child(
                 small_button("note-editor-close", theme)

@@ -456,13 +456,13 @@ pub enum SignalSource {
 }
 
 /// A signal made from MIDI notes. Each note (with the pitch range on, each
-/// note with a pitch in `lowest..=highest`) is a hit from the centre line
-/// (0) up towards the top (+1), shaped by an ADSR envelope: up to the peak over `attack`, down to
-/// `sustain · peak` over `decay`, held while the note is held, then back to
-/// 0 over `release`. Between hits the signal rests at 0, which has no
-/// effect; a new note starts from wherever the line is, so it never jumps.
-/// The notes come from one node, `node`; if it is removed, the signal is
-/// silent until it comes back.
+/// note with a pitch in `lowest..=highest`) is a hit that plays `shape` over
+/// `window`, scaled towards the centre line by its velocity. In
+/// [`HitMode::Trigger`] a hit plays the shape once through; in
+/// [`HitMode::Loop`] it repeats it while the note is held. A new note
+/// restarts the shape. Between hits the signal rests on the centre line,
+/// which has no effect. The notes come from one node, `node`; if it is
+/// removed, the signal is silent until it comes back.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NotesSource {
     /// The node whose notes make the hits.
@@ -472,24 +472,43 @@ pub struct NotesSource {
     pub pitch_range: bool,
     pub lowest: u8,
     pub highest: u8,
-    pub attack: Ticks,
-    pub decay: Ticks,
-    /// Level held while the note is held, as a fraction of the peak, `0..=1`.
-    pub sustain: f64,
-    pub release: Ticks,
-    /// A hit's peak is its velocity, `velocity / 127`. With the clamp on, it
+    pub mode: HitMode,
+    /// How long one play of the shape lasts.
+    pub window: Ticks,
+    /// What each hit plays, over the full range (`0.5` is the centre line).
+    pub shape: crate::Curve,
+    /// A hit's size is its velocity, `velocity / 127`. With the clamp on, it
     /// is held to `velocity_min..=velocity_max`, both within `0..=1`; with
-    /// both at 1 every hit reaches the top. Off, the clamp is kept for when
+    /// both at 1 every hit plays full size. Off, the clamp is kept for when
     /// it is switched back on.
     pub velocity_clamp: bool,
     pub velocity_min: f64,
     pub velocity_max: f64,
 }
 
+/// How a notes signal's hit plays its shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HitMode {
+    /// Once through from the note's start, whatever the note's length.
+    Trigger,
+    /// Repeated from the note's start while the note is held.
+    Loop,
+}
+
 impl NotesSource {
-    /// Every note, as a short, snappy hit: straight up as high as its
-    /// velocity, then back down over half a beat. The pitch range and the
-    /// velocity clamp start off.
+    /// The window lengths offered: 1/8, 1/4, 1/2, 1, 2 and 4 bars (4/4).
+    pub const WINDOWS: [Ticks; 6] = [
+        Ticks(480),
+        Ticks(960),
+        Ticks(1920),
+        Ticks(3840),
+        Ticks(7680),
+        Ticks(15360),
+    ];
+
+    /// Every note, as a short, snappy hit: straight to the top, then a line
+    /// back to the centre over an eighth of a bar. Trigger mode; the pitch
+    /// range and the velocity clamp start off.
     pub fn new(node: NodeId) -> Self {
         Self {
             node,
@@ -497,10 +516,9 @@ impl NotesSource {
             velocity_clamp: false,
             lowest: 0,
             highest: 127,
-            attack: Ticks::ZERO,
-            decay: Ticks(480),
-            sustain: 0.0,
-            release: Ticks(240),
+            mode: HitMode::Trigger,
+            window: Self::WINDOWS[0],
+            shape: crate::Curve::line(1.0, 0.5),
             velocity_min: 0.0,
             velocity_max: 1.0,
         }

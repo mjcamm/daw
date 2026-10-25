@@ -32,6 +32,7 @@ A traditional mixer: every node is a strip in one flat row (the tree "un-nested"
 
 ## As built
 
+- **dB scale** (2026-10-25, the user's call, as Studio One, Live and Logic do): marks beside each fader (`mixer.rs` `db_scale`, one drawing per strip; `layout::db_marks` thins them, 0 dB always shown). The fader, its meters and the marks share one scale, the volume's -60 to +12 dB (`layout::level_position`); meters run over the fader's travel and turn red from 0 dB. Arrange's row meters use the same scale.
 - **Fader:** the volume's resting value (the same drag as Parameters' resting-value slider; one edit on release); double-click for 0 dB; the dB readout below. When layers move the volume, an orange marker on the fader shows where it is at the playhead.
 - **Pan:** the app's slider, horizontal, centre-detented (within 2 %), double-click to centre.
 - **Meters:** a stereo pair beside the fader; a peak line holds for 1.2 s, then falls; red near clipping.

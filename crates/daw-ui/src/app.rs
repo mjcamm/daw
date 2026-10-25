@@ -74,6 +74,9 @@ pub struct AppView {
     pub(crate) screen: Screen,
     recent: RecentProjects,
     pub(crate) preferences: StoredPreferences,
+    /// The user's saved stamps, for every project. None in tests, which
+    /// keep nothing on disk.
+    stamps: Option<daw_host::stamps::StoredStamps>,
     /// The menu bar's open menu, if any.
     open_menu: Option<TopMenu>,
     /// The menu the current press closed by landing outside it (see
@@ -103,6 +106,7 @@ impl AppView {
             window,
             cx,
         );
+        view.stamps = Some(daw_host::stamps::StoredStamps::load_default());
         view.start_scan(cx);
         view
     }
@@ -127,6 +131,7 @@ impl AppView {
             screen,
             recent,
             preferences,
+            stamps: None,
             open_menu: None,
             menu_dismissed: None,
             preferences_open: false,
@@ -194,7 +199,16 @@ impl AppView {
         session.apply(daw_engine::Command::SetMetronome(
             self.preferences.preferences.metronome,
         ));
-        let view = cx.new(|cx| ProjectView::new(session, window, cx));
+        let saved_stamps = self
+            .stamps
+            .as_ref()
+            .map(|s| s.stamps.clone())
+            .unwrap_or_default();
+        let view = cx.new(|cx| {
+            let mut view = ProjectView::new(session, window, cx);
+            view.saved_stamps = saved_stamps;
+            view
+        });
         self._screen_events = cx.subscribe_in(
             &view,
             window,
@@ -214,6 +228,14 @@ impl AppView {
                     this.preferences.preferences.metronome = *metronome;
                     this.save_preferences();
                     cx.notify();
+                }
+                ProjectEvent::Stamps(saved) => {
+                    if let Some(stamps) = &mut this.stamps {
+                        stamps.stamps = saved.clone();
+                        if let Err(e) = stamps.save() {
+                            eprintln!("could not save stamps: {e}");
+                        }
+                    }
                 }
             },
         );

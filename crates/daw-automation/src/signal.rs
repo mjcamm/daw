@@ -7,8 +7,9 @@
 //! has a gap, so a listening layer has no effect there, just like a gap in a
 //! layer.
 
+use crate::curve::curve_value;
 use crate::stack::CompiledBlock;
-use daw_protocol::{NotesSource, Signal, SignalId, SignalSource};
+use daw_protocol::{CurvePoint, HitMode, NotesSource, Signal, SignalId, SignalSource};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,7 +19,8 @@ pub enum CompiledSignal {
     Silent,
     /// Drawn blocks, sorted by start, non-overlapping.
     Drawn(Vec<CompiledBlock>),
-    /// ADSR hits from notes. Always present; rests on the centre line.
+    /// A shape played on every note. Always present; rests on the centre
+    /// line.
     Notes(NotesEnvelope),
 }
 
@@ -32,36 +34,42 @@ pub struct SignalNote {
     pub velocity: u8,
 }
 
-/// Every hit of a notes signal and the envelope that shapes them, with times
-/// in beats.
+/// How long the line glides from where it was whenever a hit starts or ends,
+/// so a restart or a stop never jumps: 15 ticks (1/64 beat).
+pub const GLIDE_BEATS: f64 = 15.0 / 960.0;
+
+/// Every hit of a notes signal and the shape each plays, with times in
+/// beats. Values use the shape space: `0.5` is the centre line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NotesEnvelope {
     /// Sorted by start, one per start.
     hits: Vec<Hit>,
-    attack: f64,
-    decay: f64,
-    sustain: f64,
-    release: f64,
+    shape: Vec<CurvePoint>,
+    mode: HitMode,
+    /// One play of the shape, in beats.
+    window: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Hit {
     start: f64,
+    /// When the shape stops: the window's end in Trigger mode, the note's
+    /// in Loop mode. A later hit cuts it short.
     end: f64,
-    /// Highest level of the hit, `0..=1`.
-    peak: f64,
-    /// Level the hit starts from: where the previous hit had got to.
+    /// How far the shape reaches from the centre line, `0..=1`.
+    size: f64,
+    /// Where the line was when the hit started, which it glides from.
     from: f64,
 }
 
 impl NotesEnvelope {
     fn compile(source: &NotesSource, notes: impl IntoIterator<Item = SignalNote>) -> Self {
+        let window = source.window.as_beats();
         let mut envelope = Self {
             hits: Vec::new(),
-            attack: source.attack.as_beats(),
-            decay: source.decay.as_beats(),
-            sustain: source.sustain,
-            release: source.release.as_beats(),
+            shape: source.shape.points.clone(),
+            mode: source.mode,
+            window,
         };
         let mut notes: Vec<SignalNote> = notes
             .into_iter()
@@ -70,25 +78,28 @@ impl NotesEnvelope {
         notes.sort_by(|a, b| a.start.total_cmp(&b.start));
         for note in notes {
             let velocity = f64::from(note.velocity) / 127.0;
-            let peak = if source.velocity_clamp {
+            let size = if source.velocity_clamp {
                 velocity.clamp(source.velocity_min, source.velocity_max)
             } else {
                 velocity
             };
-            let hit = Hit {
-                start: note.start,
-                end: note.end,
-                peak,
-                from: 0.0,
+            let end = match source.mode {
+                HitMode::Trigger => note.start + window,
+                HitMode::Loop => note.end,
             };
             match envelope.hits.last_mut() {
                 // Notes starting together are one hit: the strongest, held
                 // for the longest.
                 Some(last) if last.start == note.start => {
-                    last.peak = last.peak.max(hit.peak);
-                    last.end = last.end.max(hit.end);
+                    last.size = last.size.max(size);
+                    last.end = last.end.max(end);
                 }
-                _ => envelope.hits.push(hit),
+                _ => envelope.hits.push(Hit {
+                    start: note.start,
+                    end,
+                    size,
+                    from: 0.5,
+                }),
             }
         }
         for i in 1..envelope.hits.len() {
@@ -98,36 +109,44 @@ impl NotesEnvelope {
         envelope
     }
 
-    /// The level (`0..=1`) of `hit` at `beat`, which is at or after its start.
-    fn level(&self, hit: &Hit, beat: f64) -> f64 {
-        let held = |t: f64| {
-            let sustain = self.sustain * hit.peak;
-            if t < self.attack {
-                hit.from + (hit.peak - hit.from) * t / self.attack
-            } else if t < self.attack + self.decay {
-                hit.peak + (sustain - hit.peak) * (t - self.attack) / self.decay
-            } else {
-                sustain
-            }
+    /// The shape's value `since` beats into `hit`, scaled by its size, with
+    /// the glide in from where the line was. `ending` reads the very end of
+    /// a cycle as its last value rather than the next cycle's first.
+    fn playing(&self, hit: &Hit, since: f64, ending: bool) -> f64 {
+        let cycles = since / self.window;
+        let phase = match self.mode {
+            HitMode::Trigger => cycles.min(1.0),
+            HitMode::Loop if ending && cycles > 0.0 && cycles.fract() == 0.0 => 1.0,
+            HitMode::Loop => cycles.fract(),
         };
-        let (since, length) = (beat - hit.start, hit.end - hit.start);
-        if since < length {
-            return held(since);
-        }
-        let released = since - length;
-        if released < self.release {
-            held(length) * (1.0 - released / self.release)
+        let value = 0.5 + (curve_value(&self.shape, phase) - 0.5) * hit.size;
+        if since < GLIDE_BEATS {
+            hit.from + (value - hit.from) * since / GLIDE_BEATS
         } else {
-            0.0
+            value
         }
     }
 
-    /// The level (`0..=1`) at `beat`. Allocation-free.
+    /// The value of `hit` at `beat`, which is at or after its start.
+    fn level(&self, hit: &Hit, beat: f64) -> f64 {
+        if beat < hit.end {
+            return self.playing(hit, beat - hit.start, false);
+        }
+        let stopped = self.playing(hit, hit.end - hit.start, true);
+        let since = beat - hit.end;
+        if since < GLIDE_BEATS {
+            stopped + (0.5 - stopped) * since / GLIDE_BEATS
+        } else {
+            0.5
+        }
+    }
+
+    /// The value at `beat`. Allocation-free.
     fn sample(&self, beat: f64) -> f64 {
         let after = self.hits.partition_point(|h| h.start <= beat);
         after
             .checked_sub(1)
-            .map_or(0.0, |i| self.level(&self.hits[i], beat))
+            .map_or(0.5, |i| self.level(&self.hits[i], beat))
     }
 }
 
@@ -162,8 +181,7 @@ impl CompiledSignal {
                     .filter(|b| b.contains(beat))
                     .map_or(SILENT, |b| b.sample(beat, None))
             }
-            // A hit goes from the centre line (0) up to the top (+1).
-            Self::Notes(envelope) => (0.5 + 0.5 * envelope.sample(beat), 1.0),
+            Self::Notes(envelope) => (envelope.sample(beat), 1.0),
         }
     }
 }
@@ -186,7 +204,7 @@ impl Signals {
 mod tests {
     use super::*;
     use crate::Automation;
-    use daw_protocol::{BlendMode, Block, BlockId, Layer, LayerId, Shape, Ticks};
+    use daw_protocol::{BlendMode, Block, BlockId, Curve, Layer, LayerId, Shape, Ticks};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -212,21 +230,25 @@ mod tests {
         note(start, 0.1, KICK)
     }
 
-    /// Kicks only, with the given attack, decay, sustain and release (beats).
-    fn envelope(attack: f64, decay: f64, sustain: f64, release: f64) -> NotesSource {
+    /// Kicks only, every hit full size, playing `shape` over `window` beats.
+    fn shaped(mode: HitMode, window: f64, shape: Curve) -> NotesSource {
         NotesSource {
-            node: daw_protocol::NodeId(1),
             pitch_range: true,
             velocity_clamp: true,
             lowest: KICK,
             highest: KICK,
-            attack: beats(attack),
-            decay: beats(decay),
-            sustain,
-            release: beats(release),
+            mode,
+            window: beats(window),
+            shape,
             velocity_min: 1.0,
             velocity_max: 1.0,
+            ..NotesSource::new(daw_protocol::NodeId(1))
         }
+    }
+
+    /// A one-beat Trigger hit from the top straight down to the bottom.
+    fn falling() -> NotesSource {
+        shaped(HitMode::Trigger, 1.0, Curve::line(1.0, 0.0))
     }
 
     fn notes_signal(source: NotesSource) -> Signal {
@@ -258,66 +280,89 @@ mod tests {
         }
     }
 
+    /// Past the glide at the start of a hit at `start`.
+    fn settled(start: f64) -> f64 {
+        start + GLIDE_BEATS
+    }
+
     #[test]
     fn notes_signals_rest_on_the_centre_line_and_are_always_present() {
-        let pluck = envelope(0.0, 0.5, 0.0, 0.0);
-        assert_eq!(level(pluck.clone(), &[kick(1.0)], 0.5), (0.0, 1.0));
-        assert_eq!(level(pluck, &[kick(1.0)], 9.0), (0.0, 1.0));
+        assert_eq!(level(falling(), &[kick(1.0)], 0.5), (0.0, 1.0));
+        assert_eq!(level(falling(), &[kick(1.0)], 9.0), (0.0, 1.0));
     }
 
     #[test]
-    fn each_hit_rises_by_attack_and_falls_by_decay() {
-        let source = envelope(0.5, 1.0, 0.0, 0.0);
-        let hits = [note(0.0, 4.0, KICK)];
-        assert!(close(level(source.clone(), &hits, 0.25).0, 0.5), "attack");
-        assert!(close(level(source.clone(), &hits, 0.5).0, 1.0), "peak");
-        assert!(close(level(source.clone(), &hits, 1.0).0, 0.5), "decay");
-        assert!(close(level(source, &hits, 2.0).0, 0.0), "sustain 0");
+    fn a_hit_plays_the_shape_over_its_window_using_the_full_range() {
+        // From +1 at the start to -1 at the end of the window.
+        let hits = [kick(0.0)];
+        assert!(close(level(falling(), &hits, 0.25).0, 0.5));
+        assert!(close(level(falling(), &hits, 0.5).0, 0.0));
+        assert!(close(level(falling(), &hits, 0.75).0, -0.5));
     }
 
     #[test]
-    fn zero_attack_jumps_straight_to_the_peak() {
-        let source = envelope(0.0, 1.0, 0.0, 0.0);
-        assert!(close(level(source, &[kick(2.0)], 2.0).0, 1.0));
+    fn trigger_plays_the_whole_shape_whatever_the_notes_length() {
+        // The kick lasts a tenth of a beat; the shape still plays through.
+        assert!(close(level(falling(), &[kick(0.0)], 0.9).0, -0.8));
     }
 
     #[test]
-    fn sustain_holds_while_the_note_is_held_then_release_falls_to_zero() {
-        let source = envelope(0.0, 0.5, 0.5, 1.0);
+    fn after_its_window_a_trigger_hit_glides_back_to_the_centre() {
+        let hits = [kick(0.0)];
+        let halfway = level(falling(), &hits, 1.0 + GLIDE_BEATS / 2.0).0;
+        assert!(close(halfway, -0.5), "gliding: {halfway}");
+        assert_eq!(level(falling(), &hits, settled(1.0)).0, 0.0);
+    }
+
+    #[test]
+    fn loop_repeats_the_shape_while_the_note_is_held() {
+        let source = shaped(HitMode::Loop, 1.0, Curve::line(1.0, 0.0));
+        let held = [note(0.0, 2.5, KICK)];
+        assert!(close(level(source.clone(), &held, 0.5).0, 0.0));
+        assert!(close(level(source.clone(), &held, 1.25).0, 0.5), "again");
+        assert!(
+            close(level(source.clone(), &held, 2.25).0, 0.5),
+            "and again"
+        );
+        assert_eq!(
+            level(source, &held, settled(2.5)).0,
+            0.0,
+            "stops with the note"
+        );
+    }
+
+    #[test]
+    fn a_loop_ending_on_a_cycle_boundary_stops_from_the_shapes_end() {
+        let source = shaped(HitMode::Loop, 1.0, Curve::line(1.0, 0.0));
         let held = [note(0.0, 2.0, KICK)];
-        assert!(close(level(source.clone(), &held, 1.9).0, 0.5), "held");
-        assert!(
-            close(level(source.clone(), &held, 2.5).0, 0.25),
-            "releasing"
-        );
-        assert!(close(level(source, &held, 3.5).0, 0.0), "released");
+        // Gliding to the centre from the bottom (-1), not from the top.
+        let halfway = level(source, &held, 2.0 + GLIDE_BEATS / 2.0).0;
+        assert!(close(halfway, -0.5), "{halfway}");
     }
 
     #[test]
-    fn a_short_note_releases_from_wherever_it_got_to() {
-        // A one-beat attack cut off by the note ending a quarter of the way.
-        let source = envelope(1.0, 0.0, 1.0, 1.0);
-        let short = [note(0.0, 0.25, KICK)];
-        assert!(close(level(source.clone(), &short, 0.25).0, 0.25));
-        assert!(close(level(source, &short, 0.75).0, 0.125));
+    fn a_new_note_restarts_the_shape() {
+        let hits = [kick(0.0), kick(0.5)];
+        let restarted = level(falling(), &hits, settled(0.5)).0;
+        assert!(close(restarted, 1.0 - 2.0 * GLIDE_BEATS), "{restarted}");
+        let loops = shaped(HitMode::Loop, 1.0, Curve::line(1.0, 0.0));
+        let held = [note(0.0, 4.0, KICK), note(0.5, 4.0, KICK)];
+        assert!(close(level(loops, &held, 1.0).0, 0.0), "restarted at 0.5");
     }
 
     #[test]
-    fn a_new_note_starts_from_wherever_the_line_is() {
-        let source = envelope(0.5, 0.0, 1.0, 1.0);
-        let notes = [note(0.0, 0.25, KICK), note(0.5, 1.0, KICK)];
-        // The first hit reached 0.5, then released for a quarter of a beat.
-        let at_second = 0.5 * (1.0 - 0.25);
-        assert!(
-            close(level(source.clone(), &notes, 0.5).0, at_second),
-            "no jump"
-        );
-        let halfway = at_second + (1.0 - at_second) * 0.5;
-        assert!(close(level(source, &notes, 0.75).0, halfway));
+    fn a_restart_glides_from_wherever_the_line_was() {
+        // At 0.5 the first hit is at the centre (0); the second starts at
+        // the top, reached after the glide.
+        let hits = [kick(0.0), kick(0.5)];
+        assert!(close(level(falling(), &hits, 0.5).0, 0.0), "no jump");
+        let halfway = level(falling(), &hits, 0.5 + GLIDE_BEATS / 2.0).0;
+        let target = 1.0 - GLIDE_BEATS;
+        assert!(close(halfway, target / 2.0), "{halfway}");
     }
 
     #[test]
-    fn velocity_sets_the_peak_within_the_clamp() {
+    fn velocity_scales_the_shape_towards_the_centre_within_the_clamp() {
         let at = |velocity: u8| SignalNote {
             velocity,
             ..kick(0.0)
@@ -326,9 +371,9 @@ mod tests {
             let source = NotesSource {
                 velocity_min: min,
                 velocity_max: max,
-                ..envelope(0.0, 1.0, 0.0, 0.0)
+                ..shaped(HitMode::Trigger, 1.0, Curve::line(0.0, 0.0))
             };
-            level(source, &[at(velocity)], 0.0).0
+            -level(source, &[at(velocity)], settled(0.0)).0
         };
         assert!(
             close(clamped(0.0, 1.0, 64), 64.0 / 127.0),
@@ -348,36 +393,35 @@ mod tests {
         };
         let source = NotesSource {
             velocity_clamp: false,
-            velocity_min: 1.0,
-            velocity_max: 1.0,
-            ..envelope(0.0, 1.0, 0.0, 0.0)
+            ..shaped(HitMode::Trigger, 1.0, Curve::line(0.0, 0.0))
         };
-        assert!(close(level(source, &[soft], 0.0).0, 64.0 / 127.0));
+        let size = -level(source, &[soft], settled(0.0)).0;
+        assert!(close(size, 64.0 / 127.0), "{size}");
     }
 
     #[test]
     fn without_the_pitch_range_every_note_hits() {
         let source = NotesSource {
             pitch_range: false,
-            ..envelope(0.0, 1.0, 0.0, 0.0)
+            ..falling()
         };
         let snare = [note(0.0, 1.0, 60)];
-        assert!(close(level(source, &snare, 0.0).0, 1.0));
+        assert!(close(level(source, &snare, 0.25).0, 0.5));
+        assert_eq!(level(falling(), &snare, 0.25).0, 0.0, "range on: no hit");
     }
 
     #[test]
     fn notes_outside_the_pitch_range_are_ignored() {
-        let source = envelope(0.0, 1.0, 0.0, 0.0);
-        let notes = [note(0.0, 1.0, KICK), note(0.25, 0.1, 60)];
+        let notes = [kick(0.0), note(0.25, 0.1, 60)];
         assert!(
-            close(level(source, &notes, 0.5).0, 0.5),
-            "the snare did not hit"
+            close(level(falling(), &notes, 0.5).0, 0.0),
+            "the snare did not restart it"
         );
     }
 
     #[test]
     fn note_order_does_not_matter() {
-        let signal = notes_signal(envelope(0.1, 0.2, 0.3, 0.4));
+        let signal = notes_signal(falling());
         let a = CompiledSignal::compile(&signal, [kick(2.0), kick(0.0)]);
         let b = CompiledSignal::compile(&signal, [kick(0.0), kick(2.0)]);
         assert_eq!(a, b);
@@ -388,7 +432,7 @@ mod tests {
         let source = NotesSource {
             lowest: 0,
             highest: 127,
-            ..envelope(0.0, 0.0, 1.0, 0.0)
+            ..shaped(HitMode::Loop, 1.0, Curve::line(1.0, 1.0))
         };
         let chord = [note(0.0, 1.0, 60), note(0.0, 2.0, 64)];
         assert!(
@@ -515,21 +559,22 @@ mod tests {
 
     #[test]
     fn a_kick_signal_ducks_every_listening_parameter_in_sync() {
-        // Hits straight up, back down over half a beat; Multiply layers
-        // with the window inverted pull down at each kick.
+        // A duck drawn directly: down to the bottom at each kick, back up to
+        // the centre over half a beat. Multiply layers pull down with it.
         let id = SignalId(1);
         let kicks = [0.0, 1.0, 2.0, 3.0].map(|start| note(start, 0.9, KICK));
-        let signals = signals_with(id, &notes_signal(envelope(0.0, 0.5, 0.0, 0.0)), &kicks);
-        let duck = |base: f64| {
-            let mut window = Block::new(beats(0.0), beats(4.0), Shape::constant(0.5));
-            window.invert = true;
+        let duck = shaped(HitMode::Trigger, 0.5, Curve::line(0.0, 0.5));
+        let signals = signals_with(id, &notes_signal(duck), &kicks);
+        let ducked = |base: f64| {
+            let window = Block::new(beats(0.0), beats(4.0), Shape::constant(0.5));
             let layer = listening(BlendMode::Multiply, id, vec![window]);
             Automation::compile_layers_with(base, &[layer], &signals)
         };
-        let (volume, cutoff) = (duck(0.8), duck(0.6));
+        let (volume, cutoff) = (ducked(0.8), ducked(0.6));
         for kick in [0.0, 1.0, 2.0, 3.0] {
-            assert_eq!(volume.value_at(kick), 0.0, "fully ducked at {kick}");
-            assert_eq!(cutoff.value_at(kick), 0.0);
+            let deepest = kick + GLIDE_BEATS;
+            assert!(volume.value_at(deepest) < 0.05, "ducked at {kick}");
+            assert!(cutoff.value_at(deepest) < 0.05);
             assert!(close(volume.value_at(kick + 0.25), 0.4));
             assert!(close(cutoff.value_at(kick + 0.25), 0.3));
             assert!(close(volume.value_at(kick + 0.75), 0.8), "recovered");

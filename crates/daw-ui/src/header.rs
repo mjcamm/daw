@@ -4,7 +4,7 @@ use crate::block_edit::{Grid, Snap};
 use crate::clip_drag::format_bpm;
 use crate::icons::{Icon, icon};
 use crate::layout::format_position;
-use crate::menu::{self, OpenMenu};
+use crate::menu::{self, OpenMenu, SnapFor};
 use crate::project::{Page, ProjectView, RenameTarget};
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::{MONO_FONT, Theme};
@@ -107,7 +107,7 @@ impl ProjectView {
             .when(self.page == crate::project::Page::Arrange, |d| {
                 d.child(self.render_arrange_tools(theme, cx))
             })
-            .child(self.render_snap(false, theme, cx))
+            .child(self.render_snap(SnapFor::Arrange, theme, cx))
             .child(self.render_transport(theme, cx))
             .children(crate::frame_log::measuring().then(|| render_frame_time(theme)))
             .child(self.render_load(theme))
@@ -330,28 +330,33 @@ impl ProjectView {
 }
 
 impl ProjectView {
-    fn snap_setting(&mut self, notes: bool) -> &mut Snap {
-        if notes {
-            &mut self.note_grid
-        } else {
-            &mut self.snap
+    fn snap_setting(&mut self, which: SnapFor) -> &mut Snap {
+        match which {
+            SnapFor::Arrange => &mut self.snap,
+            SnapFor::Notes => &mut self.note_grid,
+            SnapFor::Shape => &mut self.shape_grid,
         }
     }
 
     /// Snap or slide and the grid: a chip that opens a small panel. Arrange
-    /// has one in the header, the piano roll its own (`notes`).
+    /// has one in the header; the piano roll and the shape panel their own.
     pub(crate) fn render_snap(
         &self,
-        notes: bool,
+        which: SnapFor,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let snap = if notes { self.note_grid } else { self.snap };
-        let menu = OpenMenu::Snap { notes };
+        let snap = match which {
+            SnapFor::Arrange => self.snap,
+            SnapFor::Notes => self.note_grid,
+            SnapFor::Shape => self.shape_grid,
+        };
+        let menu = OpenMenu::Snap(which);
         let open = self.open_menu == Some(menu);
         let hover = theme.hover;
         let chip = div()
-            .id(if notes { "note-snap" } else { "snap" })
+            .id(which.id())
+            .debug_selector(move || which.id().to_owned())
             .flex()
             .items_center()
             .gap(px(5.))
@@ -387,13 +392,13 @@ impl ProjectView {
             .flex_col()
             .child(chip)
             .when(open, |d| {
-                d.child(self.render_snap_panel(notes, snap, theme, cx))
+                d.child(self.render_snap_panel(which, snap, theme, cx))
             })
     }
 
     fn render_snap_panel(
         &self,
-        notes: bool,
+        which: SnapFor,
         snap: Snap,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -425,14 +430,14 @@ impl ProjectView {
             .child(
                 segment("snap-on", "Snap", snap.enabled).on_click(cx.listener(
                     move |this, _, _, _| {
-                        this.snap_setting(notes).enabled = true;
+                        this.snap_setting(which).enabled = true;
                     },
                 )),
             )
             .child(
                 segment("snap-off", "Slide", !snap.enabled).on_click(cx.listener(
                     move |this, _, _, _| {
-                        this.snap_setting(notes).enabled = false;
+                        this.snap_setting(which).enabled = false;
                     },
                 )),
             );
@@ -440,17 +445,14 @@ impl ProjectView {
             let current = snap.enabled && snap.grid == grid;
             menu::item(
                 theme,
-                (
-                    if notes { "note-snap-grid" } else { "snap-grid" },
-                    grid as usize,
-                ),
+                (which.grid_id(), grid as usize),
                 grid.label(),
                 if current { "✓" } else { "" },
             )
             .when(!snap.enabled, |d| d.text_color(theme.text_tertiary))
             .on_click(cx.listener(move |this, _, _, _| {
                 // Picking a grid while sliding switches snapping back on.
-                *this.snap_setting(notes) = Snap {
+                *this.snap_setting(which) = Snap {
                     enabled: true,
                     grid,
                 };

@@ -1,6 +1,6 @@
 # Status and Next Steps
 
-*Last updated: 2026-10-21, as a handover between sessions (everything committed, `3f9b1a7`). Read this first when picking up the project; then "In progress" below.*
+*Last updated: 2026-10-25 (notes signals play drawn shapes). Read this first when picking up the project; then "In progress" below.*
 
 ## Where is done
 
@@ -19,9 +19,10 @@
 - **Export** (2026-10-23, `docs/design/export.md`): File → Export… (Ctrl+E): WAV (16 dithered / 24 / 32 float) or MP3 (192 / 256 / 320 kbps, LAME behind `daw-host`'s `mp3` feature, LGPL: settle before release), whole song (to the last clip's end) or the loop, tail until silent or off. Renders a copy of the song offline on its own thread and plugin host (`daw_host::export`), sample-for-sample the live sound, latency trimmed; the app stays usable; cancel leaves no file.
 - **Metronome** (2026-10-24, `docs/design/metronome.md`): a click on every beat while playing, accented on beat 1, after the Song's channel and never in exports. Transport: metronome button and a volume button whose vertical slider opens on hover. Preferences → Metronome: sound (Beep, Wood, Tick, Cowbell), accent, pitch, volume; kept in the preferences for every song.
 - **Drags are heard as they move** (2026-10-24, the user's request; `audio-engine.md`, previews): faders, pans, every slider, blocks and points on Parameters and Signals, notes and velocities, clip moves, notes-signal and audio-clip settings play as they're dragged (`Command::Preview`), still one undo step each. Sliders' thumbs follow the pointer (a drag the slider's length covers the range; Shift five times finer). Loop drags still apply on release.
+- **Notes signals play a drawn shape** (2026-10-25, the user's design, a "shaper" feel; `docs/design/curve-editor.md`, `motion-signals.md`): ADSR is gone. Each note plays a curve over a window of 1/8 to 4 bars, in **Trigger** (once through) or **Loop** (while held) mode; a new note restarts it; a 1/64-beat glide at every seam. Curves are points with Illustrator-style kinds: **Corner**, **Smooth** (handles in line) and **Broken** (handles free), Béziers held to one value per time. Clicking a notes signal on Signals opens the **shape panel** at the bottom: double-click adds or removes points, drag moves points and handles, the snap chip sets the grid, **stamps** (Ramp up/down, Triangle, Square, Sine, Duck) fill the window once per grid cell, and **Save as stamp** keeps one for every project (`stamps.json` beside the preferences; rename, ×, overflow under ›). Built as a reusable editor (`curve_editor.rs`, `curve_edit.rs`) so layer blocks and drawn signals can move onto it later (the user's wish; a separate step, needs their OK as it changes those lanes). File version 20: old ADSR becomes the nearest Trigger shape (sustain isn't held).
 - **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
-The project file is at **version 19** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
+The project file is at **version 20** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
 ## Phase 8, VST3 hosting: built (2026-10-23)
 
@@ -68,7 +69,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 ## Model notes worth knowing
 
 - **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; older files convert exactly (Replace only when nothing below it acts). **Layer mix** scales every block's weight on a layer.
-- **Signals** (version 4): drawn, or ADSR hits from MIDI notes. A layer listens with `Layer.signal`; its blocks are windows onto the signal. No range: block depth and invert do it. **Velocity clamp** (version 5) and on/off switches for it and the pitch range (version 6).
+- **Signals** (version 4): drawn, or hits from MIDI notes (each a drawn shape since version 20). A layer listens with `Layer.signal`; its blocks are windows onto the signal. No range: block depth and invert do it. **Velocity clamp** (version 5) and on/off switches for it and the pitch range (version 6).
 - **Loop on/off** (version 15): the region is kept while looping is off (`Snapshot.loop_enabled`, `Command::SetLoopEnabled`).
 - **Tree** (version 7): older files nest their node under the Song, bit-for-bit the same sound. **Layered instruments** (version 8): `Node.instruments`, each playing the notes it takes. **Samples** (version 9).
 - **Node kinds** (the user's call): every node is MIDI or Audio (`NodeKind`). There is no folder type: a parent is any node with children. **A branch never mixes kinds** (version 11): a node goes only under a parent of its own kind; the Song takes either and holds no clips. Only MIDI nodes have instruments.
@@ -77,6 +78,8 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - **Parent first** (the user's call, reversing the earlier "parents below"): on Arrange the Song is at the top and each parent sits above its children; on the mixer each parent strip sits left of its children. Map bars start at the parent's row (or strip) with the chevron; the Song has no bar.
 
 ## Waiting on the user (try it)
+
+- **Shape panel** (2026-10-25): on Signals, publish a kick's notes as a signal (Arrange, signal button), click it: the panel opens at the bottom. Try the Duck stamp, Trigger vs Loop, the window sizes, double-click to add points, Smooth and Broken with their handles, Save as stamp then reopen the app (the stamp should still be there). Put a Multiply layer listening to it on a node's volume and listen for the pump, and for clicks when notes restart. Claude checked the curves in tests, not by ear or eye.
 
 - **Metronome** (2026-10-24): switch it on beside the transport and play; hover the volume button and drag its slider; Preferences → Metronome: pick each sound (it plays), switch the accent, move the pitch. Listen that the click sits on the beat with plugins that add latency, and loops. Claude checked timing and levels in tests, not by ear.
 - **Looped clips and signals** (2026-10-24): loop a clip that a notes signal reads: the Signals page lane and listening layers should show a hit at every repeat (the sound already followed the repeats; only the drawing missed them). Hover a looped clip's loop zone on Arrange: the loop cursor shows above the clip.
@@ -124,6 +127,8 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 - **MP3 / LAME (LGPL):** decide whether to keep LAME compiled in, link it as a DLL, or build WAV-only (`docs/design/export.md`, Licence).
 
 ## Known gaps
+
+- **Fader taper, for later** (2026-10-25, raised with the user): the fader is even in dB from -60 to +12, so the quiet end takes half its height; most DAWs give more room near 0 dB. Changing it changes how saved volumes and volume automation map to dB. The fader, meters and dB marks all go through `layout::level_position`, so a new taper changes them together.
 
 - **TODO (user, 2026-10-19): audio file types beyond WAV** (MP3, FLAC, AIFF; `symphonia` is the likely crate) for samples and audio clips. Reading files in the background, too.
 - No node colour picker yet (the engine has `SetNodeColor`).

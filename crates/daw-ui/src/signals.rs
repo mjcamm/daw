@@ -200,8 +200,8 @@ impl ProjectView {
     /// settings there.
     pub(crate) fn go_to_signal(&mut self, id: SignalId) {
         self.page = crate::project::Page::Signals;
+        self.select_signal(id);
         let snapshot = self.session.snapshot();
-        self.selected_signal = Some(id);
         if snapshot
             .signals
             .iter()
@@ -568,11 +568,12 @@ impl ProjectView {
 
         div()
             .id(("signal-row", id.0))
+            .debug_selector(move || format!("signal-row-{}", id.0))
             .h(px(row_height))
             .flex_none()
             .when(selected, |d| d.bg(selected_bg))
             .when(highlighted, |d| d.bg(highlight))
-            .on_click(cx.listener(move |this, _, _, _| this.selected_signal = Some(id)))
+            .on_click(cx.listener(move |this, _, _, _| this.select_signal(id)))
             .flex()
             .items_center()
             .gap(px(8.))

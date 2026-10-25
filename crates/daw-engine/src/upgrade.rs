@@ -32,7 +32,15 @@
 //! older file becomes the Song's first child (id 1), and every notes signal
 //! reads its notes. The Song is a plain bus at 0 dB, centred, so old songs
 //! sound exactly as before.
+//!
+//! Version 20 replaced notes signals' ADSR envelopes with a drawn shape
+//! played on every note. An envelope becomes the nearest Trigger shape:
+//! corner points for the attack's peak, the decay's end and the release's
+//! end, on the smallest window that holds them (at most 4 bars, squeezed to
+//! fit beyond). The one approximation is sustain, which is no longer held
+//! while the note is: the release follows the decay at once.
 
+use daw_protocol::{Curve, CurvePoint, HitMode, NotesSource, Ticks};
 use serde_json::Value;
 
 /// Every parameter on every node: instrument, channel and effects.
@@ -181,6 +189,76 @@ pub fn notes_switches(file: &mut Value) {
         notes.insert("pitch_range".to_owned(), ranged.into());
         notes.insert("velocity_clamp".to_owned(), clamped.into());
     }
+}
+
+/// Rewrites notes signals in a file before version 20: each ADSR envelope
+/// becomes a Trigger shape.
+pub fn shape_hits(file: &mut Value) {
+    let signals = file.get_mut("signals").and_then(Value::as_array_mut);
+    for signal in signals.into_iter().flatten() {
+        let notes = signal
+            .get_mut("source")
+            .and_then(|s| s.get_mut("Notes"))
+            .and_then(Value::as_object_mut);
+        let Some(notes) = notes else {
+            continue;
+        };
+        let mut take = |key: &str| notes.remove(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let (attack, decay, sustain, release) = (
+            take("attack"),
+            take("decay"),
+            take("sustain"),
+            take("release"),
+        );
+        let (window, shape) = envelope_shape(attack, decay, sustain, release);
+        // Plain data: serializing it cannot fail.
+        if let (Ok(mode), Ok(shape)) = (
+            serde_json::to_value(HitMode::Trigger),
+            serde_json::to_value(shape),
+        ) {
+            notes.insert("mode".to_owned(), mode);
+            notes.insert("window".to_owned(), window.0.into());
+            notes.insert("shape".to_owned(), shape);
+        }
+    }
+}
+
+/// The window and Trigger shape nearest an ADSR envelope with times in
+/// ticks and sustain as a fraction of the peak.
+fn envelope_shape(attack: f64, decay: f64, sustain: f64, release: f64) -> (Ticks, Curve) {
+    let [attack, decay, release] = [attack, decay, release].map(|t| t.max(0.0));
+    let total = attack + decay + release;
+    let longest = NotesSource::WINDOWS[NotesSource::WINDOWS.len() - 1];
+    let window = NotesSource::WINDOWS
+        .into_iter()
+        .find(|w| w.0 as f64 >= total)
+        .unwrap_or(longest);
+    // Squeezed into the window when the envelope is longer than 4 bars.
+    let scale = (window.0 as f64).max(total);
+    let level = |l: f64| 0.5 + 0.5 * l;
+    let mut points = vec![CurvePoint::corner(
+        0.0,
+        level(if attack > 0.0 { 0.0 } else { 1.0 }),
+    )];
+    let mut push = |at: f64, value: f64| {
+        let point = CurvePoint::corner((at / scale).min(1.0), value);
+        if points
+            .last()
+            .is_none_or(|p| (p.at, p.value) != (point.at, point.value))
+        {
+            points.push(point);
+        }
+    };
+    if attack > 0.0 {
+        push(attack, level(1.0));
+    }
+    push(attack + decay, level(sustain.clamp(0.0, 1.0)));
+    push(total, level(0.0));
+    push(scale, level(0.0));
+    if points.len() < 2 {
+        points.push(CurvePoint::corner(1.0, level(0.0)));
+    }
+    (window, Curve { points })
 }
 
 /// Merges MIDI clips that overlap on a node into one (before version 13
@@ -555,11 +633,73 @@ mod tests {
         clamp_velocity(&mut file);
         notes_switches(&mut file);
         nest_under_song(&mut file);
+        shape_hits(&mut file);
         let source: daw_protocol::NotesSource =
             serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
-        assert_eq!(source.decay, daw_protocol::Ticks(480));
         assert_eq!((source.lowest, source.highest), (36, 36));
-        assert_eq!(source.attack, daw_protocol::Ticks::ZERO);
+        assert_eq!(source.window, Ticks(480));
+        assert_eq!(source.shape, Curve::line(1.0, 0.5), "straight down");
+    }
+
+    fn shaped(attack: f64, decay: f64, sustain: f64, release: f64) -> NotesSource {
+        let mut file = json!({
+            "signals": [{
+                "id": 1, "name": "Kick", "color": 0,
+                "source": { "Notes": {
+                    "node": 1, "pitch_range": false, "velocity_clamp": false,
+                    "lowest": 0, "highest": 127, "velocity_min": 0.0, "velocity_max": 1.0,
+                    "attack": attack, "decay": decay, "sustain": sustain, "release": release
+                }}
+            }]
+        });
+        shape_hits(&mut file);
+        let source: NotesSource =
+            serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
+        daw_automation::validate_notes_source(&source).unwrap();
+        source
+    }
+
+    fn corners(points: &[(f64, f64)]) -> Curve {
+        Curve {
+            points: points
+                .iter()
+                .map(|&(at, value)| CurvePoint::corner(at, value))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn adsr_envelopes_become_the_nearest_trigger_shape() {
+        // The old default: straight up, down over half a beat, then a
+        // quarter-beat release that a one-shot no longer needs.
+        let source = shaped(0.0, 480.0, 0.0, 240.0);
+        assert_eq!(source.mode, HitMode::Trigger);
+        assert_eq!(source.window, Ticks(960), "the smallest that holds it");
+        assert_eq!(
+            source.shape,
+            corners(&[(0.0, 1.0), (0.5, 0.5), (0.75, 0.5), (1.0, 0.5)])
+        );
+        // An attack, a decay to half and a release.
+        let source = shaped(480.0, 480.0, 0.5, 960.0);
+        assert_eq!(source.window, Ticks(1920));
+        assert_eq!(
+            source.shape,
+            corners(&[(0.0, 0.5), (0.25, 1.0), (0.5, 0.75), (1.0, 0.5)])
+        );
+    }
+
+    #[test]
+    fn envelopes_longer_than_the_longest_window_are_squeezed_into_it() {
+        let source = shaped(0.0, 30720.0, 0.0, 0.0);
+        assert_eq!(source.window, Ticks(15360));
+        assert_eq!(source.shape, corners(&[(0.0, 1.0), (1.0, 0.5)]));
+    }
+
+    #[test]
+    fn an_instant_envelope_still_makes_a_curve() {
+        let source = shaped(0.0, 0.0, 0.0, 0.0);
+        assert_eq!(source.window, Ticks(480));
+        assert_eq!(source.shape, corners(&[(0.0, 1.0), (0.0, 0.5), (1.0, 0.5)]));
     }
 
     #[test]
@@ -578,6 +718,7 @@ mod tests {
             clamp_velocity(&mut file);
             notes_switches(&mut file);
             nest_under_song(&mut file);
+            shape_hits(&mut file);
             let source: daw_protocol::NotesSource =
                 serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
             (source.velocity_min, source.velocity_max)
@@ -603,6 +744,7 @@ mod tests {
             });
             notes_switches(&mut file);
             nest_under_song(&mut file);
+            shape_hits(&mut file);
             let source: daw_protocol::NotesSource =
                 serde_json::from_value(file["signals"][0]["source"]["Notes"].clone()).unwrap();
             (source.pitch_range, source.velocity_clamp)

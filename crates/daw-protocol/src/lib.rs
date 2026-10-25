@@ -7,17 +7,19 @@
 mod audio_clip;
 mod automation;
 mod clip_loop;
+mod curve;
 mod peaks;
 mod time;
 
 pub use audio_clip::{AudioClip, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB};
 pub use automation::{
     BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect, EffectKind,
-    Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId, ParamState,
-    PluginData, PluginParam, PluginParamInfo, PluginSpec, SampleId, Scale, Segment, Shape,
-    ShapePoint, Signal, SignalId, SignalSource, TestPlugin,
+    HitMode, Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId,
+    ParamState, PluginData, PluginParam, PluginParamInfo, PluginSpec, SampleId, Scale, Segment,
+    Shape, ShapePoint, Signal, SignalId, SignalSource, TestPlugin,
 };
 pub use clip_loop::{ClipLoop, Piece, SEAM_FADE};
+pub use curve::{Curve, CurvePoint, Handle, PointKind};
 pub use peaks::{FINEST_SPAN, MinMax, PeakLevel, Peaks};
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -936,10 +938,13 @@ pub enum InvalidBlock {
 /// Why a signal was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidSignal {
-    /// Attack, decay and release cannot be negative.
-    EnvelopeTime,
-    /// Sustain must be within `0..=1`.
-    EnvelopeLevel,
+    /// A notes signal's window must be longer than zero.
+    Window,
+    /// A curve's points are out of order, outside `0..=1`, not finite, or
+    /// fewer than two; or its ends are not at times 0 and 1.
+    Curve { index: usize },
+    /// A handle points the wrong way in time, or is not finite.
+    Handle { index: usize },
     /// The velocity clamp needs `0 <= min <= max <= 1`.
     VelocityRange,
     /// A notes filter needs `lowest <= highest <= 127`.
@@ -1106,8 +1111,9 @@ impl fmt::Display for InvalidBlock {
 impl fmt::Display for InvalidSignal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EnvelopeTime => f.write_str("envelope time is negative"),
-            Self::EnvelopeLevel => f.write_str("sustain is outside 0..=1"),
+            Self::Window => f.write_str("the window is empty"),
+            Self::Curve { index } => write!(f, "curve point {index} is out of place"),
+            Self::Handle { index } => write!(f, "curve point {index} has a bad handle"),
             Self::VelocityRange => f.write_str("velocity clamp is not 0 <= min <= max <= 1"),
             Self::PitchRange => f.write_str("pitch range is empty or above 127"),
         }

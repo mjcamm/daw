@@ -123,3 +123,28 @@ fn a_clip_drag_is_heard_as_it_moves_and_escape_puts_it_back() {
     assert_eq!(heard_start(&mut h), start);
     assert!(!h.snapshot().can_undo, "nothing changed");
 }
+
+/// docs/behaviours.md: "Each strip's fader has dB marks beside it, on the
+/// scale its meters share (-60 to +12 dB)".
+#[test]
+fn strips_show_db_marks_beside_the_fader() {
+    for place in ["mixer", "panel"] {
+        let mut h = Harness::new(&format!("db-marks-{place}"));
+        h.view.update(h.cx, |view, _| {
+            if place == "mixer" {
+                view.page = Page::Mixer;
+            } else {
+                view.page = Page::Arrange;
+                view.selected_node = Some(FIRST_NODE);
+                view.inspector_open = true;
+            }
+        });
+        h.redraw_all();
+        h.redraw_all();
+        let marks = h.bounds("db-marks-1");
+        let fader = h.bounds("fader-1");
+        assert_eq!(marks.size.height, fader.size.height, "{place}: the fader's height");
+        assert_eq!(marks.top(), fader.top(), "{place}: level with it");
+        assert!(marks.right() <= fader.left(), "{place}: on its left");
+    }
+}

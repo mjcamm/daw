@@ -3,23 +3,20 @@
 //!
 //! It folds away into a narrow tray. The tray's icon lights up when the
 //! selection has something to show; clicking it opens or closes the panel,
-//! and the panel's left edge drags to resize it. For now only a notes signal
-//! (selected on the Signals page) has settings here: its pitch range, its
-//! envelope and its velocity clamp. Dragging a value previews the change
+//! and the panel's left edge drags to resize it. A notes signal (selected on
+//! the Signals page) shows its pitch range and velocity clamp here; its shape
+//! is drawn in the bottom panel. Dragging a value previews the change
 //! everywhere the signal is drawn and sends one edit on release.
 
 use crate::icons::{Icon, icon};
-use crate::parameters::{paint_curve, small_button};
+use crate::parameters::small_button;
 use crate::project::{Page, ProjectView};
 use crate::slider::{self, Axis};
 use crate::theme::{MONO_FONT, Theme};
 use crate::tooltip;
-use daw_automation::{CompiledSignal, SignalNote};
-use daw_engine::{
-    Command, Edit, NotesSource, Signal, SignalId, SignalSnapshot, SignalSource, Ticks,
-};
+use daw_engine::{Command, Edit, NotesSource, SignalId, SignalSnapshot, SignalSource, Ticks};
 use gpui::{
-    AnyElement, Context, Div, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, canvas, div,
+    AnyElement, Context, Div, FontWeight, MouseButton, MouseDownEvent, Pixels, Point, div,
     prelude::*, px,
 };
 
@@ -28,11 +25,8 @@ pub const TRAY_WIDTH: f32 = 32.;
 pub const DEFAULT_WIDTH: f32 = 280.;
 const MIN_WIDTH: f32 = 220.;
 const MAX_WIDTH: f32 = 520.;
-/// Longest attack, decay or release the sliders reach, in beats.
-const MAX_TIME_BEATS: f64 = 4.;
 /// Pixels of sideways drag per semitone on a pitch value.
 const PIXELS_PER_SEMITONE: f32 = 6.;
-const ENVELOPE_HEIGHT: f32 = 64.;
 pub(crate) const VALUE_WIDTH: f32 = 64.;
 const LABEL_WIDTH: f32 = 56.;
 const GROUP_MARGIN: f32 = 10.;
@@ -44,10 +38,6 @@ pub(crate) const SLIDER_GAP: f32 = 10.;
 pub enum NotesField {
     Lowest,
     Highest,
-    Attack,
-    Decay,
-    Sustain,
-    Release,
     VelocityMin,
     VelocityMax,
 }
@@ -57,10 +47,6 @@ impl NotesField {
         match self {
             Self::Lowest => "Lowest",
             Self::Highest => "Highest",
-            Self::Attack => "Attack",
-            Self::Decay => "Decay",
-            Self::Sustain => "Sustain",
-            Self::Release => "Release",
             Self::VelocityMin => "Min",
             Self::VelocityMax => "Max",
         }
@@ -71,10 +57,6 @@ impl NotesField {
         match self {
             Self::Lowest => note_name(source.lowest),
             Self::Highest => note_name(source.highest),
-            Self::Attack => format_beats(source.attack),
-            Self::Decay => format_beats(source.decay),
-            Self::Release => format_beats(source.release),
-            Self::Sustain => percent(source.sustain),
             Self::VelocityMin => percent(source.velocity_min),
             Self::VelocityMax => percent(source.velocity_max),
         }
@@ -85,10 +67,6 @@ impl NotesField {
         match self {
             Self::Lowest => f64::from(source.lowest) / 127.,
             Self::Highest => f64::from(source.highest) / 127.,
-            Self::Attack => time_position(source.attack),
-            Self::Decay => time_position(source.decay),
-            Self::Release => time_position(source.release),
-            Self::Sustain => source.sustain,
             Self::VelocityMin => source.velocity_min,
             Self::VelocityMax => source.velocity_max,
         }
@@ -107,10 +85,6 @@ impl NotesField {
         match self {
             Self::Lowest => source.lowest = semitones(original.lowest).min(original.highest),
             Self::Highest => source.highest = semitones(original.highest).max(original.lowest),
-            Self::Attack => source.attack = time_at(slid(time_position(original.attack))),
-            Self::Decay => source.decay = time_at(slid(time_position(original.decay))),
-            Self::Release => source.release = time_at(slid(time_position(original.release))),
-            Self::Sustain => source.sustain = slid(original.sustain),
             Self::VelocityMin => {
                 source.velocity_min = slid(original.velocity_min).min(original.velocity_max);
             }
@@ -141,8 +115,8 @@ impl NotesSwitch {
         match (self, on) {
             (Self::PitchRange, true) => "On: only notes in the range hit",
             (Self::PitchRange, false) => "Off: every note hits",
-            (Self::VelocityClamp, true) => "On: hit heights are kept between Min and Max",
-            (Self::VelocityClamp, false) => "Off: hit heights follow velocity",
+            (Self::VelocityClamp, true) => "On: hit sizes are kept between Min and Max",
+            (Self::VelocityClamp, false) => "Off: hit sizes follow velocity",
         }
     }
 
@@ -207,50 +181,6 @@ pub fn format_beats(time: Ticks) -> String {
 
 fn percent(value: f64) -> String {
     format!("{:.0}%", value * 100.)
-}
-
-/// Times sit on their sliders by square root, so short times get most of
-/// the travel.
-fn time_position(time: Ticks) -> f64 {
-    (time.as_beats() / MAX_TIME_BEATS).clamp(0., 1.).sqrt()
-}
-
-fn time_at(position: f64) -> Ticks {
-    Ticks::from_beats_f64(position * position * MAX_TIME_BEATS)
-}
-
-/// The envelope of one full-velocity note, as a level (`0..=1`) over beats,
-/// and how many beats to show: the note is held long enough to show the
-/// sustain, then released.
-fn envelope_shape(source: &NotesSource) -> (impl Fn(f64) -> f64 + 'static, f64) {
-    let (attack, decay, release) = (
-        source.attack.as_beats(),
-        source.decay.as_beats(),
-        source.release.as_beats(),
-    );
-    let hold = ((attack + decay + release) * 0.4).max(0.25);
-    let held = attack + decay + hold;
-    let signal = Signal {
-        name: String::new(),
-        color: 0,
-        source: SignalSource::Notes(NotesSource {
-            lowest: 0,
-            highest: 127,
-            velocity_min: 1.,
-            velocity_max: 1.,
-            ..source.clone()
-        }),
-    };
-    let note = SignalNote {
-        start: 0.,
-        end: held,
-        pitch: 60,
-        velocity: 127,
-    };
-    let compiled = CompiledSignal::compile(&signal, [note]);
-    // Signal values are centred: a hit runs from 0.5 up to 1.
-    let level = move |beat: f64| 2. * compiled.sample(beat).0 - 1.;
-    (level, held + release + hold * 0.25)
 }
 
 impl ProjectView {
@@ -536,32 +466,6 @@ impl ProjectView {
                 }),
         );
 
-        let (level, span) = envelope_shape(&source);
-        let line = colors.detail;
-        let mut area = colors.detail;
-        area.a = 0.18;
-        let graph = div().h(px(ENVELOPE_HEIGHT)).mx(px(12.)).my(px(8.)).child(
-            canvas(
-                |_, _, _| {},
-                move |bounds, (), window, _| {
-                    let width = bounds.size.width / px(1.);
-                    let ppb = width / span as f32;
-                    paint_curve(window, bounds, ppb, line, Some((area, 0.)), &level);
-                },
-            )
-            .size_full(),
-        );
-        let envelope = group(theme).child(graph).children(
-            [
-                NotesField::Attack,
-                NotesField::Decay,
-                NotesField::Sustain,
-                NotesField::Release,
-            ]
-            .into_iter()
-            .map(|field| self.slider_row(id, field, &source, true, theme, cx)),
-        );
-
         let velocity = group(theme).children(
             [NotesField::VelocityMin, NotesField::VelocityMax]
                 .into_iter()
@@ -575,8 +479,6 @@ impl ProjectView {
             .flex_col()
             .pb(px(16.))
             .child(header)
-            .child(section_label("Envelope", theme))
-            .child(envelope)
             .child(self.switched_label(id, NotesSwitch::PitchRange, ranged, theme, cx))
             .when(ranged, |d| d.child(pitches))
             .child(hint(
@@ -591,9 +493,9 @@ impl ProjectView {
             .when(clamped, |d| d.child(velocity))
             .child(hint(
                 if clamped {
-                    "Each hit rises as high as its note's velocity, kept between Min and Max."
+                    "Each hit plays the shape as big as its note's velocity, kept between Min and Max."
                 } else {
-                    "Each hit rises as high as its note's velocity."
+                    "Each hit plays the shape as big as its note's velocity."
                 },
                 theme,
             ))
@@ -830,14 +732,6 @@ mod tests {
     }
 
     #[test]
-    fn time_sliders_round_trip_and_favour_short_times() {
-        for ticks in [0, 120, 480, 960, 3840] {
-            assert_eq!(time_at(time_position(Ticks(ticks))), Ticks(ticks));
-        }
-        assert!(time_position(Ticks(960)) > 0.4, "one beat is half way");
-    }
-
-    #[test]
     fn ranges_stay_valid_while_dragging() {
         const SCRUB: f32 = slider::SCRUB_LENGTH;
         let source = NotesSource {
@@ -857,8 +751,6 @@ mod tests {
         assert!((min.velocity_min - 0.6).abs() < 1e-9, "stops at the max");
         let max = NotesField::VelocityMax.dragged(&source, -500., SCRUB, false);
         assert!((max.velocity_max - 0.2).abs() < 1e-9, "stops at the min");
-        let sustain = NotesField::Sustain.dragged(&source, 100., SCRUB, false);
-        assert!((sustain.sustain - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -890,20 +782,5 @@ mod tests {
         assert_eq!(resized(280., -40.), 320., "dragging left widens");
         assert_eq!(resized(280., 400.), MIN_WIDTH);
         assert_eq!(resized(280., -900.), MAX_WIDTH);
-    }
-
-    #[test]
-    fn the_envelope_graph_shows_attack_decay_sustain_release() {
-        let source = NotesSource {
-            attack: Ticks(960),
-            decay: Ticks(960),
-            sustain: 0.5,
-            release: Ticks(960),
-            ..NotesSource::new(daw_engine::FIRST_NODE)
-        };
-        let (level, span) = envelope_shape(&source);
-        assert!((level(1.0) - 1.0).abs() < 1e-9, "peak after the attack");
-        assert!((level(2.5) - 0.5).abs() < 1e-9, "sustaining");
-        assert!(level(span - 0.01).abs() < 1e-9, "released by the end");
     }
 }

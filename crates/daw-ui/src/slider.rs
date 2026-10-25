@@ -10,7 +10,7 @@ use crate::theme::Theme;
 use gpui::{Div, ElementId, Stateful, div, prelude::*, px};
 
 /// Diameter of the thumb.
-const THUMB: f32 = 9.;
+pub const THUMB: f32 = 9.;
 /// Cross size of a slider.
 pub const THICKNESS: f32 = 12.;
 /// How much slower a fine (Shift) drag moves.

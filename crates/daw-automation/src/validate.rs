@@ -1,6 +1,6 @@
 //! Checking blocks and signals before they enter the project.
 
-use daw_protocol::{Block, InvalidBlock, InvalidSignal, NotesSource, Segment, Shape, Ticks};
+use daw_protocol::{Block, Curve, InvalidBlock, InvalidSignal, NotesSource, Segment, Shape, Ticks};
 
 pub fn validate_block(block: &Block) -> Result<(), InvalidBlock> {
     if block.start < Ticks::ZERO {
@@ -21,23 +21,49 @@ pub fn validate_block(block: &Block) -> Result<(), InvalidBlock> {
     validate_shape(&block.shape)
 }
 
-/// Checks a notes signal's filter and envelope.
+/// Checks a notes signal's filter, window and shape.
 pub fn validate_notes_source(source: &NotesSource) -> Result<(), InvalidSignal> {
-    if [source.attack, source.decay, source.release]
-        .iter()
-        .any(|t| *t < Ticks::ZERO)
-    {
-        return Err(InvalidSignal::EnvelopeTime);
+    if source.window <= Ticks::ZERO {
+        return Err(InvalidSignal::Window);
     }
-    if !(0.0..=1.0).contains(&source.sustain) {
-        return Err(InvalidSignal::EnvelopeLevel);
-    }
+    validate_curve(&source.shape)?;
     let (min, max) = (source.velocity_min, source.velocity_max);
     if !(0.0..=1.0).contains(&min) || !(min..=1.0).contains(&max) {
         return Err(InvalidSignal::VelocityRange);
     }
     if source.lowest > source.highest || source.highest > 127 {
         return Err(InvalidSignal::PitchRange);
+    }
+    Ok(())
+}
+
+/// Checks a curve: at least two points in time order within `0..=1`, the
+/// first at 0 and the last at 1, values within `0..=1`, and finite handles
+/// pointing their own way in time.
+pub fn validate_curve(curve: &Curve) -> Result<(), InvalidSignal> {
+    let points = &curve.points;
+    let last = points.len().saturating_sub(1);
+    if points.len() < 2 {
+        return Err(InvalidSignal::Curve { index: last });
+    }
+    let mut previous = 0.0;
+    for (index, point) in points.iter().enumerate() {
+        let pinned = match index {
+            0 => point.at == 0.0,
+            i if i == last => point.at == 1.0,
+            _ => true,
+        };
+        if !pinned || !(previous..=1.0).contains(&point.at) || !(0.0..=1.0).contains(&point.value) {
+            return Err(InvalidSignal::Curve { index });
+        }
+        previous = point.at;
+        let (hin, hout) = (point.handle_in, point.handle_out);
+        let finite = [hin.at, hin.value, hout.at, hout.value]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite || hin.at > 0.0 || hout.at < 0.0 {
+            return Err(InvalidSignal::Handle { index });
+        }
     }
     Ok(())
 }
@@ -68,7 +94,7 @@ fn validate_shape(shape: &Shape) -> Result<(), InvalidBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daw_protocol::{Shape, ShapePoint};
+    use daw_protocol::{CurvePoint, Handle, PointKind, Shape, ShapePoint};
 
     fn valid() -> Block {
         Block::new(Ticks::ZERO, Ticks::from_beats(1), Shape::ramp(0.0, 1.0))
@@ -149,20 +175,11 @@ mod tests {
             change(&mut source);
             validate_notes_source(&source)
         };
-        assert_eq!(with(|s| s.attack = Ticks::ZERO), Ok(()), "instant attack");
-        for change in [
-            (|s: &mut NotesSource| s.attack = Ticks(-1)) as fn(&mut NotesSource),
-            |s| s.decay = Ticks(-1),
-            |s| s.release = Ticks(-1),
-        ] {
-            assert_eq!(with(change), Err(InvalidSignal::EnvelopeTime));
-        }
-        for change in [
-            (|s: &mut NotesSource| s.sustain = 1.5) as fn(&mut NotesSource),
-            |s| s.sustain = f64::NAN,
-        ] {
-            assert_eq!(with(change), Err(InvalidSignal::EnvelopeLevel));
-        }
+        assert_eq!(with(|s| s.window = Ticks::ZERO), Err(InvalidSignal::Window));
+        assert_eq!(
+            with(|s| s.shape.points.truncate(1)),
+            Err(InvalidSignal::Curve { index: 0 })
+        );
         for change in [
             (|s: &mut NotesSource| s.velocity_min = -0.1) as fn(&mut NotesSource),
             |s| s.velocity_max = 1.1,
@@ -184,6 +201,69 @@ mod tests {
         );
         assert_eq!(with(|s| s.lowest = 40), Err(InvalidSignal::PitchRange));
         assert_eq!(with(|s| s.highest = 128), Err(InvalidSignal::PitchRange));
+    }
+
+    fn curve_check(change: impl FnOnce(&mut Curve)) -> Result<(), InvalidSignal> {
+        let mut curve = Curve {
+            points: vec![
+                CurvePoint::corner(0.0, 0.5),
+                CurvePoint::corner(0.5, 1.0),
+                CurvePoint::corner(1.0, 0.5),
+            ],
+        };
+        change(&mut curve);
+        validate_curve(&curve)
+    }
+
+    #[test]
+    fn accepts_curves_with_jumps_and_handles() {
+        assert_eq!(curve_check(|_| {}), Ok(()));
+        assert_eq!(
+            curve_check(|c| c.points.insert(2, CurvePoint::corner(0.5, 0.0))),
+            Ok(()),
+            "a jump"
+        );
+        assert_eq!(
+            curve_check(|c| {
+                c.points[1] = c.points[1].with_handles(
+                    PointKind::Smooth,
+                    Handle::new(-0.2, 0.0),
+                    Handle::new(0.2, 3.0),
+                );
+            }),
+            Ok(()),
+            "handles may reach past the edge"
+        );
+    }
+
+    #[test]
+    fn rejects_curves_out_of_place() {
+        let bad = |index| Err(InvalidSignal::Curve { index });
+        assert_eq!(
+            curve_check(|c| c.points[0].at = 0.1),
+            bad(0),
+            "unpinned start"
+        );
+        assert_eq!(
+            curve_check(|c| c.points[2].at = 0.9),
+            bad(2),
+            "unpinned end"
+        );
+        assert_eq!(curve_check(|c| c.points[1].at = -0.5), bad(1));
+        assert_eq!(curve_check(|c| c.points.swap(0, 1)), bad(0));
+        assert_eq!(curve_check(|c| c.points[1].value = 1.5), bad(1));
+        assert_eq!(curve_check(|c| c.points[1].value = f64::NAN), bad(1));
+    }
+
+    #[test]
+    fn rejects_handles_pointing_the_wrong_way() {
+        let bad = Err(InvalidSignal::Handle { index: 1 });
+        assert_eq!(curve_check(|c| c.points[1].handle_in.at = 0.1), bad);
+        assert_eq!(curve_check(|c| c.points[1].handle_out.at = -0.1), bad);
+        assert_eq!(
+            curve_check(|c| c.points[1].handle_out.value = f64::INFINITY),
+            bad
+        );
     }
 
     #[test]
