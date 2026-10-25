@@ -105,7 +105,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Selecting a block opens the inspector with its settings: depth (0% to 200%, 100% in the middle) and fades on sliders (double-click resets), repeat and nudge dragged sideways, invert a switch; heard as they move, one undo step each (Parameters and Signals) | `parameters::a_selected_blocks_settings_are_in_the_inspector` |
 | A window on a listening layer has no repeat setting | `parameters::a_windows_settings_have_no_repeat` |
 | Delete removes the selected block | – |
-| Layer rows: drag to reorder, rename, blend mode, mix, show/hide, delete | – |
+| Layer rows: drag to reorder, rename, blend mode (Add, Subtract, Multiply), mix, show/hide, delete | `parameters::a_layers_blend_mode_is_picked_from_its_menu` (blend mode) |
 | Resting-value slider sets the default state | – |
 | A listening layer's chip go-to opens the signal | – |
 

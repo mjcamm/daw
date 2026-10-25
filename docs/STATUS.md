@@ -23,9 +23,10 @@
 - **"Signals", one name** (2026-10-25, the user's call): no more "motion signals". Signals come from a node by its kind: the signal button offers **Publish MIDI Signal** on a MIDI node (note triggers) or **Publish Audio Signal** on an audio node (its sound as data). Signals are data only; drawn signals stay; sidechains and sends with real audio will work like a normal bus, later. The design doc is now `docs/design/signals.md`.
 - **Audio signals** (2026-10-25, Phase 6's signal part; designed with the user; `docs/design/signals.md`, From audio): an audio node's loudness as a signal, **always before its effects** (the user's call: nest it and follow the parent to hear effects). Follower in `daw-dsp` (Attack, Release, Floor, Ceiling; defaults 5 ms, 150 ms, -48 dB, 0 dB). The engine follows it live: each node renders after the sources it listens to, listeners read it at every control point, the same for any block size, threads, live or export; a listen that loops back hears nothing. **The lane is always current** (the user's call): after edits settle, the song is rendered in the background (`daw-host/src/analysis.rs`, like export) for each followed node's loudness, and the UI draws each signal's line from it for its own settings (settings drags redraw at once); kept beside the song as `signal-loudness.bin`. Inspector: the four settings on sliders and a Level bar. The Listen menu leaves out audio signals from a node the parameter's node is inside. File version 21.
 - **Block depth to 200%** (2026-10-25, the user's call): a block's depth runs 0% to 200% with 100% (as drawn) in the middle of its slider; file version 22.
+- **Subtract blend mode** (2026-10-25, the user's call): `v - a`, Add the other way round for a whole layer (invert is per block); in the layer's blend mode menu; file version 23. FM and waveshaping modes were asked for next, to design with the user.
 - **Loop strip** (2026-10-21, `docs/design/loop-strip.md`): the top half of every ruler (Arrange, Parameters, Signals, piano roll, audio panel). Any drag draws a fresh loop, snapped to the page's grid; handles move either end; the loop button switches looping and keeps the region (file version 15 saves both).
 
-The project file is at **version 22** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
+The project file is at **version 23** (`crates/daw-engine/src/file.rs`); `upgrade.rs` converts older files.
 
 ## Phase 8, VST3 hosting: built (2026-10-23)
 
@@ -71,7 +72,7 @@ Nothing: Phase 8's "done when" is met. **Presets are skipped for now** (the user
 
 ## Model notes worth knowing
 
-- **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Only Add and Multiply remain; older files convert exactly (Replace only when nothing below it acts). **Layer mix** scales every block's weight on a layer.
+- **Layers are centred** (file version 3): the middle of a lane is no effect, top +1, bottom −1. Add and Multiply, and Subtract again since version 23; older files convert exactly (Replace only when nothing below it acts). **Layer mix** scales every block's weight on a layer.
 - **Signals** (version 4): drawn, or hits from MIDI notes (each a drawn shape since version 20). A layer listens with `Layer.signal`; its blocks are windows onto the signal. No range: block depth and invert do it. **Velocity clamp** (version 5) and on/off switches for it and the pitch range (version 6).
 - **Loop on/off** (version 15): the region is kept while looping is off (`Snapshot.loop_enabled`, `Command::SetLoopEnabled`).
 - **Tree** (version 7): older files nest their node under the Song, bit-for-bit the same sound. **Layered instruments** (version 8): `Node.instruments`, each playing the notes it takes. **Samples** (version 9).

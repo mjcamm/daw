@@ -356,6 +356,9 @@ pub struct ParamState {
 pub enum BlendMode {
     /// Push up or pull down by up to the full range: `v + (2x - 1)·w`.
     Add,
+    /// Add the other way round, for the whole layer: `v - (2x - 1)·w`. Above
+    /// the centre pulls down, below it pushes up.
+    Subtract,
     /// Scale: zero at the bottom, unchanged at the centre, doubled at the
     /// top: `v · (1 + (2x - 1)·w)`. Ducking is a shape drawn below the centre.
     Multiply,

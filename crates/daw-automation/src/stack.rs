@@ -14,6 +14,7 @@ pub fn blend(mode: BlendMode, v: f64, x: f64, w: f64) -> f64 {
     let amount = (2.0 * x - 1.0) * w;
     match mode {
         BlendMode::Add => v + amount,
+        BlendMode::Subtract => v - amount,
         BlendMode::Multiply => v * (1.0 + amount),
     }
 }
@@ -241,7 +242,7 @@ mod tests {
         CompiledBlock::compile(block).sample(beat, None)
     }
 
-    const MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
+    const MODES: [BlendMode; 3] = [BlendMode::Add, BlendMode::Subtract, BlendMode::Multiply];
 
     #[test]
     fn add_pushes_up_above_the_centre_and_down_below_it() {
@@ -252,6 +253,32 @@ mod tests {
             close(blend(BlendMode::Add, 0.2, 0.0, 1.0), -0.8),
             "unclamped"
         );
+    }
+
+    #[test]
+    fn subtract_pulls_down_above_the_centre_and_pushes_up_below_it() {
+        assert!(close(blend(BlendMode::Subtract, 0.5, 0.75, 1.0), 0.0));
+        assert!(close(blend(BlendMode::Subtract, 0.5, 0.25, 1.0), 1.0));
+        assert!(close(blend(BlendMode::Subtract, 0.5, 1.0, 0.25), 0.25));
+        assert!(
+            close(blend(BlendMode::Subtract, 0.5, 0.5, 1.0), 0.5),
+            "centre: none"
+        );
+    }
+
+    #[test]
+    fn a_subtract_layer_is_an_add_layer_with_every_block_inverted() {
+        let shape = Shape::ramp(0.1, 0.9);
+        let mut inverted = block(0.0, 4.0, shape.clone());
+        inverted.invert = true;
+        let add = automation(0.4, vec![layer(BlendMode::Add, vec![inverted])]);
+        let sub = automation(
+            0.4,
+            vec![layer(BlendMode::Subtract, vec![block(0.0, 4.0, shape)])],
+        );
+        for beat in [0.0, 0.7, 1.9, 3.3] {
+            assert!(close(add.value_at(beat), sub.value_at(beat)), "{beat}");
+        }
     }
 
     #[test]

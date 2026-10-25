@@ -62,11 +62,12 @@ const LINE_HEIGHT: f32 = 20.;
 /// How long a layer jumped to from elsewhere stays highlighted.
 pub(crate) const HIGHLIGHT_TIME: std::time::Duration = std::time::Duration::from_millis(1500);
 
-const BLEND_MODES: [BlendMode; 2] = [BlendMode::Add, BlendMode::Multiply];
+const BLEND_MODES: [BlendMode; 3] = [BlendMode::Add, BlendMode::Subtract, BlendMode::Multiply];
 
 fn mode_label(mode: BlendMode) -> &'static str {
     match mode {
         BlendMode::Add => "Add",
+        BlendMode::Subtract => "Subtract",
         BlendMode::Multiply => "Multiply",
     }
 }
@@ -1512,6 +1513,7 @@ impl ProjectView {
             .child(
                 div()
                     .id(("layer-mode", id.0))
+                    .debug_selector(move || format!("layer-mode-{}", id.0))
                     .flex()
                     .items_center()
                     .gap(px(2.))
@@ -1711,6 +1713,7 @@ impl ProjectView {
                 mode_label(mode),
                 if mode == current { "✓" } else { "" },
             )
+            .debug_selector(move || format!("blend-mode-{}", mode_label(mode)))
             .on_click(cx.listener(move |this, _, _, _| {
                 this.open_menu = None;
                 this.session

@@ -30,9 +30,10 @@ The block produces a shape value `x` in `0..=1` (`0.5` is the centre line) and a
 | Mode | Result | Typical use |
 |---|---|---|
 | Add | `v + a` | Push up or pull down by up to the full range: risers, dips, wobbles |
+| Subtract | `v - a` | Add the other way round for the whole layer (the user's call, 2026-10-25: invert is per block, the blend mode per layer): above the centre pulls down, below it pushes up |
 | Multiply | `v · (1 + a)` | Scale: zero at the bottom, unchanged at the centre, doubled at the top. Ducking is a shape drawn below the centre |
 
-New layers default to Add. Earlier versions had Replace, Add, Subtract, Multiply and Modulate; files from before version 3 convert on load (`crates/daw-engine/src/upgrade.rs`). Each old mode is a straight-line remap of the shape values, so the conversion is exact, except Replace, which is exact only when nothing below it is active. The demo song converted bit-for-bit.
+New layers default to Add. Subtract came back in file version 23, centred; before version 3 there was an older, uncentred Subtract. Earlier versions had Replace, Add, Subtract, Multiply and Modulate; files from before version 3 convert on load (`crates/daw-engine/src/upgrade.rs`). Each old mode is a straight-line remap of the shape values, so the conversion is exact, except Replace, which is exact only when nothing below it is active. The demo song converted bit-for-bit.
 
 ## Blocks
 

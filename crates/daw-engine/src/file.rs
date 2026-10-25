@@ -41,7 +41,9 @@ pub const FORMAT: &str = "daw-project";
 /// Version 21 adds audio signals (`SignalSource::Audio`); nothing to
 /// convert.
 /// Version 22 lets a block's depth reach 2 (200%); nothing to convert.
-pub const VERSION: u32 = 22;
+/// Version 23 adds the Subtract blend mode back, centred (`v - a`); files
+/// before version 3 still convert their old Subtract to Add.
+pub const VERSION: u32 = 23;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {

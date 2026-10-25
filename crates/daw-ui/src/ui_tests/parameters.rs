@@ -225,3 +225,25 @@ fn a_windows_settings_have_no_repeat() {
         "the signal decides what plays through a window"
     );
 }
+
+/// docs/behaviours.md: "Layer rows: ... blend mode (Add, Subtract,
+/// Multiply)".
+#[test]
+fn a_layers_blend_mode_is_picked_from_its_menu() {
+    let (mut h, _, _) = page_with("blend-mode", block(4., None));
+    let at = h.bounds("layer-mode-1").center();
+    h.click(at, 1);
+    h.redraw_all();
+    let at = h.bounds("blend-mode-Subtract").center();
+    h.click(at, 1);
+    let mode = h.view.read_with(h.cx, |v, _| {
+        let param = v
+            .session()
+            .engine()
+            .project()
+            .param(VOLUME)
+            .expect("volume");
+        param.layers[0].1.mode
+    });
+    assert_eq!(mode, BlendMode::Subtract);
+}
