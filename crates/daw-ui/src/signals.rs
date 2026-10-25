@@ -71,7 +71,16 @@ fn notes_signal_name(snapshot: &Snapshot, node: &NodeSnapshot) -> String {
         .unwrap_or(base)
 }
 
-/// The signals a node publishes: the notes signals reading its notes.
+/// The node a signal comes from: a MIDI signal's or an audio signal's.
+pub(crate) fn source_node(source: &SignalSource) -> Option<NodeId> {
+    match source {
+        SignalSource::Notes(notes) => Some(notes.node),
+        SignalSource::Audio(audio) => Some(audio.node),
+        SignalSource::Drawn(_) => None,
+    }
+}
+
+/// The signals a node publishes: those reading its notes or its sound.
 pub(crate) fn published_signals(
     snapshot: &Snapshot,
     node: NodeId,
@@ -79,7 +88,7 @@ pub(crate) fn published_signals(
     snapshot
         .signals
         .iter()
-        .filter(move |s| matches!(&s.source, SignalSource::Notes(n) if n.node == node))
+        .filter(move |s| source_node(&s.source) == Some(node))
 }
 
 /// Whether a node has any notes to publish.
@@ -140,7 +149,7 @@ fn signal_notes(snapshot: &Snapshot, node: NodeId) -> Vec<SignalNote> {
 fn notes_for(snapshot: &Snapshot, source: &SignalSource) -> Vec<SignalNote> {
     match source {
         SignalSource::Notes(notes) => signal_notes(snapshot, notes.node),
-        SignalSource::Drawn(_) => Vec::new(),
+        SignalSource::Drawn(_) | SignalSource::Audio(_) => Vec::new(),
     }
 }
 
@@ -308,7 +317,7 @@ impl ProjectView {
                             cx,
                         )
                         .into_any_element(),
-                    SignalSource::Notes(_) => {
+                    SignalSource::Notes(_) | SignalSource::Audio(_) => {
                         notes_lane(cell, signal.id, compiled.clone(), colors, zoom, theme)
                             .into_any_element()
                     }
@@ -507,7 +516,7 @@ impl ProjectView {
         };
         let source: AnyElement = match &signal.source {
             SignalSource::Drawn(_) => div().child("Drawn").into_any_element(),
-            SignalSource::Notes(notes) => match self.session.snapshot().node(notes.node) {
+            source => match source_node(source).and_then(|n| self.session.snapshot().node(n)) {
                 Some(node) => {
                     let node_id = node.id;
                     div()

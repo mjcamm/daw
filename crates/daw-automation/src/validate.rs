@@ -1,6 +1,8 @@
 //! Checking blocks and signals before they enter the project.
 
-use daw_protocol::{Block, Curve, InvalidBlock, InvalidSignal, NotesSource, Segment, Shape, Ticks};
+use daw_protocol::{
+    AudioSource, Block, Curve, InvalidBlock, InvalidSignal, NotesSource, Segment, Shape, Ticks,
+};
 
 pub fn validate_block(block: &Block) -> Result<(), InvalidBlock> {
     if block.start < Ticks::ZERO {
@@ -33,6 +35,23 @@ pub fn validate_notes_source(source: &NotesSource) -> Result<(), InvalidSignal> 
     }
     if source.lowest > source.highest || source.highest > 127 {
         return Err(InvalidSignal::PitchRange);
+    }
+    Ok(())
+}
+
+/// Checks an audio signal's follower: attack and release within
+/// `0..=MAX_TIME_MS`, and `MIN_DB <= floor < ceiling <= MAX_DB`.
+pub fn validate_audio_source(source: &AudioSource) -> Result<(), InvalidSignal> {
+    let time = 0.0..=AudioSource::MAX_TIME_MS;
+    if !time.contains(&source.attack_ms) || !time.contains(&source.release_ms) {
+        return Err(InvalidSignal::FollowTime);
+    }
+    let (floor, ceiling) = (source.floor_db, source.ceiling_db);
+    if !(AudioSource::MIN_DB..AudioSource::MAX_DB).contains(&floor)
+        || !(floor..=AudioSource::MAX_DB).contains(&ceiling)
+        || floor == ceiling
+    {
+        return Err(InvalidSignal::FollowRange);
     }
     Ok(())
 }
@@ -272,5 +291,32 @@ mod tests {
             check(|b| b.shape.points.insert(1, ShapePoint::new(1.0, 0.5))),
             Ok(())
         );
+    }
+
+    #[test]
+    fn audio_followers_need_sane_times_and_an_ordered_range() {
+        use daw_protocol::{AudioSource, NodeId};
+        let valid = AudioSource::new(NodeId(1));
+        assert_eq!(validate_audio_source(&valid), Ok(()));
+        let check = |change: fn(&mut AudioSource)| {
+            let mut source = valid.clone();
+            change(&mut source);
+            validate_audio_source(&source)
+        };
+        let time = Err(InvalidSignal::FollowTime);
+        let range = Err(InvalidSignal::FollowRange);
+        assert_eq!(check(|s| s.attack_ms = -1.0), time);
+        assert_eq!(check(|s| s.release_ms = 5_000.0), time);
+        assert_eq!(check(|s| s.release_ms = f64::NAN), time);
+        assert_eq!(check(|s| s.attack_ms = 0.0), Ok(()));
+        assert_eq!(check(|s| s.floor_db = 0.0), range, "floor at the ceiling");
+        assert_eq!(
+            check(|s| s.floor_db = 6.0),
+            range,
+            "floor above the ceiling"
+        );
+        assert_eq!(check(|s| s.floor_db = -120.0), range);
+        assert_eq!(check(|s| s.ceiling_db = 20.0), range);
+        assert_eq!(check(|s| s.ceiling_db = f64::NAN), range);
     }
 }

@@ -46,6 +46,19 @@ The line is computed and drawn, not edited by hand; settings live in the signal'
 
 **Ducking:** a notes signal on a Multiply layer with the block inverted: each kick pulls down (Multiply at the bottom is silence), depth sets how hard.
 
+### From audio (Phase 6, agreed with the user 2026-10-25)
+
+An audio node's loudness. Only audio nodes publish one (the user's call); a MIDI node publishes its notes.
+
+- **Always before the node's effects** (the user's call: one behaviour). To follow a sound after its effects, nest the node in a parent and follow the parent: a parent's sound before its own effects is its children's finished sound. So a node can listen to its own audio signal (its effects and fader don't change what is followed); only the nodes inside it can't, since they make that sound.
+- **Follower** (`daw-dsp/src/follower.rs`): the peak of left and right, rising over **Attack** and falling over **Release** (one-pole; each time covers about 63 % of a step), read in dB between **Floor** and **Ceiling**: at or below the floor the signal rests on the centre line (no effect), at or above the ceiling it is at the top; even in dB between. New ones: 5 ms, 150 ms, -48 dB, 0 dB. Limits: times 0 to 2000 ms, -96 dB ≤ floor < ceiling ≤ +12 dB (`AudioSource`).
+- **Followed live, as the song plays** (the sound isn't known in advance, so this signal is not a pure function of song time like the others). The engine renders each node after the sources it listens to; listeners read the value at each control point (every 32 frames from the processor's start, the same points for every node), which is the loudness of the sound **up to** that point. So the sound is the same for any block size, any number of threads, live or exported.
+- **Loops are refused quietly:** a listen that would loop back (a node listening to a node above it, or two nodes listening to each other's signals) can't be followed; that layer hears nothing. The compiler decides in render order (`schedule.rs`, `plan_follows`).
+- **A block's nudge doesn't move it** (it can't be read ahead).
+- **Limits:** 32 audio signals followed in a song, 8 on one node; more are silent (`MAX_AUDIO_SIGNALS`, `MAX_NODE_FOLLOWS`).
+- **Source node** (`AudioSource.node`): never a MIDI node or the Song (`InvalidSignal::NotAudioNode`); a node that isn't there is allowed (the signal is silent until it comes back), since a file adds signals before nodes.
+- **The lane is always current** (the user's call): after an edit, the app works out the line in the background by rendering a copy of the song offline, as export does, and draws it in when done. The line is saved with the song, so reopening shows it at once.
+
 ## Layers listen to signals
 
 The choice is made **per layer**, not per block. A layer is either:
@@ -91,6 +104,7 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 | `RenameSignal { id, name }` | itself with the old name |
 | `SetSignalColor { id, color }` | itself with the old colour |
 | `SetNotesSource { id, source }`: notes signals only; the inspector sends one per drag | itself with the old source |
+| `SetAudioSource { id, source }`: audio signals only | itself with the old source |
 | `AddSignalBlock { signal, id, block }`: drawn signals only | `RemoveBlock` |
 | `SetLayerSignal { id, signal }`: `None` is Manual drawn | itself with the old signal |
 
@@ -108,6 +122,7 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 - `daw-automation` has `CompiledSignal` with `sample(beat) -> (value, presence)`. Notes signals pre-compute each hit's starting level at compile time (where the previous hit had got to), so sampling stays a binary search plus arithmetic.
 - Notes starting together are one hit: the strongest velocity, held for the longest.
 - The control side compiles signals first; each listening layer carries its own copy of its compiled signal (`CompiledLayer.signal`). The audio side stays pure functions of song time, allocation-free, so live and offline match and block size does not matter.
+- An audio signal compiles to `CompiledSignal::Audio { slot }`. The node it follows carries a `Follow` (`NodeRender.follows`); its player runs a follower over its bus once its children are summed (`finish_chunk`, before the effects) and writes the value at each control point to the processor's `LiveValues` (atomics, shared by the parallel tasks). Layers evaluate with `Automation::value_at_live(beat, live)`; `value_at` (no live values) reads an audio signal as the centre line. `NodeRender.height` (worked out by the compiler) sets when each node renders.
 
 ## File
 

@@ -5,7 +5,10 @@ use crate::compensation::{Compensation, PluginFacts, compensate};
 use crate::project::Project;
 use crate::samples::{SampleData, SamplePool};
 use daw_automation::{Automation, CompiledSignal, SignalNote, Signals};
-use daw_protocol::{DeviceId, EffectKind, InstrumentKind, Node, NodeId, ParamState, SignalSource};
+use daw_protocol::{
+    AudioSource, DeviceId, EffectKind, InstrumentKind, Node, NodeId, NodeKind, ParamState,
+    SignalId, SignalSource,
+};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -48,6 +51,26 @@ pub struct NodeRender {
     pub channel: Vec<Automation>,
     /// Its audio clips whose audio was read, sorted by start.
     pub clips: Vec<ClipRender>,
+    /// The audio signals following its sound before its effects.
+    pub follows: Vec<Follow>,
+    /// When it renders: after every node it waits for (its children, and
+    /// the sources of the audio signals it listens to), so 0 for a node
+    /// that waits for none. Nodes of one height render at the same time.
+    pub height: usize,
+}
+
+/// Most audio signals followed at once; any more are silent.
+pub const MAX_AUDIO_SIGNALS: usize = 32;
+/// Most audio signals following one node; any more are silent.
+pub const MAX_NODE_FOLLOWS: usize = 8;
+
+/// An audio signal following a node's sound, written to `slot` of the
+/// audio side's live values for listeners to read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Follow {
+    pub signal: SignalId,
+    pub slot: usize,
+    pub source: AudioSource,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,8 +121,38 @@ fn compile_params(params: &[ParamState], signals: &Signals) -> Vec<Automation> {
         .collect()
 }
 
+/// The audio signals that are followed, in slot order (signal id order):
+/// those whose audio node exists, within [`MAX_AUDIO_SIGNALS`] and
+/// [`MAX_NODE_FOLLOWS`].
+fn audio_follows(project: &Project) -> Vec<(NodeId, Follow)> {
+    let mut follows: Vec<(NodeId, Follow)> = Vec::new();
+    for (&signal, s) in &project.signals {
+        let SignalSource::Audio(source) = &s.source else {
+            continue;
+        };
+        let audio_node = source.node != NodeId::ROOT
+            && project
+                .node(source.node)
+                .is_some_and(|n| n.kind == NodeKind::Audio);
+        let on_node = follows.iter().filter(|(n, _)| *n == source.node).count();
+        if audio_node && follows.len() < MAX_AUDIO_SIGNALS && on_node < MAX_NODE_FOLLOWS {
+            let slot = follows.len();
+            follows.push((
+                source.node,
+                Follow {
+                    signal,
+                    slot,
+                    source: source.clone(),
+                },
+            ));
+        }
+    }
+    follows
+}
+
 /// Every signal compiled, each notes signal reading its source node's notes.
-/// A signal whose node no longer exists reads none.
+/// A signal whose node no longer exists reads none. An audio signal reads
+/// its slot of the live values; one that can't be followed is silent.
 pub fn compile_signals(project: &Project) -> Signals {
     let mut notes_of: BTreeMap<NodeId, Vec<SignalNote>> = BTreeMap::new();
     let mut signals = Signals::default();
@@ -119,11 +172,120 @@ pub fn compile_signals(project: &Project) -> Signals {
                     })
                     .collect()
             }),
-            SignalSource::Drawn(_) => &[],
+            SignalSource::Drawn(_) | SignalSource::Audio(_) => &[],
         };
         signals.insert(*id, CompiledSignal::compile(signal, notes.iter().copied()));
     }
+    for (_, follow) in audio_follows(project) {
+        signals.insert(follow.signal, CompiledSignal::Audio { slot: follow.slot });
+    }
     signals
+}
+
+/// Every automation of a compiled node.
+fn automations_mut(node: &mut NodeRender) -> impl Iterator<Item = &mut Automation> {
+    let instruments = node.instruments.iter_mut().flat_map(|i| {
+        i.params
+            .iter_mut()
+            .chain(i.plugin_params.iter_mut().map(|(_, a)| a))
+    });
+    let effects = node.effects.iter_mut().flat_map(|e| {
+        e.params
+            .iter_mut()
+            .chain(e.plugin_params.iter_mut().map(|(_, a)| a))
+    });
+    instruments.chain(effects).chain(node.channel.iter_mut())
+}
+
+/// The audio signal slots a node's layers listen to.
+fn listened_slots(node: &mut NodeRender) -> Vec<usize> {
+    let mut slots: Vec<usize> = automations_mut(node)
+        .flat_map(|a| a.layers.iter())
+        .filter_map(|l| match l.signal {
+            Some(CompiledSignal::Audio { slot }) => Some(slot),
+            _ => None,
+        })
+        .collect();
+    slots.sort_unstable();
+    slots.dedup();
+    slots
+}
+
+/// Orders the nodes for the audio side: each renders after its children
+/// and after the source of every audio signal it listens to, so the
+/// signal's values for a chunk are ready when it reads them. A node may
+/// listen to its own audio signal (it is followed before its effects). A
+/// listen that would loop back (a node listening to a node above it, which
+/// carries its own sound, or two nodes listening to each other) can't be
+/// followed: that layer hears nothing.
+fn plan_follows(nodes: &mut [NodeRender]) {
+    let count = nodes.len();
+    let mut source_of = [usize::MAX; MAX_AUDIO_SIGNALS];
+    for (index, node) in nodes.iter().enumerate() {
+        for follow in &node.follows {
+            source_of[follow.slot] = index;
+        }
+    }
+    // Who waits for whom: a parent for its children, then each listen.
+    let mut waits: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, node) in nodes.iter().enumerate() {
+        if let Some(parent) = node.parent {
+            waits[parent].push(index);
+        }
+    }
+    // Whether `to` already waits, however indirectly, for `from`.
+    let waits_for = |waits: &[Vec<usize>], to: usize, from: usize| {
+        let mut seen = vec![false; count];
+        let mut stack = vec![to];
+        while let Some(at) = stack.pop() {
+            if at == from {
+                return true;
+            }
+            if !std::mem::replace(&mut seen[at], true) {
+                stack.extend(&waits[at]);
+            }
+        }
+        false
+    };
+    for listener in 0..count {
+        for slot in listened_slots(&mut nodes[listener]) {
+            let source = source_of[slot];
+            if source == listener {
+                continue;
+            }
+            if waits_for(&waits, source, listener) {
+                for automation in automations_mut(&mut nodes[listener]) {
+                    for layer in &mut automation.layers {
+                        if layer.signal == Some(CompiledSignal::Audio { slot }) {
+                            layer.signal = Some(CompiledSignal::Silent);
+                        }
+                    }
+                }
+            } else {
+                waits[listener].push(source);
+            }
+        }
+    }
+    // A node renders one above the tallest node it waits for. Waits can
+    // point either way in the list, so settle: a chain is at most `count`
+    // long.
+    for _ in 0..count {
+        let mut changed = false;
+        for index in 0..count {
+            let height = waits[index]
+                .iter()
+                .map(|&w| nodes[w].height + 1)
+                .max()
+                .unwrap_or(0);
+            if height != nodes[index].height {
+                nodes[index].height = height;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 /// Every note on a node's timeline, sorted by start.
@@ -176,6 +338,7 @@ struct Context<'a> {
     sample_rate: u32,
     comp: &'a BTreeMap<NodeId, Compensation>,
     facts: &'a dyn Fn(DeviceId) -> PluginFacts,
+    follows: &'a [(NodeId, Follow)],
 }
 
 /// A node's audio clips ready to play, sorted by start. Clips whose audio
@@ -281,6 +444,13 @@ fn compile_node(
             .collect(),
         channel: compile_params(&node.channel, signals),
         clips: compile_clips(node, cx),
+        follows: cx
+            .follows
+            .iter()
+            .filter(|(node, _)| *node == id)
+            .map(|(_, follow)| follow.clone())
+            .collect(),
+        height: 0,
     });
     for child in children {
         out[child].parent = Some(index);
@@ -309,6 +479,7 @@ impl RenderState {
         facts: &dyn Fn(DeviceId) -> PluginFacts,
     ) -> Self {
         let signals = compile_signals(project);
+        let follows = audio_follows(project);
         let (comp, total) = compensate(project, facts);
         let cx = Context {
             any_soloed: project.nodes().iter().any(|e| e.node.soloed),
@@ -318,9 +489,11 @@ impl RenderState {
             sample_rate,
             comp: &comp,
             facts,
+            follows: &follows,
         };
         let mut nodes = Vec::new();
         compile_node(NodeId::ROOT, &project.root, false, &cx, &mut nodes);
+        plan_follows(&mut nodes);
         Self {
             tempo_bpm: project.tempo_bpm,
             nodes,

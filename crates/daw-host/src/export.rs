@@ -137,11 +137,11 @@ impl Progress {
         self.cancelled.store(true, Ordering::Relaxed);
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
     }
 
-    fn set(&self, done: u64, total: u64) {
+    pub(crate) fn set(&self, done: u64, total: u64) {
         self.total.store(total, Ordering::Relaxed);
         self.done.store(done, Ordering::Relaxed);
     }

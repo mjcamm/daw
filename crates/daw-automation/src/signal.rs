@@ -22,6 +22,33 @@ pub enum CompiledSignal {
     /// A shape played on every note. Always present; rests on the centre
     /// line.
     Notes(NotesEnvelope),
+    /// An audio node's loudness, followed as the song plays: read from
+    /// [`Live`] by its `slot`. Always present; silence is the centre line.
+    Audio { slot: usize },
+    /// An audio signal as a render of the song found it, for drawing:
+    /// `values[i]` (`0.5` is the centre line) holds from `i * step_beats`
+    /// until the next. Always present; the centre line outside it.
+    Recorded {
+        step_beats: f64,
+        values: std::sync::Arc<[f32]>,
+    },
+}
+
+/// Where signals followed as the song plays are read: the audio side's
+/// values at the moment being evaluated.
+pub trait Live {
+    /// The value (`0.5` is the centre line) of the audio signal in `slot`.
+    fn audio(&self, slot: usize) -> f64;
+}
+
+/// Nothing followed: every audio signal rests on the centre line.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoLive;
+
+impl Live for NoLive {
+    fn audio(&self, _slot: usize) -> f64 {
+        0.5
+    }
 }
 
 /// A note as a notes signal sees it: start and end in beats, pitch and
@@ -152,7 +179,8 @@ impl NotesEnvelope {
 
 impl CompiledSignal {
     /// Compiles `signal`. `notes` are every note on the source node, in any
-    /// order; only notes signals use them.
+    /// order; only notes signals use them. An audio signal compiles silent:
+    /// only the engine knows where it is followed ([`Self::Audio`]).
     pub fn compile(signal: &Signal, notes: impl IntoIterator<Item = SignalNote>) -> Self {
         match &signal.source {
             SignalSource::Drawn(blocks) => {
@@ -164,12 +192,19 @@ impl CompiledSignal {
                 Self::Drawn(blocks)
             }
             SignalSource::Notes(source) => Self::Notes(NotesEnvelope::compile(source, notes)),
+            SignalSource::Audio(_) => Self::Silent,
         }
     }
 
-    /// Value (`0.5` is the centre line) and presence at `beat`.
-    /// Allocation-free.
+    /// Value (`0.5` is the centre line) and presence at `beat`, with
+    /// nothing followed. Allocation-free.
     pub fn sample(&self, beat: f64) -> (f64, f64) {
+        self.sample_live(beat, &NoLive)
+    }
+
+    /// Value and presence at `beat`, audio signals read from `live`.
+    /// Allocation-free.
+    pub fn sample_live(&self, beat: f64, live: &dyn Live) -> (f64, f64) {
         const SILENT: (f64, f64) = (0.5, 0.0);
         match self {
             Self::Silent => SILENT,
@@ -182,6 +217,16 @@ impl CompiledSignal {
                     .map_or(SILENT, |b| b.sample(beat, None))
             }
             Self::Notes(envelope) => (envelope.sample(beat), 1.0),
+            Self::Audio { slot } => (live.audio(*slot), 1.0),
+            Self::Recorded { step_beats, values } => {
+                let index = beat / step_beats;
+                let value = if index >= 0.0 {
+                    values.get(index as usize).map_or(0.5, |v| f64::from(*v))
+                } else {
+                    0.5
+                };
+                (value, 1.0)
+            }
         }
     }
 }
@@ -579,5 +624,58 @@ mod tests {
             assert!(close(cutoff.value_at(kick + 0.25), 0.3));
             assert!(close(volume.value_at(kick + 0.75), 0.8), "recovered");
         }
+    }
+
+    /// Followed values by slot, for tests.
+    struct Followed(&'static [f64]);
+
+    impl Live for Followed {
+        fn audio(&self, slot: usize) -> f64 {
+            self.0[slot]
+        }
+    }
+
+    #[test]
+    fn an_audio_signal_compiles_silent_and_is_read_live_through_windows() {
+        let source = daw_protocol::AudioSource::new(daw_protocol::NodeId(3));
+        let signal = Signal {
+            name: "Drums".to_owned(),
+            color: 0,
+            source: SignalSource::Audio(source),
+        };
+        assert_eq!(CompiledSignal::compile(&signal, []), CompiledSignal::Silent);
+
+        let id = SignalId(1);
+        let mut signals = Signals::default();
+        signals.insert(id, CompiledSignal::Audio { slot: 1 });
+        // Inverted on Multiply: loud ducks.
+        let mut window = Block::new(beats(0.0), beats(4.0), Shape::constant(0.0));
+        window.invert = true;
+        let layer = listening(BlendMode::Multiply, id, vec![window]);
+        let a = Automation::compile_layers_with(0.8, &[layer], &signals);
+        let loud = Followed(&[0.5, 1.0]);
+        let quiet = Followed(&[1.0, 0.5]);
+        assert!(close(a.value_at_live(1.0, &loud), 0.0), "full duck");
+        assert!(
+            close(a.value_at_live(1.0, &quiet), 0.8),
+            "silence: no effect"
+        );
+        assert!(close(a.value_at(1.0), 0.8), "nothing followed: no effect");
+        assert!(
+            close(a.value_at_live(5.0, &loud), 0.8),
+            "outside the window"
+        );
+    }
+
+    #[test]
+    fn a_nudge_does_not_move_an_audio_signal() {
+        let id = SignalId(1);
+        let mut signals = Signals::default();
+        signals.insert(id, CompiledSignal::Audio { slot: 0 });
+        let mut window = Block::new(beats(0.0), beats(4.0), Shape::constant(0.0));
+        window.nudge = beats(8.0);
+        let layer = listening(BlendMode::Add, id, vec![window]);
+        let a = Automation::compile_layers_with(0.2, &[layer], &signals);
+        assert!(close(a.value_at_live(1.0, &Followed(&[0.75])), 0.2 + 0.5));
     }
 }

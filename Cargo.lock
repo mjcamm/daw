@@ -1462,6 +1462,7 @@ name = "daw-host"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "daw-dsp",
  "daw-engine",
  "daw-plugins",
  "daw-rt",

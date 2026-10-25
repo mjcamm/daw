@@ -369,6 +369,7 @@ impl ProjectView {
                     SignalSource::Drawn(_) => {
                         empty(theme, "Select a block of this signal to see its settings.")
                     }
+                    SignalSource::Audio(_) => empty(theme, "Audio signal settings come next."),
                 },
                 None if self.page == Page::Arrange => {
                     empty(theme, "Select a node to see its strip.")

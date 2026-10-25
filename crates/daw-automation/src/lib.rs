@@ -14,6 +14,6 @@ mod validate;
 
 pub use curve::curve_value;
 pub use shape::shape_value;
-pub use signal::{CompiledSignal, GLIDE_BEATS, SignalNote, Signals};
+pub use signal::{CompiledSignal, GLIDE_BEATS, Live, NoLive, SignalNote, Signals};
 pub use stack::{Automation, CompiledBlock, CompiledLayer, blend};
-pub use validate::{validate_block, validate_curve, validate_notes_source};
+pub use validate::{validate_audio_source, validate_block, validate_curve, validate_notes_source};

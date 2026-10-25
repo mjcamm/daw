@@ -1,7 +1,7 @@
 //! Compiled layer stacks and their evaluation.
 
 use crate::shape::shape_value;
-use crate::signal::{CompiledSignal, Signals};
+use crate::signal::{CompiledSignal, Live, NoLive, Signals};
 use daw_protocol::{BlendMode, Block, Layer, LayerId, ParamState, ShapePoint};
 
 /// Combines the value from the layers below (`v`) with a block's shape value
@@ -54,9 +54,20 @@ impl CompiledBlock {
     /// Shape value and weight at `beat`, which must be inside the block. On
     /// a layer listening to `signal`, the block is a window onto it.
     pub fn sample(&self, beat: f64, signal: Option<&CompiledSignal>) -> (f64, f64) {
+        self.sample_live(beat, signal, &NoLive)
+    }
+
+    /// As [`Self::sample`], audio signals read from `live`. A followed
+    /// signal is only known as it plays, so the nudge doesn't move it.
+    pub fn sample_live(
+        &self,
+        beat: f64,
+        signal: Option<&CompiledSignal>,
+        live: &dyn Live,
+    ) -> (f64, f64) {
         let (x, presence) = match signal {
             // Signals run in song time: read at the song position.
-            Some(signal) => signal.sample(beat + self.nudge),
+            Some(signal) => signal.sample_live(beat + self.nudge, live),
             None => {
                 let phase = ((beat - self.start + self.nudge) / self.cycle).rem_euclid(1.0);
                 (shape_value(&self.points, phase), 1.0)
@@ -113,7 +124,14 @@ impl CompiledLayer {
 
     /// The layer's shape value and weight at `beat`; `None` in a gap.
     pub fn sample(&self, beat: f64) -> Option<(f64, f64)> {
-        let (x, w) = self.block_at(beat)?.sample(beat, self.signal.as_ref());
+        self.sample_live(beat, &NoLive)
+    }
+
+    /// As [`Self::sample`], audio signals read from `live`.
+    pub fn sample_live(&self, beat: f64, live: &dyn Live) -> Option<(f64, f64)> {
+        let (x, w) = self
+            .block_at(beat)?
+            .sample_live(beat, self.signal.as_ref(), live);
         Some((x, w * self.mix))
     }
 
@@ -168,11 +186,18 @@ impl Automation {
         }
     }
 
-    /// The parameter's normalized value at `beat`. Allocation-free.
+    /// The parameter's normalized value at `beat`, with nothing followed.
+    /// Allocation-free.
     pub fn value_at(&self, beat: f64) -> f64 {
+        self.value_at_live(beat, &NoLive)
+    }
+
+    /// The value at `beat`, audio signals read from `live`.
+    /// Allocation-free.
+    pub fn value_at_live(&self, beat: f64, live: &dyn Live) -> f64 {
         let mut v = self.base;
         for layer in &self.layers {
-            if let Some((x, w)) = layer.sample(beat) {
+            if let Some((x, w)) = layer.sample_live(beat, live) {
                 v = blend(layer.mode, v, x, w);
             }
         }

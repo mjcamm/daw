@@ -20,10 +20,14 @@ use crate::devices::{
 use crate::parallel::{Pool, Shards};
 use crate::project::{MAX_EFFECTS, MAX_INSTRUMENTS, MAX_NODES};
 use crate::samples::SampleData;
-use crate::schedule::{EffectState, InstrumentState, NodeRender, RenderState};
+use crate::schedule::{
+    EffectState, Follow, InstrumentState, MAX_AUDIO_SIGNALS, MAX_NODE_FOLLOWS, NodeRender,
+    RenderState,
+};
 use crate::transport::Transport;
-use daw_automation::Automation;
+use daw_automation::{Automation, Live, NoLive};
 use daw_dsp::filter_effect::FilterEffect;
+use daw_dsp::follower::Follower;
 use daw_dsp::pan::{balance, equal_power};
 use daw_dsp::sampler::Sampler;
 use daw_dsp::smoothing::Smoothed;
@@ -31,7 +35,7 @@ use daw_dsp::synth::{MAX_VOICES, Synth};
 use daw_plugins::block::{
     Context as PluginContext, DawBlock, MAX_PARAM_CHANGES, NoteEvent, Outcome, ParamChange,
 };
-use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId};
+use daw_protocol::{DeviceId, EffectKind, InstrumentKind, NodeId, SignalId};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -345,7 +349,10 @@ pub struct AudioProcessor {
     /// range of `child_list`.
     child_list: Vec<usize>,
     child_ranges: Vec<(usize, usize)>,
-    heights: Vec<usize>,
+    /// Audio signals' values for the chunk being rendered.
+    live: LiveValues,
+    /// How many control points the last chunk had.
+    last_points: usize,
     /// Worker threads that render nodes alongside this one.
     pool: Pool,
     /// Clip players not lent to a node. Room for all of them, so returning
@@ -413,7 +420,8 @@ impl AudioProcessor {
             level_ends: Vec::with_capacity(MAX_NODES),
             child_list: Vec::with_capacity(MAX_NODES),
             child_ranges: Vec::with_capacity(MAX_NODES),
-            heights: Vec::with_capacity(MAX_NODES),
+            live: LiveValues::new(),
+            last_points: 0,
             pool: Pool::new(threads.saturating_sub(1), move || {
                 // Workers run at audio priority, like the device's thread.
                 if !realtime_workers {
@@ -517,6 +525,26 @@ impl AudioProcessor {
     /// to a file skips this many at its start.
     pub fn latency(&self) -> u32 {
         self.state.latency
+    }
+
+    /// Each followed node's sound (before its effects) over the last chunk
+    /// rendered: its peak over each control period, up to each of the
+    /// chunk's control points. For drawing audio signals' lines from a
+    /// render of the song; a chunk is at most [`CHUNK_FRAMES`] long, so
+    /// process blocks of that size or less.
+    pub fn followed_peaks(&self) -> Vec<(NodeId, Vec<f32>)> {
+        self.state
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let slot = node.follows.first()?.slot;
+                let peaks = self.live.peaks[slot][..self.last_points.min(MAX_CONTROL_POINTS)]
+                    .iter()
+                    .map(|p| f32::from_bits(p.load(Ordering::Relaxed)))
+                    .collect();
+                Some((node.id, peaks))
+            })
+            .collect()
     }
 
     /// Adds the test tone, while it plays, over the output.
@@ -715,6 +743,7 @@ impl AudioProcessor {
             let player = self.players.get_mut(index);
             player.sync_effects(&node.effects, self.sample_rate, &mut self.retired);
             player.sync_instruments(&node.instruments, &mut self.retired);
+            player.sync_follows(&node.follows);
             // Audio nodes with clips borrow a clip player; without clips
             // they give it back.
             if node.clips.is_empty() {
@@ -728,7 +757,7 @@ impl AudioProcessor {
             if player.fresh {
                 // Start at the node's gains rather than ramping up from
                 // silence.
-                player.update_params(node, beat);
+                player.update_params(node, beat, &NoLive);
                 player.settle_gains();
                 player.fresh = false;
             }
@@ -736,22 +765,14 @@ impl AudioProcessor {
         self.plan_levels();
     }
 
-    /// Groups the nodes into levels that can render at the same time (a
-    /// node's height: 0 for a leaf, one more than its tallest child), and
+    /// Groups the nodes into levels that can render at the same time (by
+    /// the height the control side gave each: one more than the tallest
+    /// node it waits for, its children and the sources it listens to), and
     /// lists each node's children in render order. Allocation-free: every
     /// list has room for [`MAX_NODES`].
     fn plan_levels(&mut self) {
         let nodes = &self.state.nodes;
         let count = nodes.len();
-        self.heights.clear();
-        self.heights.resize(count, 0);
-        // Children come before their parent, so a parent's height is final
-        // by the time it is reached.
-        for (index, node) in nodes.iter().enumerate() {
-            if let Some(parent) = node.parent {
-                self.heights[parent] = self.heights[parent].max(self.heights[index] + 1);
-            }
-        }
         self.child_list.clear();
         self.child_ranges.clear();
         for parent in 0..count {
@@ -765,10 +786,10 @@ impl AudioProcessor {
         }
         self.order.clear();
         self.level_ends.clear();
-        let tallest = self.heights.iter().copied().max().unwrap_or(0);
+        let tallest = nodes.iter().map(|n| n.height).max().unwrap_or(0);
         for height in 0..=tallest {
-            for (index, &h) in self.heights.iter().enumerate() {
-                if h == height {
+            for (index, node) in nodes.iter().enumerate() {
+                if node.height == height {
                     self.order.push(index);
                 }
             }
@@ -798,6 +819,7 @@ impl AudioProcessor {
         let players = &self.players;
         let nodes = &self.state.nodes;
         let slots = &self.slots;
+        let live = &self.live;
         let (child_list, child_ranges) = (&self.child_list, &self.child_ranges);
         let mut begin = 0;
         for &end in &self.level_ends {
@@ -811,18 +833,19 @@ impl AudioProcessor {
                 // changes.
                 let player = unsafe { players.task_mut(slots[slot]) };
                 player.clear_bus(frames);
-                player.render_chunk(&nodes[slot], &start, start_frames, frames, plugin);
+                player.render_chunk(&nodes[slot], &start, start_frames, frames, plugin, live);
                 let (from, len) = child_ranges[slot];
                 for &child in &child_list[from..from + len] {
                     let child = unsafe { players.task_ref(slots[child]) };
                     player.add_bus(child, frames);
                 }
-                player.finish_chunk(&nodes[slot], frames);
+                player.finish_chunk(&nodes[slot], frames, live);
             };
             self.pool.run(level.len(), &task);
             begin = end;
         }
         self.advance_transport(frames as u64);
+        self.last_points = control_points(start_frames, frames);
         self.frames_processed += frames as u64;
         for (slot, &index) in self.slots.iter().enumerate() {
             let player = self.players.get_mut(index);
@@ -1117,11 +1140,80 @@ impl InstrumentInstance {
 /// plus the chunk's start.
 const MAX_CONTROL_POINTS: usize = CHUNK_FRAMES / CONTROL_FRAMES as usize + 1;
 
+/// How many control points a chunk of `frames` from frame `start` holds.
+fn control_points(start: u64, frames: usize) -> usize {
+    let first = ((CONTROL_FRAMES - start % CONTROL_FRAMES) % CONTROL_FRAMES) as usize;
+    if first < frames {
+        (frames - 1 - first) / CONTROL_FRAMES as usize + 1
+    } else {
+        0
+    }
+}
+
 /// Where in a chunk parameters update, and the song position there.
 #[derive(Debug, Clone, Copy, Default)]
 struct ControlPoint {
     offset: usize,
     beat: f64,
+}
+
+/// Every audio signal's value at each of the chunk's control points (the
+/// same points for every node), written by the node it follows and read
+/// by the nodes listening, which render after it; and the followed sound's
+/// peak over each control period up to each point, for drawing the line
+/// (`AudioProcessor::followed_peaks`). Atomics so parallel tasks can share
+/// it without locks; the pool's hand-over between levels orders the writes
+/// before the reads.
+struct LiveValues {
+    values: Box<[[AtomicU64; MAX_CONTROL_POINTS]; MAX_AUDIO_SIGNALS]>,
+    peaks: Box<[[AtomicU32; MAX_CONTROL_POINTS]; MAX_AUDIO_SIGNALS]>,
+}
+
+impl LiveValues {
+    fn new() -> Self {
+        Self {
+            values: Box::new(std::array::from_fn(|_| {
+                std::array::from_fn(|_| AtomicU64::new(0.5f64.to_bits()))
+            })),
+            peaks: Box::new(std::array::from_fn(|_| {
+                std::array::from_fn(|_| AtomicU32::new(0))
+            })),
+        }
+    }
+
+    fn set(&self, slot: usize, point: usize, value: f64, peak: f32) {
+        self.values[slot][point].store(value.to_bits(), Ordering::Relaxed);
+        self.peaks[slot][point].store(peak.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The values at control point `point`, for evaluating layers there.
+    fn at(&self, point: usize) -> LiveAt<'_> {
+        LiveAt {
+            values: self,
+            point,
+        }
+    }
+}
+
+impl std::fmt::Debug for LiveValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LiveValues")
+    }
+}
+
+/// The live values at one control point.
+#[derive(Clone, Copy)]
+struct LiveAt<'a> {
+    values: &'a LiveValues,
+    point: usize,
+}
+
+impl Live for LiveAt<'_> {
+    fn audio(&self, slot: usize) -> f64 {
+        self.values.values.get(slot).map_or(0.5, |points| {
+            f64::from_bits(points[self.point.min(MAX_CONTROL_POINTS - 1)].load(Ordering::Relaxed))
+        })
+    }
 }
 
 impl EffectInstance {
@@ -1162,13 +1254,14 @@ fn plugin_changes(
     params: &[(u32, Automation)],
     controls: &[ControlPoint],
     behind: f64,
+    live: &LiveValues,
     out: &mut [ParamChange],
 ) -> usize {
     let mut count = 0;
     for (id, automation) in params {
         let mut last = None;
-        for point in controls {
-            let value = automation.value_at(point.beat - behind);
+        for (index, point) in controls.iter().enumerate() {
+            let value = automation.value_at_live(point.beat - behind, &live.at(index));
             if last == Some(value) {
                 continue;
             }
@@ -1246,6 +1339,11 @@ struct NodePlayer {
     bypassed: [bool; MAX_EFFECTS],
     /// The chunk being rendered, for its second half (`finish_chunk`).
     chunk: ChunkRun,
+    /// Following its sound for its audio signals, in the order of the
+    /// node's follows, each with the signal it follows for.
+    followers: [Option<(SignalId, Follower)>; MAX_NODE_FOLLOWS],
+    /// The followed sound's peak since the last control point.
+    period_peak: f32,
 }
 
 /// What the second half of a node's chunk needs from the first.
@@ -1284,6 +1382,8 @@ impl NodePlayer {
             delays: None,
             bypassed: [false; MAX_EFFECTS],
             chunk: ChunkRun::default(),
+            followers: [None; MAX_NODE_FOLLOWS],
+            period_peak: 0.0,
         }
     }
 
@@ -1298,6 +1398,8 @@ impl NodePlayer {
         }
         self.cursor = 0;
         self.pending_ends = [None; MAX_PENDING_ENDS];
+        self.followers = [None; MAX_NODE_FOLLOWS];
+        self.period_peak = 0.0;
         meter.node.store(node.0 + 1, Ordering::Relaxed);
         meter.peaks.take();
     }
@@ -1350,6 +1452,7 @@ impl NodePlayer {
         start_frames: u64,
         frames: usize,
         plugin: PluginRun,
+        live: &LiveValues,
     ) {
         let mut transport = start.clone();
         let chunk = frames;
@@ -1370,7 +1473,7 @@ impl NodePlayer {
                 let into_control = processed % CONTROL_FRAMES;
                 if into_control == 0 {
                     let beat = transport.position();
-                    self.update_instrument_params(node, beat);
+                    self.update_instrument_params(node, beat, &live.at(self.control_count));
                     if self.control_count < MAX_CONTROL_POINTS {
                         self.controls[self.control_count] = ControlPoint {
                             offset: done as usize,
@@ -1421,18 +1524,19 @@ impl NodePlayer {
                 node.comp.sources as usize,
             );
         }
-        self.play_plugins(node, chunk, context, plugin.deadline);
+        self.play_plugins(node, chunk, context, plugin.deadline, live);
     }
 
     /// The chunk's second half, once the children's sound is in the bus:
-    /// the effect chain, volume and pan, then the delay that lines the node
-    /// up at its parent.
-    fn finish_chunk(&mut self, node: &NodeRender, frames: usize) {
+    /// its audio signals follow the sound, then the effect chain, volume
+    /// and pan, then the delay that lines the node up at its parent.
+    fn finish_chunk(&mut self, node: &NodeRender, frames: usize, live: &LiveValues) {
         let ChunkRun {
             context, deadline, ..
         } = self.chunk;
-        self.process_effects(node, frames, context, deadline);
-        self.apply_channel(node, frames);
+        self.follow(node, frames, live);
+        self.process_effects(node, frames, context, deadline, live);
+        self.apply_channel(node, frames, live);
         if let Some(delays) = &mut self.delays {
             delays.output.process(
                 &mut self.bus_left[..frames],
@@ -1553,24 +1657,107 @@ impl NodePlayer {
         }
     }
 
-    /// Evaluates every parameter's layers at `beat` and applies the results.
-    fn update_params(&mut self, node: &NodeRender, beat: f64) {
-        self.update_instrument_params(node, beat);
-        let mut plain = [0.0; MAX_DEVICE_PARAMS];
-        for ((_, instance), effect) in self.effects.iter_mut().zip(&node.effects) {
-            evaluate(&effect.params, effect_params(effect.kind), beat, &mut plain);
-            instance.set_params(&plain);
+    /// Matches its followers to the node's follows, keeping where each
+    /// signal's follower was by signal. Allocation-free.
+    fn sync_follows(&mut self, follows: &[Follow]) {
+        let old = self.followers;
+        self.followers = [None; MAX_NODE_FOLLOWS];
+        for (to, follow) in self.followers.iter_mut().zip(follows) {
+            let s = &follow.source;
+            let settings = (
+                s.attack_ms as f32,
+                s.release_ms as f32,
+                s.floor_db as f32,
+                s.ceiling_db as f32,
+            );
+            let mut follower = old
+                .iter()
+                .flatten()
+                .find(|(id, _)| *id == follow.signal)
+                .map_or_else(
+                    || {
+                        Follower::new(
+                            settings.0,
+                            settings.1,
+                            settings.2,
+                            settings.3,
+                            self.sample_rate,
+                        )
+                    },
+                    |(_, f)| *f,
+                );
+            follower.set(
+                settings.0,
+                settings.1,
+                settings.2,
+                settings.3,
+                self.sample_rate,
+            );
+            *to = Some((follow.signal, follower));
         }
-        self.update_channel(node, beat);
     }
 
-    fn update_instrument_params(&mut self, node: &NodeRender, beat: f64) {
+    /// Follows the bus (its sound before its effects) for each of its audio
+    /// signals, writing each signal's value at every control point: the
+    /// loudness of the sound up to that point, so the values never depend
+    /// on where a chunk starts.
+    fn follow(&mut self, node: &NodeRender, frames: usize, live: &LiveValues) {
+        if node.follows.is_empty() {
+            return;
+        }
+        let controls = &self.controls[..self.control_count];
+        let (left, right) = (&self.bus_left[..frames], &self.bus_right[..frames]);
+        let peak_of = |from: usize, to: usize| peak(&left[from..to]).max(peak(&right[from..to]));
+        let period_start = self.period_peak;
+        for (follow, follower) in node.follows.iter().zip(&mut self.followers) {
+            let Some((_, follower)) = follower else {
+                continue;
+            };
+            let (mut from, mut period) = (0, period_start);
+            for (index, point) in controls.iter().enumerate() {
+                follower.process(&left[from..point.offset], &right[from..point.offset]);
+                period = period.max(peak_of(from, point.offset));
+                let value = 0.5 + 0.5 * f64::from(follower.level());
+                live.set(follow.slot, index, value, period);
+                (from, period) = (point.offset, 0.0);
+            }
+            follower.process(&left[from..], &right[from..]);
+        }
+        // The period still open at the chunk's end goes on into the next.
+        let last = controls.last().map_or(0, |p| p.offset);
+        let carried = if controls.is_empty() {
+            period_start
+        } else {
+            0.0
+        };
+        self.period_peak = carried.max(peak_of(last, frames));
+    }
+
+    /// Evaluates every parameter's layers at `beat` and applies the results.
+    fn update_params(&mut self, node: &NodeRender, beat: f64, live: &dyn Live) {
+        self.update_instrument_params(node, beat, live);
+        let mut plain = [0.0; MAX_DEVICE_PARAMS];
+        for ((_, instance), effect) in self.effects.iter_mut().zip(&node.effects) {
+            evaluate(
+                &effect.params,
+                effect_params(effect.kind),
+                beat,
+                live,
+                &mut plain,
+            );
+            instance.set_params(&plain);
+        }
+        self.update_channel(node, beat, live);
+    }
+
+    fn update_instrument_params(&mut self, node: &NodeRender, beat: f64, live: &dyn Live) {
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
         for ((_, instance), instrument) in self.instruments.iter_mut().zip(&node.instruments) {
             evaluate(
                 &instrument.params,
                 instrument_params(instrument.kind),
                 beat,
+                live,
                 &mut plain,
             );
             instance.set_params(&plain);
@@ -1578,9 +1765,9 @@ impl NodePlayer {
     }
 
     /// Volume and pan targets from the channel's layers at `beat`.
-    fn update_channel(&mut self, node: &NodeRender, beat: f64) {
+    fn update_channel(&mut self, node: &NodeRender, beat: f64, live: &dyn Live) {
         let mut plain = [0.0; MAX_DEVICE_PARAMS];
-        evaluate(&node.channel, &CHANNEL_PARAMS, beat, &mut plain);
+        evaluate(&node.channel, &CHANNEL_PARAMS, beat, live, &mut plain);
         let (gain, pan) = channel_settings(&plain);
         let gain = if node.output_on { gain } else { 0.0 };
         // An instrument is a mono source: pan it with equal power. Anything
@@ -1604,6 +1791,7 @@ impl NodePlayer {
         frames: usize,
         context: PluginContext,
         deadline: Option<Instant>,
+        live: &LiveValues,
     ) {
         let controls = &self.controls[..self.control_count];
         let (left, right) = (&mut self.bus_left[..frames], &mut self.bus_right[..frames]);
@@ -1641,6 +1829,7 @@ impl NodePlayer {
                             &state.plugin_params,
                             controls,
                             behind,
+                            live,
                             &mut *self.plugin_changes,
                         );
                         let set = match (enabled, *was_bypassed) {
@@ -1673,7 +1862,7 @@ impl NodePlayer {
                 continue;
             }
             let mut from = 0;
-            for point in controls {
+            for (point_index, point) in controls.iter().enumerate() {
                 if state.enabled {
                     effect.process(
                         &mut left[from..point.offset],
@@ -1684,6 +1873,7 @@ impl NodePlayer {
                     &state.params,
                     effect_params(state.kind),
                     point.beat - behind,
+                    &live.at(point_index),
                     &mut plain,
                 );
                 effect.set_params(&plain);
@@ -1697,7 +1887,7 @@ impl NodePlayer {
 
     /// Volume and pan over the chunk's bus, their targets moving at the
     /// control points.
-    fn apply_channel(&mut self, node: &NodeRender, frames: usize) {
+    fn apply_channel(&mut self, node: &NodeRender, frames: usize, live: &LiveValues) {
         let mut from = 0;
         for index in 0..=self.control_count {
             let point = self.controls[..self.control_count].get(index).copied();
@@ -1708,7 +1898,7 @@ impl NodePlayer {
             }
             if let Some(point) = point {
                 let behind = f64::from(node.comp.channel) * self.chunk.beats_per_frame;
-                self.update_channel(node, point.beat - behind);
+                self.update_channel(node, point.beat - behind, &live.at(index));
             }
             from = to;
         }
@@ -1831,6 +2021,7 @@ impl NodePlayer {
         frames: usize,
         context: PluginContext,
         deadline: Option<Instant>,
+        live: &LiveValues,
     ) {
         let controls = &self.controls[..self.control_count];
         for (index, (((_, instrument), state), notes)) in self
@@ -1847,6 +2038,7 @@ impl NodePlayer {
                 &state.plugin_params,
                 controls,
                 0.0,
+                live,
                 &mut *self.plugin_changes,
             );
             let left = &mut self.scratch_left[..frames];
@@ -1901,9 +2093,15 @@ fn peak(samples: &[f32]) -> f32 {
 }
 
 /// Evaluates each parameter's automation at `beat` into real units.
-fn evaluate(automations: &[Automation], infos: &[ParamInfo], beat: f64, plain: &mut [f64]) {
+fn evaluate(
+    automations: &[Automation],
+    infos: &[ParamInfo],
+    beat: f64,
+    live: &dyn Live,
+    plain: &mut [f64],
+) {
     for ((out, automation), info) in plain.iter_mut().zip(automations).zip(infos) {
-        *out = info.scale.to_plain(automation.value_at(beat));
+        *out = info.scale.to_plain(automation.value_at_live(beat, live));
     }
 }
 
@@ -2051,7 +2249,7 @@ mod tests {
             })
             .collect();
         let mut out = [ParamChange::default(); 8];
-        let count = plugin_changes(&params, &controls, 0.0, &mut out);
+        let count = plugin_changes(&params, &controls, 0.0, &LiveValues::new(), &mut out);
         let sent: Vec<(u32, u32)> = out[..count].iter().map(|c| (c.id, c.offset)).collect();
         // The resting one once; the moving one at its start, then where it
         // moves (beats 0 and 0.5 are both before the block).
@@ -2059,6 +2257,9 @@ mod tests {
         assert_eq!(out[0].value, 0.25);
         assert!(out[3].value > out[2].value);
         // Out of room, the rest is dropped.
-        assert_eq!(plugin_changes(&params, &controls, 0.0, &mut out[..2]), 2);
+        assert_eq!(
+            plugin_changes(&params, &controls, 0.0, &LiveValues::new(), &mut out[..2]),
+            2
+        );
     }
 }

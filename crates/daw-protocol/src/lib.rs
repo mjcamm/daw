@@ -13,10 +13,10 @@ mod time;
 
 pub use audio_clip::{AudioClip, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB};
 pub use automation::{
-    BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect, EffectKind,
-    HitMode, Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource, ParamId,
-    ParamState, PluginData, PluginParam, PluginParamInfo, PluginSpec, SampleId, Scale, Segment,
-    Shape, ShapePoint, Signal, SignalId, SignalSource, TestPlugin,
+    AudioSource, BlendMode, Block, BlockId, DEFAULT_TRIGGER_NOTE, DeviceId, DeviceRef, Effect,
+    EffectKind, HitMode, Instrument, InstrumentKind, Layer, LayerId, NodeId, NoteSet, NotesSource,
+    ParamId, ParamState, PluginData, PluginParam, PluginParamInfo, PluginSpec, SampleId, Scale,
+    Segment, Shape, ShapePoint, Signal, SignalId, SignalSource, TestPlugin,
 };
 pub use clip_loop::{ClipLoop, Piece, SEAM_FADE};
 pub use curve::{Curve, CurvePoint, Handle, PointKind};
@@ -302,6 +302,11 @@ pub enum Edit {
         id: SignalId,
         source: NotesSource,
     },
+    /// Change an audio signal's follower.
+    SetAudioSource {
+        id: SignalId,
+        source: AudioSource,
+    },
     /// Add a block to a drawn signal's lane. Removed with `RemoveBlock`.
     AddSignalBlock {
         signal: SignalId,
@@ -467,7 +472,7 @@ pub struct Snapshot {
     /// Every node in tree order: each parent before its children, the Song
     /// first.
     pub nodes: Vec<NodeSnapshot>,
-    /// Every motion signal, in id order.
+    /// Every signal, in id order.
     pub signals: Vec<SignalSnapshot>,
     /// The sample table, in id order.
     pub samples: Vec<SampleSnapshot>,
@@ -782,7 +787,7 @@ pub enum CommandError {
     AlreadyListening {
         layer: LayerId,
     },
-    /// The edit needs a different kind of signal (drawn or notes).
+    /// The edit needs a different kind of signal (drawn, notes or audio).
     WrongSignalKind {
         id: SignalId,
     },
@@ -949,6 +954,12 @@ pub enum InvalidSignal {
     VelocityRange,
     /// A notes filter needs `lowest <= highest <= 127`.
     PitchRange,
+    /// An audio signal's attack and release need `0..=MAX_TIME_MS`.
+    FollowTime,
+    /// An audio signal needs `MIN_DB <= floor < ceiling <= MAX_DB`.
+    FollowRange,
+    /// An audio signal follows an audio node, never a MIDI node or the Song.
+    NotAudioNode,
 }
 
 impl fmt::Display for CommandError {
@@ -1116,6 +1127,9 @@ impl fmt::Display for InvalidSignal {
             Self::Handle { index } => write!(f, "curve point {index} has a bad handle"),
             Self::VelocityRange => f.write_str("velocity clamp is not 0 <= min <= max <= 1"),
             Self::PitchRange => f.write_str("pitch range is empty or above 127"),
+            Self::FollowTime => f.write_str("attack or release is outside its range"),
+            Self::FollowRange => f.write_str("floor and ceiling are out of order or range"),
+            Self::NotAudioNode => f.write_str("only an audio node can publish an audio signal"),
         }
     }
 }

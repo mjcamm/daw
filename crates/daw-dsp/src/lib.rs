@@ -8,6 +8,7 @@ pub mod click;
 pub mod envelope;
 pub mod filter;
 pub mod filter_effect;
+pub mod follower;
 pub mod gain;
 pub mod oscillator;
 pub mod pan;

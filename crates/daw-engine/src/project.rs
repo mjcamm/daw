@@ -8,12 +8,13 @@ use crate::devices::{
     CHANNEL_PARAMS, INSTRUMENT_PARAMS, ParamInfo, effect_params, fixed_device_params,
     instrument_params,
 };
-use daw_automation::{validate_block, validate_notes_source};
+use daw_automation::{validate_audio_source, validate_block, validate_notes_source};
 use daw_protocol::{
-    AudioClip, Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit, Effect, EffectKind,
-    Instrument, InstrumentKind, InvalidClip, Layer, LayerId, MAX_CLIP_BPM, MAX_CLIP_GAIN_DB,
-    MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, MidiClip, Node, NodeId, NodeKind, ParamId, ParamState,
-    PluginParam, SampleId, SampleRef, Signal, SignalId, SignalSource, SignalUse,
+    AudioClip, AudioSource, Block, BlockId, ClipId, CommandError, DeviceId, DeviceRef, Edit,
+    Effect, EffectKind, Instrument, InstrumentKind, InvalidClip, InvalidSignal, Layer, LayerId,
+    MAX_CLIP_BPM, MAX_CLIP_GAIN_DB, MIN_CLIP_BPM, MIN_CLIP_GAIN_DB, MidiClip, Node, NodeId,
+    NodeKind, ParamId, ParamState, PluginParam, SampleId, SampleRef, Signal, SignalId,
+    SignalSource, SignalUse,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -543,6 +544,21 @@ impl Project {
         Ok(&mut self.param_mut(param)?.layers[position].1)
     }
 
+    /// An audio signal's follower, and that it never follows a MIDI node or
+    /// the Song. A node that isn't there is allowed (the signal is silent
+    /// until it is): a file adds its signals before its nodes, and undo can
+    /// bring a signal back before its node.
+    fn check_audio_source(&self, source: &AudioSource) -> Result<(), InvalidSignal> {
+        validate_audio_source(source)?;
+        let midi = self
+            .node(source.node)
+            .is_some_and(|n| n.kind == NodeKind::Midi);
+        if source.node == NodeId::ROOT || midi {
+            return Err(InvalidSignal::NotAudioNode);
+        }
+        Ok(())
+    }
+
     /// Every layer that listens to a signal: where it is and which signal,
     /// in tree order, then device order.
     pub fn listeners(&self) -> Vec<(SignalUse, SignalId)> {
@@ -625,7 +641,7 @@ fn find_signal_block(
                 .iter()
                 .position(|(b, _)| *b == id)
                 .map(|position| (*signal_id, position)),
-            SignalSource::Notes(_) => None,
+            SignalSource::Notes(_) | SignalSource::Audio(_) => None,
         })
 }
 
@@ -640,7 +656,9 @@ fn drawn_blocks(
         .source
     {
         SignalSource::Drawn(blocks) => Ok(blocks),
-        SignalSource::Notes(_) => Err(CommandError::WrongSignalKind { id }),
+        SignalSource::Notes(_) | SignalSource::Audio(_) => {
+            Err(CommandError::WrongSignalKind { id })
+        }
     }
 }
 
@@ -1330,6 +1348,9 @@ impl Project {
                     }
                     SignalSource::Notes(source) => validate_notes_source(source)
                         .map_err(|reason| CommandError::InvalidSignal { id, reason })?,
+                    SignalSource::Audio(source) => self
+                        .check_audio_source(source)
+                        .map_err(|reason| CommandError::InvalidSignal { id, reason })?,
                 }
                 for &layer in &listeners {
                     let (param, position) = self
@@ -1402,6 +1423,22 @@ impl Project {
                     .map_err(|reason| CommandError::InvalidSignal { id, reason })?;
                 let previous = std::mem::replace(current, source);
                 Ok(Edit::SetNotesSource {
+                    id,
+                    source: previous,
+                })
+            }
+            Edit::SetAudioSource { id, source } => {
+                self.check_audio_source(&source)
+                    .map_err(|reason| CommandError::InvalidSignal { id, reason })?;
+                let signal = self
+                    .signals
+                    .get_mut(&id)
+                    .ok_or(CommandError::UnknownSignal { id })?;
+                let SignalSource::Audio(current) = &mut signal.source else {
+                    return Err(CommandError::WrongSignalKind { id });
+                };
+                let previous = std::mem::replace(current, source);
+                Ok(Edit::SetAudioSource {
                     id,
                     source: previous,
                 })

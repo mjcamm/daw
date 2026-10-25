@@ -38,7 +38,9 @@ pub const FORMAT: &str = "daw-project";
 /// `plugin`, `plugin_params`, `state` and `window` as for effects).
 /// Version 20 made notes signals play a drawn shape on every note (`mode`,
 /// `window`, `shape`) in place of the ADSR envelope.
-pub const VERSION: u32 = 20;
+/// Version 21 adds audio signals (`SignalSource::Audio`); nothing to
+/// convert.
+pub const VERSION: u32 = 21;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {

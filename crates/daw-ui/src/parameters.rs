@@ -187,7 +187,7 @@ fn all_lanes(snapshot: &Snapshot) -> impl Iterator<Item = (Lane, &[(BlockId, Blo
     let layers = all_layers(snapshot).map(|(id, l)| (Lane::Layer(*id), l.blocks.as_slice()));
     let signals = snapshot.signals.iter().filter_map(|s| match &s.source {
         SignalSource::Drawn(blocks) => Some((Lane::Signal(s.id), blocks.as_slice())),
-        SignalSource::Notes(_) => None,
+        SignalSource::Notes(_) | SignalSource::Audio(_) => None,
     });
     layers.chain(signals)
 }

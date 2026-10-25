@@ -453,6 +453,47 @@ pub enum SignalSource {
     Drawn(Vec<(BlockId, Block)>),
     /// A hit from every matching note.
     Notes(NotesSource),
+    /// An audio node's loudness.
+    Audio(AudioSource),
+}
+
+/// A signal that follows an audio node's loudness, measured before its
+/// effects (nest the node in a parent and follow the parent to hear them).
+/// Silence is the centre line (no effect); at or above `ceiling_db` the
+/// signal is at the top. It is followed live as the song plays, so it is
+/// always in step with what is heard. If the node is removed, the signal is
+/// silent until it comes back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioSource {
+    /// The audio node whose sound is followed.
+    pub node: NodeId,
+    /// How fast the signal rises, in milliseconds.
+    pub attack_ms: f64,
+    /// How fast it falls back, in milliseconds.
+    pub release_ms: f64,
+    /// At or below this the signal rests on the centre line.
+    pub floor_db: f64,
+    /// At or above this the signal is at the top.
+    pub ceiling_db: f64,
+}
+
+impl AudioSource {
+    /// Longest attack or release.
+    pub const MAX_TIME_MS: f64 = 2_000.0;
+    /// Lowest floor and highest ceiling.
+    pub const MIN_DB: f64 = -96.0;
+    pub const MAX_DB: f64 = 12.0;
+
+    /// A quick rise, a gentle fall, and -48 to 0 dB.
+    pub fn new(node: NodeId) -> Self {
+        Self {
+            node,
+            attack_ms: 5.0,
+            release_ms: 150.0,
+            floor_db: -48.0,
+            ceiling_db: 0.0,
+        }
+    }
 }
 
 /// A signal made from MIDI notes. Each note (with the pitch range on, each

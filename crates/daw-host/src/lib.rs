@@ -6,6 +6,7 @@
 //! processor. The returned [`AudioOutput`] plays until dropped.
 //! [`drivers`] and [`device_choices`] list what the settings can choose.
 
+pub mod analysis;
 pub mod demo;
 pub mod export;
 pub mod plugins;
