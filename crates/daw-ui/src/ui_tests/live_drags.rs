@@ -143,7 +143,10 @@ fn strips_show_db_marks_beside_the_fader() {
         h.redraw_all();
         let marks = h.bounds("db-marks-1");
         let fader = h.bounds("fader-1");
-        assert_eq!(marks.size.height, fader.size.height, "{place}: the fader's height");
+        assert_eq!(
+            marks.size.height, fader.size.height,
+            "{place}: the fader's height"
+        );
         assert_eq!(marks.top(), fader.top(), "{place}: level with it");
         assert!(marks.right() <= fader.left(), "{place}: on its left");
     }
