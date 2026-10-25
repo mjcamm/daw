@@ -441,6 +441,7 @@ mod tests {
             length: daw_engine::Ticks::from_beats(1),
             pitch,
             velocity: 100,
+            bend: None,
         };
         for (node, id, pitch) in [(10, 1, 40), (11, 2, 50), (12, 3, 60)] {
             apply(

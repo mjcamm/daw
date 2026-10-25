@@ -54,6 +54,7 @@ fn held_note() -> (Engine, AudioProcessor) {
                     length: beats(8.0),
                     pitch: 60,
                     velocity: 100,
+                    bend: None,
                 }],
                 looping: None,
             },
@@ -381,6 +382,7 @@ fn render_automated_pattern(blocks: &[usize], frames: usize) -> Rendered {
             length: beats(0.4),
             pitch: [48, 55, 60, 63][step as usize % 4],
             velocity: 100,
+            bend: None,
         })
         .collect();
     apply(

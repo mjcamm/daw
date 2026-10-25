@@ -358,6 +358,7 @@ fn with_the_panel_open_a_click_on_a_clip_shows_it() {
                     length: Ticks::from_beats(1),
                     pitch: 64,
                     velocity: 100,
+                    bend: None,
                 }],
                 looping: None,
             },

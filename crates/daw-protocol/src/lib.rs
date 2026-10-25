@@ -8,6 +8,8 @@ mod audio_clip;
 mod automation;
 mod clip_loop;
 mod curve;
+mod curve_read;
+mod note_bend;
 mod peaks;
 mod time;
 
@@ -20,6 +22,8 @@ pub use automation::{
 };
 pub use clip_loop::{ClipLoop, Piece, SEAM_FADE};
 pub use curve::{Curve, CurvePoint, Handle, PointKind};
+pub use curve_read::curve_value;
+pub use note_bend::{BEND_RANGE, bend_semitones, bend_value};
 pub use peaks::{FINEST_SPAN, MinMax, PeakLevel, Peaks};
 pub use time::{TICKS_PER_BEAT, Ticks};
 
@@ -437,15 +441,21 @@ pub struct MidiClip {
     pub looping: Option<ClipLoop>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MidiNote {
     /// Position relative to the clip start.
     pub start: Ticks,
     pub length: Ticks,
-    /// MIDI note number, 0..=127. 60 is middle C, 69 is A4 (440 Hz).
+    /// MIDI note number, 0..=127. 60 is middle C, 69 is A4 (440 Hz). A bent
+    /// note is still this note: its label, its quantize and the ranges that
+    /// pick notes read it.
     pub pitch: u8,
     /// 1..=127.
     pub velocity: u8,
+    /// How it bends away from `pitch` across its length (`note_bend.rs`);
+    /// `None` plays it straight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bend: Option<Curve>,
 }
 
 /// A loop region from `start` (inclusive) to `end` (exclusive).
@@ -903,6 +913,10 @@ pub enum InvalidClip {
     NoteLength {
         index: usize,
     },
+    /// The note at this index has a bend that is not a valid curve.
+    NoteBend {
+        index: usize,
+    },
     /// An audio clip's offset is negative or not a number.
     Offset,
     /// An audio clip's tempo is outside its limits.
@@ -1087,6 +1101,7 @@ impl fmt::Display for InvalidClip {
                 write!(f, "note {index} has a velocity outside 1..=127")
             }
             Self::NoteLength { index } => write!(f, "note {index} has no length"),
+            Self::NoteBend { index } => write!(f, "note {index} has a broken bend"),
             Self::Offset => f.write_str("starts before its file's start"),
             Self::Bpm => write!(f, "tempo is outside {MIN_CLIP_BPM}..={MAX_CLIP_BPM} BPM"),
             Self::Gain => write!(

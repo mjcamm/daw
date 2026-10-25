@@ -80,6 +80,7 @@ fn bass() -> Vec<MidiNote> {
                 length: sixteenths(1),
                 pitch: *root,
                 velocity: 110,
+                bend: None,
             });
         }
     }
@@ -95,6 +96,7 @@ fn arpeggio() -> Vec<MidiNote> {
                 length: Ticks(sixteenths(1).0 * 3 / 4),
                 pitch: chord[ARP_ORDER[step as usize % ARP_ORDER.len()]],
                 velocity: if step % 2 == 0 { 96 } else { 64 },
+                bend: None,
             });
         }
     }

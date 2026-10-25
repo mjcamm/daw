@@ -31,6 +31,7 @@ fn hold(engine: &mut Engine, node: NodeId, id: u64, pitch: u8) {
             length: Ticks::from_beats(2),
             pitch,
             velocity: 100,
+            bend: None,
         }],
         looping: None,
     };

@@ -427,6 +427,7 @@ mod tests {
             length: Ticks::from_beats(length),
             pitch,
             velocity: 100,
+            bend: None,
         };
         // Trimmed from the left by 4 beats: its first notes now sit before
         // its start, kept to reveal again.

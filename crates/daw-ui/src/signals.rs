@@ -874,6 +874,7 @@ mod tests {
                 length: beat(1),
                 pitch: 36,
                 velocity: 100,
+                bend: None,
             }],
             looping: Some(daw_engine::ClipLoop::new(beat(2))),
         };
@@ -896,6 +897,7 @@ mod tests {
             length: daw_engine::Ticks::from_beats_f64(len),
             pitch: 36,
             velocity: 100,
+            bend: None,
         }
     }
 

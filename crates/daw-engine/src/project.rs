@@ -1784,6 +1784,11 @@ fn validate_clip(clip: &MidiClip) -> Result<(), InvalidClip> {
         if note.length.0 <= 0 {
             return Err(InvalidClip::NoteLength { index });
         }
+        if let Some(bend) = &note.bend
+            && daw_automation::validate_curve(bend).is_err()
+        {
+            return Err(InvalidClip::NoteBend { index });
+        }
     }
     validate_loop(clip.looping)
 }
@@ -1827,6 +1832,7 @@ mod tests {
             length: Ticks(length),
             pitch,
             velocity,
+            bend: None,
         }
     }
 
@@ -2677,6 +2683,16 @@ mod tests {
             (
                 clip(vec![note(60, 100, 0)]),
                 InvalidClip::NoteLength { index: 0 },
+            ),
+            (
+                clip(vec![MidiNote {
+                    // The bend's last point must sit at the note's end.
+                    bend: Some(daw_protocol::Curve {
+                        points: vec![daw_protocol::CurvePoint::corner(0.0, 0.5)],
+                    }),
+                    ..note(60, 100, 10)
+                }]),
+                InvalidClip::NoteBend { index: 0 },
             ),
         ];
         for (clip, reason) in cases {

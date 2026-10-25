@@ -75,12 +75,14 @@ fn kick_ducking() -> (Engine, AudioProcessor) {
                     length: beats(0.95),
                     pitch: 60,
                     velocity: 100,
+                    bend: None,
                 },
                 MidiNote {
                     start,
                     length: beats(0.9),
                     pitch: KICK,
                     velocity: 100,
+                    bend: None,
                 },
             ]
         })

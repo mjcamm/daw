@@ -27,6 +27,7 @@ fn song() -> ProjectFile {
         length,
         pitch,
         velocity: 100,
+        bend: None,
     };
     let notes = vec![
         note(Ticks::ZERO, Ticks::from_bars(1), 60),

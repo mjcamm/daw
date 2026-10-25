@@ -25,6 +25,7 @@ fn clip(engine: &mut Engine, node: NodeId, id: u64, pitches: &[u8]) {
             length: Ticks::from_beats(1),
             pitch,
             velocity: 100,
+            bend: None,
         })
         .collect();
     apply(

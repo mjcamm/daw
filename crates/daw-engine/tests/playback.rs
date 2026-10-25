@@ -27,6 +27,7 @@ fn note((start, length, pitch): (f64, f64, u8)) -> MidiNote {
         length: beats(length),
         pitch,
         velocity: 100,
+        bend: None,
     }
 }
 

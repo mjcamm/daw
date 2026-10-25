@@ -168,6 +168,7 @@ fn song(effect: Option<PluginSpec>) -> (Engine, AudioProcessor) {
             length: Ticks::from_bars(2),
             pitch,
             velocity: 100,
+            bend: None,
         })
         .to_vec();
     engine

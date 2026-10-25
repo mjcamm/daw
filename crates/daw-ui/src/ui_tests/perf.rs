@@ -102,6 +102,7 @@ fn heavy_song(h: &mut Harness) -> NodeId {
                             length: Ticks(Ticks::from_beats(4).0 / NOTES_PER_BAR / 2),
                             pitch: 48 + ((i * 7 + n as i64) % 24) as u8,
                             velocity: 100,
+                            bend: None,
                         })
                         .collect();
                     session.apply_or_panic(Command::Edit(Edit::AddClip {

@@ -106,6 +106,7 @@ fn song(bundle: &std::path::Path) -> (Engine, AudioProcessor) {
                     length: Ticks::from_beats(1),
                     pitch: 69,
                     velocity: 127,
+                    bend: None,
                 }],
                 looping: None,
             },

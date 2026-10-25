@@ -157,6 +157,7 @@ mod tests {
                     length: Ticks::from_beats(1),
                     pitch,
                     velocity: 100,
+                    bend: None,
                 })
                 .collect(),
             looping: None,

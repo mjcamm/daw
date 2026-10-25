@@ -6,13 +6,12 @@
 //!
 //! Positions here are in beats. All values are normalized (`0..=1`).
 
-mod curve;
 mod shape;
 mod signal;
 mod stack;
 mod validate;
 
-pub use curve::curve_value;
+pub use daw_protocol::curve_value;
 pub use shape::shape_value;
 pub use signal::{CompiledSignal, GLIDE_BEATS, Live, NoLive, SignalNote, Signals};
 pub use stack::{Automation, CompiledBlock, CompiledLayer, blend};

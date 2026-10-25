@@ -37,6 +37,7 @@ fn busy_engine() -> (Engine, AudioProcessor) {
                         length: Ticks(400),
                         pitch: 48 + (i * 5 % 24) as u8,
                         velocity: 100,
+                        bend: None,
                     })
                     .collect(),
                 looping: None,

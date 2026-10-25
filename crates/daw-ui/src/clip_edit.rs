@@ -249,7 +249,7 @@ pub fn trimmed(clip: &MidiClip, from: Ticks, to: Ticks) -> Option<MidiClip> {
         .iter()
         .map(|n| MidiNote {
             start: n.start - shift,
-            ..*n
+            ..n.clone()
         })
         .filter(|n| n.start < length && n.start + n.length > Ticks::ZERO)
         .collect();
@@ -281,7 +281,7 @@ pub fn with_start(clip: &MidiClip, start: Ticks) -> MidiClip {
             .iter()
             .map(|n| MidiNote {
                 start: n.start - shift,
-                ..*n
+                ..n.clone()
             })
             .collect(),
         looping: None,
@@ -601,6 +601,7 @@ mod tests {
             length: beats(length),
             pitch,
             velocity: 100,
+            bend: None,
         }
     }
 

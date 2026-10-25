@@ -68,6 +68,7 @@ fn add_hits(engine: &mut Engine, beats: &[f64]) {
                 length: Ticks::from_beats_f64(0.001),
                 pitch: 36,
                 velocity: 127,
+                bend: None,
             })
             .collect(),
         looping: None,

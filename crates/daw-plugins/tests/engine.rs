@@ -32,6 +32,7 @@ fn engine(plugin: Option<TestPlugin>) -> (Engine, AudioProcessor) {
             length: Ticks::from_bars(4),
             pitch,
             velocity: 100,
+            bend: None,
         })
         .to_vec();
     engine
@@ -260,6 +261,7 @@ fn add_copy(engine: &mut Engine) {
             length: Ticks::from_bars(4),
             pitch,
             velocity: 100,
+            bend: None,
         })
         .to_vec();
     node.clips.insert(

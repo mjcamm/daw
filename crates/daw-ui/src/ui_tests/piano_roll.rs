@@ -25,6 +25,7 @@ fn editor_with_one_note(name: &str) -> (Harness, impl Fn(&mut Harness, f64) -> P
                     length: Ticks::from_beats(2),
                     pitch: 60,
                     velocity: 100,
+                    bend: None,
                 }],
                 ..clip
             },

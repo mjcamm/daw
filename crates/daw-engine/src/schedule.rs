@@ -519,6 +519,7 @@ mod tests {
             length: Ticks(length),
             pitch,
             velocity: 100,
+            bend: None,
         }
     }
 

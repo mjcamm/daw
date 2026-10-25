@@ -453,7 +453,7 @@ impl ProjectView {
         let node = editor.target;
         let chosen: Vec<MidiNote> = selection
             .iter()
-            .filter_map(|&i| notes.get(i).copied())
+            .filter_map(|&i| notes.get(i).cloned())
             .collect();
         self.place_on(node, notes);
         let revision = self.session.snapshot().revision;
@@ -570,7 +570,7 @@ impl ProjectView {
             return false;
         };
         let mut notes = crate::timeline::notes_of(&target.clips);
-        notes.push(note);
+        notes.push(note.clone());
         self.place_on(owner, notes);
         self.preview_note(owner, note.pitch, note.velocity);
         if let Some(editor) = &mut self.note_editor {
@@ -628,8 +628,9 @@ impl ProjectView {
                         length: self.grid_length(),
                         pitch,
                         velocity,
+                        bend: None,
                     };
-                    if self.add_routed_note(note) {
+                    if self.add_routed_note(note.clone()) {
                         return;
                     }
                     let (notes, index) = note_edit::added(&notes, note);
@@ -706,8 +707,9 @@ impl ProjectView {
                         length: self.grid_length(),
                         pitch,
                         velocity,
+                        bend: None,
                     };
-                    if self.add_routed_note(note) {
+                    if self.add_routed_note(note.clone()) {
                         return;
                     }
                     let (with, index) = note_edit::added(&notes, note);
@@ -814,7 +816,7 @@ impl ProjectView {
                 if editor.preview.is_none() && still(*origin) {
                     return true;
                 }
-                let anchor = original[*grabbed];
+                let anchor = &original[*grabbed];
                 // The grabbed note's start lands on the grid; its pitch is
                 // the row under the pointer.
                 let dt = snap.round(anchor.start + beats(position.x - origin.x)) - anchor.start;
@@ -853,7 +855,7 @@ impl ProjectView {
                 if editor.preview.is_none() && still(*origin) {
                     return true;
                 }
-                let anchor = original[*grabbed];
+                let anchor = &original[*grabbed];
                 let notes = if *part == Part::End {
                     let edge = anchor.start + anchor.length;
                     let delta = snap.round(edge + beats(position.x - origin.x)) - edge;
@@ -873,7 +875,7 @@ impl ProjectView {
                 origin,
                 original,
             } => {
-                let note = original[*index];
+                let note = &original[*index];
                 let stop = snap.round(note.start + note.length + beats(position.x - origin.x));
                 let mut notes = original.clone();
                 notes[*index].length = (stop - note.start).max(grid.min(note.length));

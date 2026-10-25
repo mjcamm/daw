@@ -72,6 +72,7 @@ fn render_song(threads: usize, blocks: &[usize]) -> Rendered {
                     length: Ticks::from_beats_f64(0.2),
                     pitch: 40 + (step * 5 + player as i32 * 3) as u8 % 40,
                     velocity: 90,
+                    bend: None,
                 })
                 .collect();
             apply(
@@ -143,6 +144,7 @@ fn reconnecting_keeps_the_song_playing_from_where_it_was() {
                     length: Ticks::from_beats(1),
                     pitch: 60,
                     velocity: 100,
+                    bend: None,
                 }],
                 looping: None,
             },

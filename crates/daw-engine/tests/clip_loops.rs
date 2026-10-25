@@ -39,12 +39,14 @@ fn cycle_notes() -> Vec<MidiNote> {
             length: Ticks(480),
             pitch: 60,
             velocity: 100,
+            bend: None,
         },
         MidiNote {
             start: beats(1),
             length: Ticks(480),
             pitch: 67,
             velocity: 90,
+            bend: None,
         },
     ]
 }

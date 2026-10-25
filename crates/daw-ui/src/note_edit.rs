@@ -134,7 +134,7 @@ pub fn deleted(notes: &[MidiNote], selection: &Selection) -> Vec<MidiNote> {
         .iter()
         .enumerate()
         .filter(|(i, _)| !selection.contains(i))
-        .map(|(_, n)| *n)
+        .map(|(_, n)| n.clone())
         .collect()
 }
 
@@ -160,7 +160,7 @@ fn shifted(notes: &[MidiNote], selection: &Selection, dt: Ticks, dpitch: i32) ->
         .map(|n| MidiNote {
             start: n.start + dt,
             pitch: (i32::from(n.pitch) + dpitch) as u8,
-            ..*n
+            ..n.clone()
         })
         .collect()
 }
@@ -218,17 +218,14 @@ pub fn resized_start(notes: &[MidiNote], selection: &Selection, delta: Ticks) ->
 /// The note at `index` split in two at `at` (relative to the clip), if
 /// `at` falls inside it with room on both sides; the second half's index.
 pub fn split(notes: &[MidiNote], index: usize, at: Ticks) -> Option<(Vec<MidiNote>, usize)> {
-    let note = *notes.get(index)?;
-    if at - note.start < MIN_LENGTH || end(&note) - at < MIN_LENGTH {
+    let note = notes.get(index)?;
+    if at - note.start < MIN_LENGTH || end(note) - at < MIN_LENGTH {
         return None;
     }
+    // Each half keeps its own part of a bend.
     let mut out = notes.to_vec();
-    out[index].length = at - note.start;
-    out.push(MidiNote {
-        start: at,
-        length: end(&note) - at,
-        ..note
-    });
+    out[index] = note.cut(note.start, at);
+    out.push(note.cut(at, end(note)));
     Some((out, notes.len()))
 }
 
@@ -269,7 +266,7 @@ pub fn in_box(notes: &[MidiNote], t0: f64, t1: f64, low: u8, high: u8) -> Select
 pub fn clipboard(notes: &[MidiNote], selection: &Selection) -> Vec<MidiNote> {
     let chosen: Vec<MidiNote> = selection
         .iter()
-        .filter_map(|&i| notes.get(i).copied())
+        .filter_map(|&i| notes.get(i).cloned())
         .collect();
     let earliest = chosen.iter().map(|n| n.start).min().unwrap_or(Ticks::ZERO);
     chosen
@@ -287,7 +284,7 @@ pub fn pasted(notes: &[MidiNote], clipboard: &[MidiNote], at: Ticks) -> (Vec<Mid
     let first = out.len();
     out.extend(clipboard.iter().map(|n| MidiNote {
         start: n.start + at,
-        ..*n
+        ..n.clone()
     }));
     let stop = out.len();
     (out, (first..stop).collect())
@@ -304,10 +301,10 @@ pub fn quantized(notes: &[MidiNote], selection: &Selection, grid: Ticks) -> Vec<
             if selection.is_empty() || selection.contains(&i) {
                 MidiNote {
                     start: Ticks((n.start.0 + g / 2).div_euclid(g) * g),
-                    ..*n
+                    ..n.clone()
                 }
             } else {
-                *n
+                n.clone()
             }
         })
         .collect()
@@ -327,6 +324,7 @@ mod tests {
             length: beats(length),
             pitch,
             velocity: 100,
+            bend: None,
         }
     }
 
@@ -452,7 +450,7 @@ mod tests {
         assert_eq!(pasted, set(&[2, 3]));
         assert_eq!((out[2].start, out[3].start), (beats(4.), beats(5.)));
         let (out, _) = added(&notes, note(3., 1., 67));
-        assert_eq!(deleted(&out, &set(&[0, 2])), [notes[1]]);
+        assert_eq!(deleted(&out, &set(&[0, 2])), [notes[1].clone()]);
     }
 
     #[test]

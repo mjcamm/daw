@@ -22,7 +22,7 @@ pub fn notes_of(clips: &[(ClipId, MidiClip)]) -> Vec<MidiNote> {
                 .filter_map(|n| {
                     first_place(clip, n).map(|at| MidiNote {
                         start: clip.start + at,
-                        ..*n
+                        ..n.clone()
                     })
                 })
                 .collect();
@@ -91,9 +91,12 @@ pub fn place_notes(
                     Some(looping) => looping.cycle_time(note.start - clip.start),
                     None => note.start - clip.start,
                 };
-                held[index].push(MidiNote { start, ..*note });
+                held[index].push(MidiNote {
+                    start,
+                    ..note.clone()
+                });
             }
-            None => loose.push(*note),
+            None => loose.push(note.clone()),
         }
     }
     let mut edits = Vec::new();
@@ -104,7 +107,7 @@ pub fn place_notes(
             .notes
             .iter()
             .filter(|n| first_place(clip, n).is_none())
-            .copied()
+            .cloned()
             .collect();
         kept.extend(notes);
         // Order does not matter: the same notes are no change.
@@ -184,6 +187,7 @@ mod tests {
             length: beats(1),
             pitch,
             velocity: 100,
+            bend: None,
         }
     }
 

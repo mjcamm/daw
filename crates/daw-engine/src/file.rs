@@ -43,7 +43,8 @@ pub const FORMAT: &str = "daw-project";
 /// Version 22 lets a block's depth reach 2 (200%); nothing to convert.
 /// Version 23 adds the Subtract blend mode back, centred (`v - a`); files
 /// before version 3 still convert their old Subtract to Add.
-pub const VERSION: u32 = 23;
+/// Version 24 adds bent notes (`bend` on a note, absent when straight).
+pub const VERSION: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {
@@ -732,6 +733,11 @@ mod tests {
                         length: Ticks(480),
                         pitch: 64,
                         velocity: 90,
+                        // Slides up into the note from a fifth below.
+                        bend: Some(daw_protocol::Curve::line(
+                            daw_protocol::bend_value(-7.0),
+                            daw_protocol::bend_value(0.0),
+                        )),
                     }],
                     looping: None,
                 },

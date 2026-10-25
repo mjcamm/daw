@@ -7,9 +7,8 @@
 //! has a gap, so a listening layer has no effect there, just like a gap in a
 //! layer.
 
-use crate::curve::curve_value;
 use crate::stack::CompiledBlock;
-use daw_protocol::{CurvePoint, HitMode, NotesSource, Signal, SignalId, SignalSource};
+use daw_protocol::{CurvePoint, HitMode, NotesSource, Signal, SignalId, SignalSource, curve_value};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]

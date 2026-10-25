@@ -92,11 +92,7 @@ impl MidiClip {
                 .filter_map(|n| {
                     let start = n.start.max(Ticks::ZERO);
                     let end = (n.start + n.length).min(self.length);
-                    (start < end).then_some(MidiNote {
-                        start,
-                        length: end - start,
-                        ..*n
-                    })
+                    (start < end).then(|| n.cut(start, end))
                 })
                 .collect();
         };
@@ -108,11 +104,9 @@ impl MidiClip {
                 let start = n.start.max(piece.cycle_from);
                 let end = (n.start + n.length).min(cycle_to).min(looping.cycle);
                 if start < end {
-                    played.push(MidiNote {
-                        start: piece.from + (start - piece.cycle_from),
-                        length: end - start,
-                        ..*n
-                    });
+                    let mut note = n.cut(start, end);
+                    note.start = piece.from + (start - piece.cycle_from);
+                    played.push(note);
                 }
             }
         }
@@ -169,6 +163,38 @@ mod tests {
             length: beats(length),
             pitch,
             velocity: 100,
+            bend: None,
+        }
+    }
+
+    #[test]
+    fn a_bent_note_cut_by_the_clip_or_a_seam_plays_its_part_of_the_bend() {
+        // An octave glide over four beats.
+        let glide = MidiNote {
+            bend: Some(crate::Curve::line(
+                crate::bend_value(0.0),
+                crate::bend_value(12.0),
+            )),
+            ..note(2, 4, 60)
+        };
+        let cut = |looping| {
+            MidiClip {
+                start: beats(0),
+                length: beats(4),
+                notes: vec![glide.clone()],
+                looping,
+            }
+            .played_notes()
+        };
+        // The clip ends halfway through it, as does the loop's cycle.
+        for played in [cut(None), cut(Some(ClipLoop::new(beats(4))))] {
+            let first = &played[0];
+            assert_eq!(first.length, beats(2));
+            assert!(
+                (first.bend_at(1.0) - 6.0).abs() < 1e-6,
+                "{}",
+                first.bend_at(1.0)
+            );
         }
     }
 
