@@ -1,4 +1,4 @@
-//! Evaluating parameter layer stacks and the motion signals they listen to.
+//! Evaluating parameter layer stacks and the signals they listen to.
 //!
 //! Pure functions, no engine knowledge: given a parameter's default state and
 //! its layers, what is its value at a song position? The audio thread runs

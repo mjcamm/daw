@@ -19,7 +19,7 @@ use std::fmt;
 /// Identifies the file type, so other JSON files are rejected clearly.
 pub const FORMAT: &str = "daw-project";
 /// Bumped whenever the layout changes; older versions are converted on load.
-/// Version 2 added motion signals; version 3 centred the blend modes;
+/// Version 2 added signals; version 3 centred the blend modes;
 /// version 4 moved listening to signals onto layers and made notes signals
 /// ADSR hits; version 5 made velocity a clamp; version 6 added switches for
 /// the pitch range and the clamp; version 7 made the nodes a tree under the
@@ -53,7 +53,7 @@ pub struct ProjectFile {
     pub loop_enabled: bool,
     /// The Song and everything under it.
     pub root: NodeFile,
-    /// Motion signals. Missing in version 1 files.
+    /// Signals. Missing in version 1 files.
     #[serde(default)]
     pub signals: Vec<SignalFile>,
     /// Audio files the project uses. Missing before version 9.

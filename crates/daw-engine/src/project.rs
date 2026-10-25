@@ -43,7 +43,7 @@ pub struct Project {
     pub tempo_bpm: f64,
     /// The Song: the root of the node tree and the master output.
     pub root: Node,
-    /// Motion signals, by id.
+    /// Signals, by id.
     pub signals: BTreeMap<SignalId, Signal>,
     /// Audio files the project uses, by id.
     pub samples: BTreeMap<SampleId, SampleRef>,

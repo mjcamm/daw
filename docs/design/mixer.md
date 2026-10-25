@@ -1,6 +1,6 @@
 # Mixer
 
-*Status: layout agreed with the user 2026-10-16; **built** (`crates/daw-ui/src/mixer.rs`). Next: an effect's settings in the inspector when its slot is selected; sends and sidechains in Phase 6 (no placeholder until then). Sketches: https://claude.ai/artifact/4xzV4YFut9r4ovpByU7qFT*
+*Status: layout agreed with the user 2026-10-16; **built** (`crates/daw-ui/src/mixer.rs`). Next: an effect's settings in the inspector when its slot is selected; sends and sidechains later, as normal buses (no placeholder until then). Sketches: https://claude.ai/artifact/4xzV4YFut9r4ovpByU7qFT*
 
 ## The idea
 
@@ -15,7 +15,7 @@ A traditional mixer: every node is a strip in one flat row (the tree "un-nested"
 
 - **All aligned, like a desk:** every strip has the same label height, buttons, slots and fader length. Only the faders change length, and all together.
 - **Order:** tree order, **parent first** (the user's call, reversing the first build): the Song (root, the master output) first, then each parent's strip just left of its children, as Arrange shows each parent above its children.
-- **Contents, top to bottom** (from the mixer mockup in `docs/ui-ideas/`): device chain slots, the audio signals it listens to (sends, sidechains) as chips in the signal's colour, pan, fader with meter, mute and solo, colour bar and name. Same on every strip.
+- **Contents, top to bottom** (from the mixer mockup in `docs/ui-ideas/`): device chain slots, pan, fader with meter, mute and solo, colour bar and name. Same on every strip.
 
 ## Nesting map
 
@@ -26,7 +26,7 @@ A traditional mixer: every node is a strip in one flat row (the tree "un-nested"
 
 ## Elsewhere
 
-- **Sends and sidechains** are audio signals (Phase 6): no cables. Hovering a signal chip lights the strip that publishes it.
+- **Sends and sidechains** carry audio, so they are not signals (signals are data only, the user's call 2026-10-25): they will work like a normal bus, in later work. Their design is still to do.
 - **Selecting a strip** selects the node everywhere; the inspector (`inspector.md`) shows its device chain in detail, as in the mockup's right panel.
 - **Strip width** zooms with a slider, like the timelines.
 

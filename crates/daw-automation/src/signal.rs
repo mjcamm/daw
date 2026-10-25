@@ -1,4 +1,4 @@
-//! Compiled motion signals: centred shapes over song time that listening
+//! Compiled signals: centred shapes over song time that listening
 //! layers read.
 //!
 //! A signal gives a value and a presence at every song position. Values use

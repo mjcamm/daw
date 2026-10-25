@@ -1,6 +1,6 @@
 # Audio Engine
 
-How the engine fits together, for picking up work on it. Feature details live in their own docs: `samples.md` (SingleSampler, sample pool), `audio-clips.md` (audio clips and stretching), `audio-settings.md` (devices, safety, multicore), `motion-signals.md` and `parameters-and-layers.md` (automation), `node-tree.md` (the tree).
+How the engine fits together, for picking up work on it. Feature details live in their own docs: `samples.md` (SingleSampler, sample pool), `audio-clips.md` (audio clips and stretching), `audio-settings.md` (devices, safety, multicore), `signals.md` and `parameters-and-layers.md` (automation), `node-tree.md` (the tree).
 
 ## Two sides
 

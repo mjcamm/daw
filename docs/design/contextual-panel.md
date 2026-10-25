@@ -19,7 +19,7 @@
 
 | Page | Selection | Shows |
 |---|---|---|
-| Signals | A notes signal | Pitch range and Velocity clamp, each with a switch (`motion-signals.md`); its shape is in the bottom panel (`curve-editor.md`) |
+| Signals | A notes signal | Pitch range and Velocity clamp, each with a switch (`signals.md`); its shape is in the bottom panel (`curve-editor.md`) |
 | Signals | A drawn signal | Nothing yet |
 | Arrange | A node | Its mixer strip, the very same element as on the mixer (`StripPlace::Panel`), as wide and tall as the panel (the user's call: "just render that element") |
 | Parameters | | Nothing yet |

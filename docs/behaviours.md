@@ -53,7 +53,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Toolbar: + (MIDI or Audio node), group into a new node, duplicate, delete | – |
 | Drag a node row onto a row or a map bar to move or nest it | – |
 | Chevrons fold a parent (shared with the mixer); pulling the map scrolls it | – |
-| Signal button: publish notes as a signal; lists the node's signals with go-to | – |
+| Signal button: Publish MIDI Signal on a MIDI node (its notes), Publish Audio Signal on an audio node (greyed until Phase 6); lists the node's signals with go-to | `arrange::the_signal_button_publishes_by_the_nodes_kind` |
 | Click the ruler (below its loop strip) to locate | – |
 | Click a node to select it (enables Parameters, points the editor at it) | – |
 | Track → Import Audio…: each file on a new audio node at the playhead | – |
@@ -87,7 +87,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | BPM typed, Enter applies, the clip keeps showing the same audio | – |
 | Follow tempo switch; Gain and Fade sliders (double-click for default) | – |
 
-## Parameters (`core-loop-ui.md`, `motion-signals.md`)
+## Parameters (`core-loop-ui.md`, `signals.md`)
 
 | Behaviour | Test |
 |---|---|
@@ -109,7 +109,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Resting-value slider sets the default state | – |
 | A listening layer's chip go-to opens the signal | – |
 
-## Signals (`motion-signals.md`, `inspector.md`)
+## Signals (`signals.md`, `inspector.md`)
 
 | Behaviour | Test |
 |---|---|

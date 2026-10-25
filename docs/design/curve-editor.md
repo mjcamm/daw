@@ -1,6 +1,6 @@
 # Curves and the Curve Editor
 
-*Status: agreed with the user and built 2026-10-25. First use: the shape a notes signal plays on every note (`motion-signals.md`). Built to be reused: layer blocks and drawn signals are meant to move onto the same curves and editor later (a separate step, with the user's OK, since it changes listed behaviours on those lanes).*
+*Status: agreed with the user and built 2026-10-25. First use: the shape a notes signal plays on every note (`signals.md`). Built to be reused: layer blocks and drawn signals are meant to move onto the same curves and editor later (a separate step, with the user's OK, since it changes listed behaviours on those lanes).*
 
 An original design. The user's reference for the feel is a "shaper" plugin's MIDI-triggered volume shape; we work only from what it does as seen in use, never its code, files, preset shapes, artwork or names.
 
@@ -43,7 +43,7 @@ A stamp replaces the whole curve with its shape, **once across the whole window*
 
 ## First use: a notes signal's shape
 
-See `motion-signals.md` (From notes). The editor sits in a bottom panel on the **Signals page**, like the piano roll on Arrange, opened by clicking a notes signal's row.
+See `signals.md` (From notes). The editor sits in a bottom panel on the **Signals page**, like the piano roll on Arrange, opened by clicking a notes signal's row.
 
 ```text
 [ Trigger | Loop ]  Window [1/8 1/4 1/2 1 2 4] bars  [snap chip]  [+ Save as stamp]   [ Corner | Smooth | Broken ] [×]

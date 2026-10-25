@@ -36,7 +36,7 @@ New layers default to Add. Earlier versions had Replace, Add, Subtract, Multiply
 
 ## Blocks
 
-- A block has a start, a length and a **shape**, drawn locally. On a layer that listens to a signal (Phase 4, `motion-signals.md`), blocks are windows onto the signal instead.
+- A block has a start, a length and a **shape**, drawn locally. On a layer that listens to a signal (Phase 4, `signals.md`), blocks are windows onto the signal instead.
 - The shape is a list of points across one **cycle**. A block's cycle length can be shorter than the block, in which case the shape repeats; that is how a one-beat wobble fills four bars. By default the cycle is the whole block.
 - Each segment between points is linear, held (a step), or curved.
 - Per-block controls:

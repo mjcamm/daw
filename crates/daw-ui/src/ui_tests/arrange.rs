@@ -596,3 +596,47 @@ fn delete_leaves_an_inherited_block_and_its_parent() {
         "the child's clip stays"
     );
 }
+
+/// docs/behaviours.md: "Signal button: Publish MIDI Signal on a MIDI node,
+/// Publish Audio Signal on an audio node".
+#[test]
+fn the_signal_button_publishes_by_the_nodes_kind() {
+    use daw_engine::{Command, Edit, Node, NodeId, NodeKind, SignalSource};
+    let mut h = Harness::new("publish-by-kind");
+    let audio = NodeId(500);
+    h.view.update(h.cx, |v, _| {
+        v.session.apply_or_panic(Command::Edit(Edit::AddNode {
+            id: audio,
+            parent: NodeId::ROOT,
+            index: 1,
+            node: Node::new("Audio", 2).with_kind(NodeKind::Audio),
+        }));
+    });
+    h.redraw_all();
+    let open = |h: &mut Harness, node: NodeId| {
+        let name: &'static str =
+            Box::leak(format!("arrange-node-signals-{}", node.0).into_boxed_str());
+        let at = h.bounds(name).center();
+        h.click(at, 1);
+        h.redraw_all();
+    };
+
+    // The Synth: its notes become a signal.
+    open(&mut h, FIRST_NODE);
+    let at = h.bounds("arrange-publish-signal").center();
+    h.click(at, 1);
+    let snapshot = h.snapshot();
+    assert_eq!(snapshot.signals.len(), 1, "a MIDI signal");
+    assert!(
+        matches!(&snapshot.signals[0].source, SignalSource::Notes(n) if n.node == FIRST_NODE),
+        "reading the Synth's notes"
+    );
+
+    // The audio node: Publish Audio Signal, not yet built, does nothing.
+    h.view.update(h.cx, |v, _| v.open_menu = None);
+    h.redraw_all();
+    open(&mut h, audio);
+    let at = h.bounds("arrange-publish-signal").center();
+    h.click(at, 1);
+    assert_eq!(h.snapshot().signals.len(), 1, "no signal from audio yet");
+}

@@ -1009,9 +1009,9 @@ impl ProjectView {
         }
     }
 
-    /// The node's signal button: publish as a signal, and the signals it
-    /// publishes, each with a go-to icon. Tinted in the first published
-    /// signal's colour once it publishes any.
+    /// The node's signal button: publish a MIDI or audio signal (by the
+    /// node's kind), and the signals it publishes, each with a go-to icon.
+    /// Tinted in the first published signal's colour once it publishes any.
     fn publish_button(
         &self,
         node: &NodeSnapshot,
@@ -1030,6 +1030,7 @@ impl ProjectView {
             .flex_col()
             .child(
                 small_button(("node-signals", id.0), theme)
+                    .debug_selector(move || format!("arrange-node-signals-{}", id.0))
                     .w(px(20.))
                     .h(px(18.))
                     .when(open, |d| d.bg(theme.control))
@@ -1068,16 +1069,16 @@ impl ProjectView {
                 .child(label)
                 .child(hint)
         };
-        let notes = if node_has_notes(node) {
-            menu::item(theme, "publish-notes", "Publish notes as motion signal", "")
-                .on_click(cx.listener(move |this, _, _, _| this.publish_notes(node_id)))
-        } else {
-            unavailable(
-                "publish-notes",
-                "Publish notes as motion signal",
-                "no notes",
-            )
-        };
+        // A MIDI node publishes its notes; an audio node its sound.
+        let publish = match node.kind {
+            NodeKind::Midi if node_has_notes(node) => {
+                menu::item(theme, "publish-midi", "Publish MIDI Signal", "")
+                    .on_click(cx.listener(move |this, _, _, _| this.publish_notes(node_id)))
+            }
+            NodeKind::Midi => unavailable("publish-midi", "Publish MIDI Signal", "no notes"),
+            NodeKind::Audio => unavailable("publish-audio", "Publish Audio Signal", "coming later"),
+        }
+        .debug_selector(|| "arrange-publish-signal".into());
         let hover = theme.hover;
         let published: Vec<_> = published_signals(snapshot, node_id)
             .map(|signal| {
@@ -1109,17 +1110,7 @@ impl ProjectView {
         menu::float(
             menu::panel(theme)
                 .on_mouse_down_out(cx.listener(|this, _, _, _| this.dismiss_menu()))
-                .child(notes)
-                .child(unavailable(
-                    "publish-sound-motion",
-                    "Publish sound as motion signal",
-                    "coming later",
-                ))
-                .child(unavailable(
-                    "publish-sound-audio",
-                    "Publish sound as audio signal",
-                    "coming later",
-                ))
+                .child(publish)
                 .when(!published.is_empty(), |d| {
                     d.child(menu::separator(theme)).children(published)
                 }),

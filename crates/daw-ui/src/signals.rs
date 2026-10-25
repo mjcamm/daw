@@ -692,7 +692,7 @@ impl ProjectView {
         self.session.apply(Command::Edit(edit));
     }
 
-    /// Publishes a node's notes as a new motion signal: every note, a short
+    /// Publishes a node's notes as a new MIDI signal: every note, a short
     /// snappy hit.
     pub(crate) fn publish_notes(&mut self, node: NodeId) {
         let snapshot = self.session.snapshot();

@@ -1,4 +1,4 @@
-//! Motion signals: a kick pattern publishes a ducking signal that several
+//! Signals: a kick pattern publishes a ducking signal that several
 //! parameters listen to, and every use stays in sync.
 
 #![allow(clippy::unwrap_used, reason = "test helpers fail the test on error")]

@@ -62,8 +62,8 @@ It is an original design, not a clone or clean-room copy of any existing DAW. It
 - Repetition lives on the signal itself (e.g. draw one bar, loop as linked copies).
 - Signal **sources**:
   - **Drawn** by hand.
-  - **Data From MIDI nodes** broadcast data of a MIDI node, e.g. a kick pattern producing a ducking shape. Known in advance, perfectly in sync.
-  - **Data From Audio** receiving an audio signal into a signal and turning it into motion by following its loudness
+  - **MIDI signal** ("Publish MIDI Signal" on a MIDI node): its note triggers, e.g. a kick pattern producing a ducking shape. Known in advance, perfectly in sync.
+  - **Audio signal** ("Publish Audio Signal" on an audio node): its audio turned into data by following its loudness.
 
   - All audio waveforms converting to a signal must be captured as it plays and saved so the UI can display a waveform, as dynamic effects on the node or children nodes may change the resulting waveform.
 ---

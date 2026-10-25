@@ -1,25 +1,22 @@
-# Motion Signals (Phase 4 design)
+# Signals (Phase 4 design)
 
 *Status: revised 2026-10-15 with the user (layer-level listening, centred signals, ADSR note hits, Signals page layout); velocity clamp and the inspector added 2026-10-16. Engine built and tested to this design (`crates/daw-automation/src/signal.rs`, `crates/daw-engine/tests/signals.rs`). UI built: Signals page, listening layers, publishing from Arrange, notes settings in the inspector.*
 
 ## Kinds and sources
 
-A signal is published so layers anywhere can listen to it. There are two kinds, by what a signal carries:
+A signal is published so layers anywhere can listen to it. **Signals are data only, never audio**; "signal" is the one name (they were briefly "motion signals", renamed 2026-10-25, the user's call). Sending audio (sidechains, sends) is not a signal: it will work like a normal bus, in later work. A signal is drawn, or published from a node by the node's kind:
 
 | Kind | Source | When |
 |---|---|---|
-| **Motion** | Drawn on the Signals page | Phase 4 |
-| | A node's **notes**: each note is a hit, shaped by ADSR | Phase 4 |
-| | A node's **sound**: follows its loudness (smoothing, gates, attack etc.) | Phase 6 |
-| **Audio** | A node's **sound** | Phase 6 |
+| **Drawn** | Drawn on the Signals page | Phase 4, built |
+| **MIDI signal** | A MIDI node's **notes**: each note triggers a drawn shape | Phase 4, built |
+| **Audio signal** | An audio node's **sound**, turned into data by following its loudness (smoothing, gates, attack etc.) | Phase 6 |
 
-"MIDI to audio" is not its own case: a MIDI node's sound is its instrument's output, the same as any node's sound.
+**One way to do each thing:** drawn signals are made on the Signals page; node signals are made only from the node on the Arrange page ("Publish MIDI Signal" or "Publish Audio Signal").
 
-**One way to do each thing:** drawn signals are made on the Signals page; node signals are made only from the node on the Arrange page ("Publish as signal").
+## Signals are centred
 
-## Motion signals are centred
-
-A motion signal lane looks and works like a layer lane: a centre line, top +1, bottom -1. At every song position a signal gives:
+A signal lane looks and works like a layer lane: a centre line, top +1, bottom -1. At every song position a signal gives:
 
 - **value** `s` in `-1..=+1`.
 - **presence** `w` in `0..=1`: whether the signal is saying anything here.
@@ -78,7 +75,7 @@ Built in `crates/daw-ui/src/signals.rs`. Same timeline frame as Arrange and Para
 
 ## Elsewhere in the UI
 
-- **Arrange, node row** (built): a signal icon button (Lucide `radio`) left of M and S, tinted in the colour of the node's first published signal. It opens a menu: "Publish notes as motion signal" (greyed "no notes" without notes), "Publish sound as motion signal" and "Publish sound as audio signal" (greyed, "coming later" until Phase 6), then the node's signals, each with a colour dot and go-to icon. A node can publish several signals (kick and hat from one drum node). A new notes signal is "<node> notes", with every note, a short snappy hit and a velocity clamp of 0 to 100 %.
+- **Arrange, node row** (built): a signal icon button (Lucide `radio`) left of M and S, tinted in the colour of the node's first published signal. It opens a menu: on a MIDI node "Publish MIDI Signal" (greyed "no notes" without notes), on an audio node "Publish Audio Signal" (greyed, "coming later" until Phase 6), then the node's signals, each with a colour dot and go-to icon. A node can publish several signals (kick and hat from one drum node). A new notes signal is "<node> notes", with every note, a short snappy hit and a velocity clamp of 0 to 100 %.
 - **Publishing stays on Arrange** (the user's call): the menu stays open and the new signal appears in it with its go-to icon. Go-to opens the Signals page with the signal selected and the inspector open.
 - **Inspector, notes signal** (built, `crates/daw-ui/src/inspector.rs`): header (colour dot, name, "Notes from <node>" with a go-to icon), then two optional grouped panels (the Envelope section went with ADSR, 2026-10-25; the shape is drawn in the Signals page's bottom panel, `curve-editor.md`): **Pitch range** (Lowest, Highest as note names, middle C = C3, dragged sideways) and **Velocity clamp** (Min, Max). Pitch range and Velocity clamp have an on/off switch at the right of their heading (the user's call); off folds the rows away and a muted line says what happens instead. Seeing which pitches a node plays (note ticks on the lane) is left for later; the range picker is enough for now (the user's call). Dragging previews: the graph, the signal's lane and every listening layer redraw live; one edit on release.
 - **Parameters, adding a layer** (built): "+ Add Layer", and the first layer from "+ Add Parameter", open a menu: **Manual drawn** or **Listen to signal ›**, which swaps the menu to the signals (colour dot and name, "‹ Back"; with none, a go-to row to the Signals page). The menu says "A layer keeps its type once added": **the type is fixed** (the user's call), and a listening layer stays on its signal. New layers are "Layer N".
