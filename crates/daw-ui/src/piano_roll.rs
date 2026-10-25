@@ -1724,22 +1724,29 @@ impl ProjectView {
                 Some((rect, body, border))
             })
             .collect();
-        // Each note's name at its start, once rows are tall enough to read.
-        let labels: Vec<(f32, f32, gpui::SharedString)> = if key >= LABEL_KEY {
+        // Each note's name at its start, where it fits comfortably: rows
+        // tall enough to read, and (checked as it is drawn) notes wide
+        // enough for the whole name.
+        let labels: Vec<Label> = if key >= LABEL_KEY {
             shown_notes
                 .iter()
                 .filter_map(|n| {
                     let place = place_of(&rows, zoom, n)?;
                     let top = place.line_at(n, place.x) - place.key / 2.;
-                    Some((place.x as f32, top as f32, note_name(n.pitch).into()))
+                    Some(Label {
+                        x: place.x as f32,
+                        top: top as f32,
+                        width: place.w as f32,
+                        text: note_name(n.pitch).into(),
+                    })
                 })
                 .collect()
         } else {
             Vec::new()
         };
         let label_color = theme.text;
-        // Clear of the Bend tool's front dot.
-        let label_inset = if editor.tool == Tool::Bend { 8. } else { 3. };
+        // Clear of the Bend tool's dots at either end.
+        let label_inset = if editor.tool == Tool::Bend { 8. } else { 4. };
         let notes = canvas(
             |_, _, _| {},
             move |bounds, (), window, cx| {
@@ -1758,8 +1765,8 @@ impl ProjectView {
                 for (note, place, body, border) in &bent_notes {
                     paint_ribbon(note, *place, *body, *border, bounds.origin, visible, window);
                 }
-                let origin = bounds.origin + point(px(label_inset), px(0.));
-                paint_labels(&labels, label_color, origin, visible, window, cx);
+                let look = (label_color, label_inset, key);
+                paint_labels(&labels, look, bounds.origin, visible, window, cx);
             },
         )
         .absolute()
@@ -2319,7 +2326,18 @@ impl ProjectView {
 }
 
 /// Rows at least this tall show each note's name.
-const LABEL_KEY: f32 = 16.;
+const LABEL_KEY: f32 = 17.;
+/// The names' size.
+const LABEL_SIZE: f32 = 11.;
+
+/// A note's name where its note starts: its row's top, and the note's
+/// width (the name shows only if it fits).
+struct Label {
+    x: f32,
+    top: f32,
+    width: f32,
+    text: gpui::SharedString,
+}
 
 /// A bent note's pitch as its dot shows it: "F3 · +5".
 fn bend_label(pitch: u8, semitones: f64) -> String {
@@ -2380,9 +2398,12 @@ fn paint_ribbon(
 }
 
 /// Note names at their starts, those on screen.
+/// Note names, semibold, inside their notes `inset` from each end and
+/// centred in rows `key` tall; a name that doesn't fit its note is left
+/// out.
 fn paint_labels(
-    labels: &[(f32, f32, gpui::SharedString)],
-    color: gpui::Hsla,
+    labels: &[Label],
+    (color, inset, key): (gpui::Hsla, f32, f32),
     origin: Point<Pixels>,
     visible: Bounds<Pixels>,
     window: &mut gpui::Window,
@@ -2393,19 +2414,25 @@ fn paint_labels(
     }
     let mut style = window.text_style();
     style.color = color;
-    let font_size = px(9.);
+    style.font_weight = FontWeight::SEMIBOLD;
+    let font_size = px(LABEL_SIZE);
     style.font_size = font_size.into();
-    let line_height = px(LABEL_KEY - 2.);
-    for (x, y, text) in labels {
-        let at = origin + point(px(*x), px(*y + 1.));
-        let reach = Bounds::new(at, size(px(24.), line_height));
-        if !reach.intersects(&visible) {
+    let line_height = px(LABEL_SIZE + 3.);
+    let down = (key - (LABEL_SIZE + 3.)) / 2.;
+    for label in labels {
+        let at = origin + point(px(label.x + inset), px(label.top + down));
+        let room = label.width - 2. * inset;
+        let reach = Bounds::new(at, size(px(room.max(0.)), line_height));
+        if room <= 0. || !reach.intersects(&visible) {
             continue;
         }
-        let run = style.to_run(text.len());
+        let run = style.to_run(label.text.len());
         let line = window
             .text_system()
-            .shape_line(text.clone(), font_size, &[run], None);
+            .shape_line(label.text.clone(), font_size, &[run], None);
+        if line.width > px(room) {
+            continue;
+        }
         let _ = line.paint(at, line_height, window, cx);
     }
 }

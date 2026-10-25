@@ -85,7 +85,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | With the Bend tool, dragging a note anywhere off its dots (a click on its line too) moves it whole, bend and all | `bends::dragging_a_bent_note_off_its_dots_moves_it_whole` |
 | Corner, Smooth or Broken for the selected bend point; a curved point's handles drag to shape the bend | `bends::a_selected_bend_point_turns_smooth_and_its_handle_curves_the_bend` |
 | Bent notes draw along their bends in every tool, and the other tools (and box selections) find them there | `bends::the_select_tool_finds_a_bent_note_along_its_line` |
-| Each note's name shows at its start once rows are 16 px or taller | – |
+| Each note's name shows at its start (11 px, semibold) where it fits comfortably: rows 17 px or taller and the note wide enough for the whole name | – |
 
 ## Audio panel (`audio-clips.md`)
 
