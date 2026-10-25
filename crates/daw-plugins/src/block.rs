@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 const MAGIC: u32 = u32::from_le_bytes(*b"DAWP");
 /// Bump when the layout changes; both sides check it.
-pub const LAYOUT_VERSION: u32 = 2;
+pub const LAYOUT_VERSION: u32 = 3;
 /// Parameter changes one block can carry.
 pub const MAX_PARAM_CHANGES: usize = 512;
 /// Note events one block can carry.
@@ -74,18 +74,55 @@ pub struct ParamChange {
     pub value: f64,
 }
 
-/// A note starting or ending at a frame within the block, for an
-/// instrument. `note` pairs an end with its start.
+/// A note starting, ending or being tuned at a frame within the block, for
+/// an instrument. `note` pairs an end or a tuning with its start.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct NoteEvent {
     pub offset: u32,
     pub note: i32,
     pub pitch: u16,
-    /// 1 for a start, 0 for an end.
-    pub on: u16,
-    /// `0..=1`.
+    /// [`NoteEvent::START`], [`NoteEvent::END`] or [`NoteEvent::TUNE`].
+    pub kind: u16,
+    /// A start's velocity, `0..=1`.
     pub velocity: f32,
+    /// A tuning's semitones away from the note's pitch
+    /// (`docs/design/note-bends.md`): the host passes it on the best way
+    /// the plugin takes (`control::BendRoute`).
+    pub tuning: f32,
+}
+
+impl NoteEvent {
+    pub const END: u16 = 0;
+    pub const START: u16 = 1;
+    pub const TUNE: u16 = 2;
+
+    pub fn start(offset: u32, note: i32, pitch: u16, velocity: f32) -> Self {
+        Self {
+            offset,
+            note,
+            pitch,
+            kind: Self::START,
+            velocity,
+            tuning: 0.,
+        }
+    }
+
+    pub fn end(offset: u32, note: i32, pitch: u16) -> Self {
+        Self {
+            kind: Self::END,
+            velocity: 0.,
+            ..Self::start(offset, note, pitch, 0.)
+        }
+    }
+
+    pub fn tune(offset: u32, note: i32, pitch: u16, semitones: f32) -> Self {
+        Self {
+            kind: Self::TUNE,
+            tuning: semitones,
+            ..Self::start(offset, note, pitch, 0.)
+        }
+    }
 }
 
 /// Song time and transport for the block.
@@ -717,20 +754,9 @@ mod tests {
     #[test]
     fn note_events_reach_the_host() {
         let notes = [
-            NoteEvent {
-                offset: 3,
-                note: 1,
-                pitch: 60,
-                on: 1,
-                velocity: 0.5,
-            },
-            NoteEvent {
-                offset: 40,
-                note: 1,
-                pitch: 60,
-                on: 0,
-                velocity: 0.0,
-            },
+            NoteEvent::start(3, 1, 60, 0.5),
+            NoteEvent::tune(20, 1, 60, -2.5),
+            NoteEvent::end(40, 1, 60),
         ];
         let seen = Arc::new(AtomicU64::new(0));
         let report = seen.clone();

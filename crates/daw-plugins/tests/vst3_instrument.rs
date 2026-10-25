@@ -8,13 +8,13 @@ mod common;
 
 use common::{SYNTH_CID, install};
 use daw_engine::{
-    AudioProcessor, ClipId, Command, DeviceId, DeviceRef, Edit, Engine, EngineConfig,
+    AudioProcessor, ClipId, Command, Curve, DeviceId, DeviceRef, Edit, Engine, EngineConfig,
     FIRST_INSTRUMENT, FIRST_NODE, Instrument, MidiClip, MidiNote, ParamId, ParamState, PluginParam,
-    PluginState, Ticks,
+    PluginState, Ticks, bend_value,
 };
 use daw_plugins::block::{Context, Layout, NoteEvent, Outcome};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
-use daw_plugins::control::PluginSpec;
+use daw_plugins::control::{BendRoute, PluginSpec};
 use daw_testkit::{Rendered, VARIED_BLOCKS, render};
 use std::time::{Duration, Instant};
 
@@ -43,18 +43,11 @@ fn a_vst3_instrument_plays_notes_from_their_exact_frames() {
         outputs: 2,
     };
     let mut block = host.activate(id, layout, 48_000.).unwrap();
-    let note = |offset, on| NoteEvent {
-        offset,
-        note: 7,
-        pitch: 69,
-        on,
-        velocity: if on == 1 { 1.0 } else { 0.0 },
-    };
     let (mut l, mut r) = (vec![9.; 64], vec![9.; 64]);
     let outcome = block.process_with_notes(
         &[],
         &[],
-        &[note(10, 1), note(40, 0)],
+        &[NoteEvent::start(10, 7, 69, 1.0), NoteEvent::end(40, 7, 69)],
         Context::default(),
         &mut [&mut l, &mut r],
         Some(Instant::now() + Duration::from_secs(2)),
@@ -72,11 +65,65 @@ fn a_vst3_instrument_plays_notes_from_their_exact_frames() {
     host.destroy(id).unwrap();
 }
 
+/// A note in tune and a note an octave below tuned up an octave
+/// (`docs/design/note-bends.md`) sound the same, sample for sample: the
+/// host passes tunings on as the plugin's per-note tuning.
+#[test]
+fn a_vst3_instrument_hears_a_notes_tuning() {
+    let (_, bundle) = install("vst3-synth-tuning");
+    let mut host = HostProcess::spawn(&host_command()).unwrap();
+    let id = next_instance();
+    let spec = PluginSpec::Vst3 {
+        bundle,
+        cid: SYNTH_CID.into(),
+        name: "Test Synth".into(),
+        vendor: "DAW Tests".into(),
+    };
+    host.create(id, spec, None).unwrap();
+    let (route, found) = host.bends(id).unwrap();
+    assert_eq!(route, BendRoute::NoteExpression, "{found}");
+    let layout = Layout {
+        max_frames: 256,
+        inputs: 0,
+        outputs: 2,
+    };
+    let mut block = host.activate(id, layout, 48_000.).unwrap();
+    let mut play = |notes: &[NoteEvent]| {
+        let (mut l, mut r) = (vec![0.; 256], vec![0.; 256]);
+        let outcome = block.process_with_notes(
+            &[],
+            &[],
+            notes,
+            Context::default(),
+            &mut [&mut l, &mut r],
+            Some(Instant::now() + Duration::from_secs(2)),
+        );
+        assert_eq!(outcome, Outcome::Done);
+        l
+    };
+    let octave = play(&[NoteEvent::start(10, 1, 69, 1.0), NoteEvent::end(200, 1, 69)]);
+    let tuned = play(&[
+        NoteEvent::start(10, 2, 57, 1.0),
+        NoteEvent::tune(10, 2, 57, 12.0),
+        NoteEvent::end(200, 2, 57),
+    ]);
+    assert!(octave[10..200].iter().any(|&s| s != 0.0));
+    // VST3 carries tunings on a 0..1 scale, so +12 arrives as 12.00…01.
+    assert!(close(&tuned, &octave), "the tuned note is the octave");
+    drop(block);
+    host.destroy(id).unwrap();
+}
+
 const SYNTH: DeviceId = DeviceId(901);
 
 /// The first node playing one A4 from beat 1 to beat 2 (frames 24 000 to
 /// 48 000 at 120 BPM) on Test Synth instead of the built-in synth.
 fn song(bundle: &std::path::Path) -> (Engine, AudioProcessor) {
+    song_with(bundle, 69, None)
+}
+
+/// As [`song`], the note at `pitch` and bent by `bend`.
+fn song_with(bundle: &std::path::Path, pitch: u8, bend: Option<Curve>) -> (Engine, AudioProcessor) {
     let (mut engine, processor) = Engine::new(EngineConfig::default());
     engine.set_plugin_host(host_command());
     let spec = PluginSpec::Vst3 {
@@ -104,9 +151,9 @@ fn song(bundle: &std::path::Path) -> (Engine, AudioProcessor) {
                 notes: vec![MidiNote {
                     start: Ticks::from_beats(1),
                     length: Ticks::from_beats(1),
-                    pitch: 69,
+                    pitch,
                     velocity: 127,
-                    bend: None,
+                    bend,
                 }],
                 looping: None,
             },
@@ -120,6 +167,43 @@ fn song(bundle: &std::path::Path) -> (Engine, AudioProcessor) {
 
 fn left(out: &Rendered, frame: usize) -> f32 {
     out.samples[frame * 2]
+}
+
+/// Sample for sample within rounding.
+fn close(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
+}
+
+/// docs/design/note-bends.md: a song's bent note reaches a plugin
+/// instrument as the note's tuning, on the control grid, the same for any
+/// block size.
+#[test]
+fn a_songs_bent_note_bends_on_a_vst3_instrument() {
+    let (_, bundle) = install("vst3-synth-bend");
+    let steady = Some(Curve::line(bend_value(12.), bend_value(12.)));
+    let (mut engine, mut processor) = song_with(&bundle, 57, steady);
+    let bent = render(&mut engine, &mut processor, 60_000, &[512]);
+    let (mut engine, mut processor) = song(&bundle);
+    let octave = render(&mut engine, &mut processor, 60_000, &[512]);
+    assert!(
+        close(&bent.samples, &octave.samples),
+        "a steady octave bend is the octave"
+    );
+
+    // A glide rises, and sounds the same for any block size.
+    let glide = || Some(Curve::line(bend_value(-12.), bend_value(0.)));
+    let (mut engine, mut processor) = song_with(&bundle, 69, glide());
+    let one = render(&mut engine, &mut processor, 60_000, &[512]);
+    let (mut engine, mut processor) = song_with(&bundle, 69, glide());
+    let varied = render(&mut engine, &mut processor, 60_000, VARIED_BLOCKS);
+    assert!(varied == one, "the same at any block size");
+    let rises = |from: usize| {
+        (from..from + 4_800)
+            .filter(|&f| left(&one, f) > 0. && left(&one, f + 1) <= 0.)
+            .count()
+    };
+    let (early, late) = (rises(24_000), rises(43_200));
+    assert!(late > early * 3 / 2, "{early} then {late} cycles");
 }
 
 #[test]

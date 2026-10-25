@@ -7,7 +7,8 @@
 //! offer. It has a window (`view.rs`) that tests drive. "Test Synth" is an
 //! instrument: each note plays a cosine at its pitch, `velocity × 0.2 ×
 //! 2 × Gain` loud, from its exact sample until its end (no envelope), so
-//! tests can check timing; it shares the controller.
+//! tests can check timing; it shares the controller, which lists one note
+//! expression, "Tuning", that bends a sounding note as hosts send it.
 //! Adapted from the `vst3` crate's gain example (MIT OR Apache-2.0).
 //!
 //! `DAW_TEST_PLUGIN_SCAN=crash` or `hang` makes loading it crash or hang,
@@ -114,13 +115,15 @@ struct Processor {
     synth: Option<Synth>,
 }
 
-/// A sounding note: its id, frequency, loudness and samples since it began.
+/// A sounding note: its id, frequency, loudness, where its cosine is (in
+/// cycles) and how far it is tuned from its pitch, in semitones.
 #[derive(Clone, Copy)]
 struct Voice {
     note: i32,
     hz: f64,
     amp: f64,
-    age: u64,
+    phase: f64,
+    tune: f64,
 }
 
 struct Synth {
@@ -145,8 +148,22 @@ impl Synth {
                 note: note.noteId,
                 hz: 440.0 * 2f64.powf((f64::from(note.pitch) - 69.0) / 12.0),
                 amp: f64::from(note.velocity) * 0.2,
-                age: 0,
+                phase: 0.0,
+                tune: 0.0,
             });
+        }
+    }
+
+    /// A note expression: "Tuning" tunes its note (VST3's scale, 0.5 in
+    /// tune, ±120 semitones across the range).
+    fn express(voices: &mut [Option<Voice>; 32], expression: &NoteExpressionValueEvent) {
+        if expression.typeId != NoteExpressionTypeIDs_::kTuningTypeID as NoteExpressionTypeID {
+            return;
+        }
+        for voice in voices.iter_mut().flatten() {
+            if voice.note == expression.noteId {
+                voice.tune = 240.0 * (expression.value - 0.5);
+            }
         }
     }
 
@@ -192,15 +209,17 @@ impl Synth {
                     Event_::EventTypes_::kNoteOffEvent => {
                         Self::stop(voices, unsafe { &event.__field0.noteOff });
                     }
+                    Event_::EventTypes_::kNoteExpressionValueEvent => {
+                        Self::express(voices, unsafe { &event.__field0.noteExpressionValue });
+                    }
                     _ => {}
                 }
                 next += 1;
             }
             let mut sum = 0.0;
             for voice in voices.iter_mut().flatten() {
-                let t = voice.age as f64 / rate;
-                sum += voice.amp * (std::f64::consts::TAU * voice.hz * t).cos();
-                voice.age += 1;
+                sum += voice.amp * (std::f64::consts::TAU * voice.phase).cos();
+                voice.phase += voice.hz * (voice.tune / 12.0).exp2() / rate;
             }
             let value = (sum * gain) as f32;
             for ch in 0..channels {
@@ -452,7 +471,67 @@ struct Controller {
 }
 
 impl Class for Controller {
-    type Interfaces = (IEditController, IUnitInfo);
+    type Interfaces = (IEditController, IUnitInfo, INoteExpressionController);
+}
+
+impl INoteExpressionControllerTrait for Controller {
+    unsafe fn getNoteExpressionCount(&self, bus: int32, _channel: int16) -> int32 {
+        i32::from(bus == 0)
+    }
+
+    unsafe fn getNoteExpressionInfo(
+        &self,
+        bus: int32,
+        _channel: int16,
+        index: int32,
+        info: *mut NoteExpressionTypeInfo,
+    ) -> tresult {
+        let Some(info) = (unsafe { info.as_mut() }).filter(|_| bus == 0 && index == 0) else {
+            return kInvalidArgument;
+        };
+        info.typeId = NoteExpressionTypeIDs_::kTuningTypeID as NoteExpressionTypeID;
+        copy_wide("Tuning", &mut info.title);
+        copy_wide("Tune", &mut info.shortTitle);
+        copy_wide("semitones", &mut info.units);
+        info.unitId = kRootUnitId;
+        info.valueDesc = NoteExpressionValueDescription {
+            defaultValue: 0.5,
+            minimum: 0.0,
+            maximum: 1.0,
+            stepCount: 0,
+        };
+        info.associatedParameterId = kNoParamId;
+        info.flags = NoteExpressionTypeInfo_::NoteExpressionTypeFlags_::kIsBipolar as int32;
+        kResultOk
+    }
+
+    unsafe fn getNoteExpressionStringByValue(
+        &self,
+        _bus: int32,
+        _channel: int16,
+        _id: NoteExpressionTypeID,
+        value: NoteExpressionValue,
+        string: *mut String128,
+    ) -> tresult {
+        match unsafe { string.as_mut() } {
+            Some(out) => {
+                copy_wide(&format!("{:.2}", 240.0 * (value - 0.5)), out);
+                kResultOk
+            }
+            None => kInvalidArgument,
+        }
+    }
+
+    unsafe fn getNoteExpressionValueByString(
+        &self,
+        _bus: int32,
+        _channel: int16,
+        _id: NoteExpressionTypeID,
+        _string: *const TChar,
+        _value: *mut NoteExpressionValue,
+    ) -> tresult {
+        kNotImplemented
+    }
 }
 
 impl IUnitInfoTrait for Controller {

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 /// Bump when messages change; the host refuses a different one.
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 /// Largest message accepted, so a garbled length can't allocate gigabytes.
 const MAX_MESSAGE: u32 = 64 << 20;
@@ -67,6 +67,10 @@ pub enum Request {
     CloseEditor {
         instance: u64,
     },
+    /// How the instance hears bent notes ([`Reply::Bends`]).
+    GetBends {
+        instance: u64,
+    },
 }
 
 /// What a call answers with.
@@ -77,11 +81,32 @@ pub enum Reply {
     State(Option<PluginData>),
     Params(Vec<PluginParamInfo>),
     Latency(u32),
+    /// How the instance hears bent notes, and what the host found out.
+    Bends {
+        route: BendRoute,
+        found: String,
+    },
     /// The window's content size, in pixels.
     Editor {
         width: u32,
         height: u32,
     },
+}
+
+/// How an instrument hears bent notes (`docs/design/note-bends.md`): the
+/// engine sends each note's tuning in semitones and the host passes it on
+/// the best way the plugin takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BendRoute {
+    /// Per-note tuning (VST3 note expression): every note bends on its own.
+    NoteExpression,
+    /// MPE: each note on a MIDI channel of its own, bent with that
+    /// channel's pitch bend parameter (one per channel, 16).
+    Mpe { params: Vec<u32> },
+    /// One pitch bend for the whole instrument: the latest note's bend.
+    Channel { param: u32 },
+    /// The plugin takes no bends.
+    None,
 }
 
 /// VST3's `RestartFlags`, as [`HostEvent::Restart`] carries them.

@@ -8,8 +8,8 @@
 
 use crate::block::{DawBlock, Layout, Names};
 use crate::control::{
-    FromHost, HostEvent, PROTOCOL, PluginData, PluginParamInfo, PluginSpec, Reply, Request, ToHost,
-    read_message, write_message,
+    BendRoute, FromHost, HostEvent, PROTOCOL, PluginData, PluginParamInfo, PluginSpec, Reply,
+    Request, ToHost, read_message, write_message,
 };
 use crate::sys::Job;
 use std::fmt;
@@ -280,6 +280,14 @@ impl HostProcess {
         match self.call(Request::GetLatency { instance })? {
             Reply::Latency(frames) => Ok(frames),
             _ => Ok(0),
+        }
+    }
+
+    /// How the instance hears bent notes, and what the host found out.
+    pub fn bends(&mut self, instance: u64) -> Result<(BendRoute, String), HostError> {
+        match self.call(Request::GetBends { instance })? {
+            Reply::Bends { route, found } => Ok((route, found)),
+            _ => Ok((BendRoute::None, String::new())),
         }
     }
 

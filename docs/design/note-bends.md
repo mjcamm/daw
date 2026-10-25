@@ -1,6 +1,6 @@
 # Bent Notes
 
-*Status: agreed with the user 2026-10-25. Steps 1 (model and file), 2 (engine and Synth) and 3 (the piano roll) built; plugins next.*
+*Status: agreed with the user 2026-10-25. Steps 1 (model and file), 2 (engine and Synth) and 3 (the piano roll) built; step 4 built for plugins with per-note tuning (Serum 2, the user's first; MPE and channel bend next).*
 
 An original idea: rather than drawing pitch bend on a lane under the notes, the notes themselves bend. A note in the piano roll is a ribbon that follows its pitch over time, shaped with the same pen-style points and handles as the curve editor (`curve-editor.md`).
 
@@ -42,6 +42,7 @@ Bends must work on most instruments, built in, VST3 and later CLAP. The engine s
   2. **MPE**: each note on its own channel (2–16) with channel pitch bend through the plugin's MIDI mapping, ±48 semitones (the MPE default).
   3. **Channel pitch bend** on one channel: one bend at a time (the latest note's), with a bend range to set on the instrument to match the plugin.
 - **CLAP** (later): `CLAP_NOTE_EXPRESSION_TUNING` takes semitones per note id, the same event one for one.
+- **Built** (step 4): the engine sends a plugin instrument a **tune** note event (semitones) at each control point where a sounding note's tuning changed (`PluginInstrument::tune`); the host process turns it into what the plugin takes (`BendRoute`, decided at creation from the plugin's controller, `vst3_host.rs`): today `kNoteExpressionValueEvent` tuning (`0.5 + semitones / 240`). Serum 2 takes it: its "Tuning" expression, and a C tuned +12 plays exactly twice the cycles (`installed_plugins.rs`, opt-in). Test Synth lists the same expression; tests: `daw-plugins/tests/vst3_instrument.rs` (a tuned note is the octave, a song's bend at any block size). Plugins hear the bend stepped every 32 frames (0.7 ms), not glided between.
 - **Samplers:** the SingleSampler ignores pitch today, so it ignores bends.
 
 ## Steps

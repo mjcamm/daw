@@ -974,8 +974,12 @@ enum InstrumentInstance {
 
 /// Notes sounding on one plugin instrument at once (more are not started).
 const MAX_PLUGIN_NOTES: usize = 64;
-/// Note starts and ends one plugin instrument takes in a chunk.
-const MAX_CHUNK_NOTES: usize = 256;
+/// Note starts, ends and tunings one plugin instrument takes in a chunk
+/// (as many as one block carries).
+const MAX_CHUNK_NOTES: usize = daw_plugins::block::MAX_NOTE_EVENTS;
+/// Room in a chunk tunings leave for note ends, so every sounding note can
+/// always end.
+const ENDS_ROOM: usize = MAX_PLUGIN_NOTES;
 
 /// A plugin instrument: its channel to the host process (once the control
 /// side sends it) and the notes sounding on it, so an end, or ending them
@@ -983,7 +987,16 @@ const MAX_CHUNK_NOTES: usize = 256;
 #[derive(Debug)]
 struct PluginInstrument {
     block: Option<Box<DawBlock>>,
-    sounding: [Option<(u32, u8)>; MAX_PLUGIN_NOTES],
+    sounding: [Option<Sounding>; MAX_PLUGIN_NOTES],
+}
+
+/// A note sounding on a plugin instrument: its id and pitch, and the
+/// tuning last sent for it.
+#[derive(Debug, Clone, Copy)]
+struct Sounding {
+    note: u32,
+    pitch: u8,
+    tuning: f32,
 }
 
 /// A plugin instrument's note starts and ends for the chunk being played,
@@ -1008,6 +1021,11 @@ impl ChunkNotes {
             self.count += 1;
         }
     }
+
+    /// Room for a tuning, leaving [`ENDS_ROOM`] for note ends.
+    fn room_for_tuning(&self) -> bool {
+        self.count + ENDS_ROOM < MAX_CHUNK_NOTES
+    }
 }
 
 impl PluginInstrument {
@@ -1015,43 +1033,54 @@ impl PluginInstrument {
         let Some(slot) = self.sounding.iter_mut().find(|s| s.is_none()) else {
             return;
         };
-        *slot = Some((note, pitch));
-        notes.push(NoteEvent {
-            offset: at as u32,
-            note: note as i32,
-            pitch: u16::from(pitch),
-            on: 1,
-            velocity: f32::from(velocity) / 127.0,
+        *slot = Some(Sounding {
+            note,
+            pitch,
+            tuning: 0.,
         });
+        let velocity = f32::from(velocity) / 127.0;
+        notes.push(NoteEvent::start(
+            at as u32,
+            note as i32,
+            u16::from(pitch),
+            velocity,
+        ));
+    }
+
+    /// Tunes a sounding note `semitones` from its pitch, if that changed
+    /// since it was last sent (a held bend sends nothing more).
+    fn tune(&mut self, note: u32, semitones: f32, at: usize, notes: &mut ChunkNotes) {
+        let found = self.sounding.iter_mut().flatten().find(|s| s.note == note);
+        if let Some(sounding) = found
+            && (sounding.tuning - semitones).abs() > 1e-4
+            && notes.room_for_tuning()
+        {
+            sounding.tuning = semitones;
+            let pitch = u16::from(sounding.pitch);
+            notes.push(NoteEvent::tune(at as u32, note as i32, pitch, semitones));
+        }
     }
 
     fn note_off(&mut self, note: u32, at: usize, notes: &mut ChunkNotes) {
         for slot in &mut self.sounding {
-            if let Some((id, pitch)) = *slot
-                && id == note
+            if let Some(sounding) = *slot
+                && sounding.note == note
             {
                 *slot = None;
-                notes.push(NoteEvent {
-                    offset: at as u32,
-                    note: id as i32,
-                    pitch: u16::from(pitch),
-                    on: 0,
-                    velocity: 0.0,
-                });
+                notes.push(NoteEvent::end(
+                    at as u32,
+                    note as i32,
+                    u16::from(sounding.pitch),
+                ));
             }
         }
     }
 
     fn release_all(&mut self, at: usize, notes: &mut ChunkNotes) {
         for slot in &mut self.sounding {
-            if let Some((id, pitch)) = slot.take() {
-                notes.push(NoteEvent {
-                    offset: at as u32,
-                    note: id as i32,
-                    pitch: u16::from(pitch),
-                    on: 0,
-                    velocity: 0.0,
-                });
+            if let Some(sounding) = slot.take() {
+                let (note, pitch) = (sounding.note as i32, u16::from(sounding.pitch));
+                notes.push(NoteEvent::end(at as u32, note, pitch));
             }
         }
     }
@@ -1106,6 +1135,9 @@ impl InstrumentInstance {
 
     /// Bends a sounding note: `now` semitones from its pitch at once,
     /// gliding to `next` over `frames` (to the next control point).
+    ///
+    /// A plugin hears `now` at the control point; its host passes it on as
+    /// the plugin takes bends (`daw_plugins::control::BendRoute`).
     fn tune(
         &mut self,
         note: u32,
@@ -1115,13 +1147,11 @@ impl InstrumentInstance {
         at: usize,
         notes: &mut ChunkNotes,
     ) {
-        let _ = (at, notes);
         match self {
             Self::Synth(synth) => synth.glide(note, now, next, frames),
             // Plays one sample at its own pitch.
             Self::Sampler(_) => {}
-            // Next: note expression, MPE or channel bend (`note-bends.md`).
-            Self::Plugin(_) => {}
+            Self::Plugin(plugin) => plugin.tune(note, now, at, notes),
         }
     }
 

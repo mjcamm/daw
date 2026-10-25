@@ -14,7 +14,7 @@
 use crate::block::{
     HostBlock, MAX_CHANNELS, MAX_NOTE_EVENTS, MAX_PARAM_CHANGES, NoteEvent, ParamChange,
 };
-use crate::control::HostEvent;
+use crate::control::{BendRoute, HostEvent};
 use crate::vst3::{Module, parse_cid, wide};
 use daw_protocol::{PluginData, PluginParamInfo};
 use std::cell::{Cell, RefCell};
@@ -684,14 +684,30 @@ impl EventList {
         }
     }
 
-    /// Takes a block's notes. Allocation-free.
-    fn fill(&self, notes: &[NoteEvent]) {
+    /// Takes a block's notes; tunings go as the plugin takes bends
+    /// (`bends`). Allocation-free.
+    fn fill(&self, notes: &[NoteEvent], bends: &BendRoute) {
         let mut events = self.events.borrow_mut();
         events.clear();
         for note in notes.iter().take(MAX_NOTE_EVENTS) {
             let mut event: Event = unsafe { std::mem::zeroed() };
             event.sampleOffset = note.offset as int32;
-            if note.on == 1 {
+            if note.kind == NoteEvent::TUNE {
+                match bends {
+                    BendRoute::NoteExpression => {
+                        event.r#type = Event_::EventTypes_::kNoteExpressionValueEvent as uint16;
+                        event.__field0.noteExpressionValue = NoteExpressionValueEvent {
+                            typeId: NoteExpressionTypeIDs_::kTuningTypeID as NoteExpressionTypeID,
+                            noteId: note.note,
+                            value: tuning_value(note.tuning),
+                        };
+                    }
+                    // Still to come: MPE and channel pitch bend.
+                    BendRoute::Mpe { .. } | BendRoute::Channel { .. } | BendRoute::None => {
+                        continue;
+                    }
+                }
+            } else if note.kind == NoteEvent::START {
                 event.r#type = Event_::EventTypes_::kNoteOnEvent as uint16;
                 event.__field0.noteOn = NoteOnEvent {
                     channel: 0,
@@ -714,6 +730,12 @@ impl EventList {
             events.push(event);
         }
     }
+}
+
+/// VST3's normalised tuning for `semitones`: 0.5 in tune, the whole range
+/// ±120 semitones (Serum 2 reads 0.75 as "60").
+fn tuning_value(semitones: f32) -> f64 {
+    (0.5 + f64::from(semitones) / 240.).clamp(0., 1.)
 }
 
 /// The speaker channels in an arrangement.
@@ -740,6 +762,8 @@ pub struct Vst3Instance {
     changes_ptr: ComPtr<IParameterChanges>,
     notes: ComWrapper<EventList>,
     notes_ptr: ComPtr<IEventList>,
+    /// How the plugin hears bent notes.
+    bends: BendRoute,
     inputs: Vec<Bus>,
     outputs: Vec<Bus>,
     in_buses: Vec<AudioBusBuffers>,
@@ -859,6 +883,7 @@ impl Vst3Instance {
             mirror: mirror.clone(),
             _module: module.clone(),
         };
+        let bends = bend_route(controller.as_ref()).0;
         let instance = Self {
             component,
             processor,
@@ -868,6 +893,7 @@ impl Vst3Instance {
             changes_ptr,
             notes,
             notes_ptr,
+            bends,
             inputs: Vec::new(),
             outputs: Vec::new(),
             in_buses: Vec::new(),
@@ -1019,7 +1045,7 @@ impl Vst3Instance {
         for change in block.params() {
             self.mirror.record(change.id, change.value);
         }
-        self.notes.fill(block.notes());
+        self.notes.fill(block.notes(), &self.bends);
 
         // The main buses read and write the shared block; others scratch.
         let (shared_in, shared_out) = block.channel_pointers();
@@ -1225,6 +1251,11 @@ impl Vst3State {
             .collect()
     }
 
+    /// How the plugin can hear bent notes, and what was found out.
+    pub fn bend_route(&self) -> (BendRoute, String) {
+        bend_route(self.controller.as_ref())
+    }
+
     /// Restores saved state: the processor's, then the controller's view of
     /// it, then the controller's own. Before activation.
     pub fn set(&self, state: &PluginData) {
@@ -1264,6 +1295,79 @@ impl Drop for Vst3Instance {
         }
         unsafe { self.component.terminate() };
     }
+}
+
+/// How a plugin can hear bent notes (`docs/design/note-bends.md`), read
+/// from its controller, and a line saying what was found: the note
+/// expressions it lists, and which parameter takes each MIDI channel's
+/// pitch bend.
+fn bend_route(controller: Option<&ComPtr<IEditController>>) -> (BendRoute, String) {
+    let Some(controller) = controller else {
+        return (BendRoute::None, "no controller".into());
+    };
+    let mut found = Vec::new();
+    let mut tuning = false;
+    if let Some(expressions) = controller.cast::<INoteExpressionController>() {
+        let count = unsafe { expressions.getNoteExpressionCount(0, 0) };
+        for i in 0..count {
+            let mut info: NoteExpressionTypeInfo = unsafe { std::mem::zeroed() };
+            if unsafe { expressions.getNoteExpressionInfo(0, 0, i, &mut info) } != kResultOk {
+                continue;
+            }
+            let mut text: String128 = [0; 128];
+            let up = unsafe {
+                expressions.getNoteExpressionStringByValue(0, 0, info.typeId, 0.75, &mut text)
+            };
+            found.push(format!(
+                "expression {} \"{}\" ({}..{}, default {}; 0.75 reads {:?})",
+                info.typeId,
+                wide(&info.title),
+                info.valueDesc.minimum,
+                info.valueDesc.maximum,
+                info.valueDesc.defaultValue,
+                (up == kResultOk).then(|| wide(&text)),
+            ));
+            tuning |= info.typeId == NoteExpressionTypeIDs_::kTuningTypeID;
+        }
+    } else {
+        found.push("no note expressions".into());
+    }
+    let mut bends = [None; 16];
+    if let Some(mapping) = controller.cast::<IMidiMapping>() {
+        for (channel, bend) in bends.iter_mut().enumerate() {
+            let mut id: ParamID = 0;
+            let ok = unsafe {
+                mapping.getMidiControllerAssignment(
+                    0,
+                    channel as int16,
+                    ControllerNumbers_::kPitchBend as CtrlNumber,
+                    &mut id,
+                )
+            } == kResultTrue;
+            *bend = ok.then_some(id);
+        }
+        found.push(format!("pitch bend parameters by channel {bends:?}"));
+    } else {
+        found.push("no MIDI mapping".into());
+    }
+    let route = if tuning {
+        BendRoute::NoteExpression
+    } else if let Some(params) = mpe_params(&bends) {
+        BendRoute::Mpe { params }
+    } else if let Some(Some(param)) = bends.first() {
+        BendRoute::Channel { param: *param }
+    } else {
+        BendRoute::None
+    };
+    (route, found.join("; "))
+}
+
+/// Each MIDI channel's own pitch bend parameter, if every channel has one
+/// and they all differ: notes can then bend one by a channel each (MPE).
+fn mpe_params(bends: &[Option<ParamID>; 16]) -> Option<Vec<ParamID>> {
+    let params: Vec<ParamID> = bends.iter().copied().collect::<Option<_>>()?;
+    let distinct: HashSet<ParamID> = params.iter().copied().collect();
+    (distinct.len() == params.len()).then_some(params)
 }
 
 /// Whether a host may move a parameter: automatable, and neither hidden

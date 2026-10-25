@@ -4,8 +4,8 @@
 
 use crate::block::{HostBlock, HostEnd, Served};
 use crate::control::{
-    FromHost, HostEvent, PROTOCOL, PluginParamInfo, PluginSpec, Reply, Request, TestPlugin, ToHost,
-    read_message, write_message,
+    BendRoute, FromHost, HostEvent, PROTOCOL, PluginParamInfo, PluginSpec, Reply, Request,
+    TestPlugin, ToHost, read_message, write_message,
 };
 #[cfg(windows)]
 use crate::editor::Editor;
@@ -277,6 +277,17 @@ impl Host {
                     (None, Some(TestPlugin::Delay { frames })) => *frames,
                     _ => 0,
                 }))
+            }
+            Request::GetBends { instance } => {
+                let entry = self
+                    .instances
+                    .get(&instance)
+                    .ok_or_else(|| format!("no instance {instance}"))?;
+                let (route, found) = match &entry.state {
+                    Some(state) => state.bend_route(),
+                    None => (BendRoute::None, "a built-in test device".into()),
+                };
+                Ok(Reply::Bends { route, found })
             }
             Request::SetEditorTitle { instance, title } => {
                 #[cfg(windows)]

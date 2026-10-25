@@ -207,6 +207,10 @@ fn installed_instruments_play_notes_in_a_host_process() {
             }
         };
         let load = started.elapsed();
+        match host.bends(id) {
+            Ok((route, found)) => println!("{name}: bends by {route:?}; {found}"),
+            Err(e) => failures.push(format!("{name}: bends: {e}")),
+        }
         match host.open_editor(id, &format!("{name} — test"), None) {
             Ok((w, h)) => println!("{name}: window {w} x {h}"),
             Err(e) => failures.push(format!("{name}: window: {e}")),
@@ -218,19 +222,10 @@ fn installed_instruments_play_notes_in_a_host_process() {
             let notes: Vec<NoteEvent> = [60u16, 64, 67]
                 .iter()
                 .enumerate()
-                .filter_map(|(i, &pitch)| {
-                    let on = match n {
-                        0 => 1,
-                        93 => 0,
-                        _ => return None,
-                    };
-                    Some(NoteEvent {
-                        offset: 0,
-                        note: i as i32,
-                        pitch,
-                        on,
-                        velocity: if on == 1 { 0.8 } else { 0.0 },
-                    })
+                .filter_map(|(i, &pitch)| match n {
+                    0 => Some(NoteEvent::start(0, i as i32, pitch, 0.8)),
+                    93 => Some(NoteEvent::end(0, i as i32, pitch)),
+                    _ => None,
                 })
                 .collect();
             let (mut l, mut r) = (vec![0.; 512], vec![0.; 512]);
@@ -260,6 +255,49 @@ fn installed_instruments_play_notes_in_a_host_process() {
         );
         if late > 2 || !finite || peak == 0.0 {
             failures.push(format!("{name}: {late} late, finite {finite}, peak {peak}"));
+        }
+        // Bent notes (docs/design/note-bends.md): a C held for half a
+        // second, then a C tuned up an octave; the second rises through
+        // zero about twice as often.
+        let mut cycles = |id: i32, tuning: Option<f32>| {
+            let mut sound = Vec::new();
+            for n in 0..(48_000 / 512) {
+                let mut notes = Vec::new();
+                if n == 0 {
+                    notes.push(NoteEvent::start(0, id, 60, 0.8));
+                    notes.extend(tuning.map(|t| NoteEvent::tune(0, id, 60, t)));
+                }
+                if n == 46 {
+                    notes.push(NoteEvent::end(0, id, 60));
+                }
+                let (mut l, mut r) = (vec![0.; 512], vec![0.; 512]);
+                block.process_with_notes(
+                    &[],
+                    &[],
+                    &notes,
+                    Context {
+                        tempo_bpm: 120.,
+                        position_beats: 0.,
+                        playing: true,
+                        offline: false,
+                    },
+                    &mut [&mut l, &mut r],
+                    Some(Instant::now() + Duration::from_millis(500)),
+                );
+                // A tenth of a second in, past the attack, for 0.3 s.
+                if (10..38).contains(&n) {
+                    sound.extend(l);
+                }
+            }
+            sound.windows(2).filter(|w| w[0] <= 0. && w[1] > 0.).count()
+        };
+        let (plain, octave) = (cycles(100, None), cycles(101, Some(12.)));
+        let ratio = octave as f64 / plain.max(1) as f64;
+        println!("{name}: a C rises {plain} times, tuned up an octave {octave} ({ratio:.2}x)");
+        if !(1.8..2.2).contains(&ratio) {
+            failures.push(format!(
+                "{name}: an octave's tuning gave {ratio:.2}x the cycles"
+            ));
         }
         drop(block);
         let _ = host.destroy(id);
