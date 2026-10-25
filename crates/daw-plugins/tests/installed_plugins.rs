@@ -7,9 +7,9 @@
 #![cfg(windows)]
 #![allow(clippy::unwrap_used, reason = "tests fail on error")]
 
-use daw_plugins::block::{Context, Layout, NoteEvent, Outcome};
+use daw_plugins::block::{Context, Layout, NoteEvent, Outcome, ParamChange};
 use daw_plugins::client::{HostCommand, HostProcess, next_instance};
-use daw_plugins::control::PluginSpec;
+use daw_plugins::control::{BendRoute, PluginSpec};
 use daw_plugins::scan::{Catalog, Progress, ScanCommand, standard_folders};
 use std::time::{Duration, Instant};
 
@@ -155,6 +155,150 @@ fn installed_effects_process_audio_in_a_host_process() {
 
 /// Instruments to try, by name, if installed.
 const INSTRUMENTS: &[&str] = &["Serum 2"];
+
+/// Synths to survey for how they take bends.
+const BEND_SURVEY: &[&str] = &[
+    "Serum 2", "Serum", "Pigments", "DS Thorn", "Myth", "Synplant", "Diva", "Hive", "Zebra2",
+    "Repro-5",
+];
+
+/// How installed synths take bent notes (`docs/design/note-bends.md`): the
+/// route the host picks, parameters that look like a bend range, and a
+/// measured full bend. Reports only; nothing fails on a synth's answers.
+#[test]
+#[ignore = "needs the user's installed plugins"]
+fn installed_instruments_report_how_they_take_bends() {
+    let scanner = ScanCommand {
+        program: env!("CARGO_BIN_EXE_daw-plugin-host").into(),
+        args: vec![daw_plugins::scan::SCAN_FLAG.into()],
+        env: Vec::new(),
+    };
+    let mut catalog = Catalog::default();
+    catalog.update(&standard_folders(), &scanner, &Progress::default());
+    let layout = Layout {
+        max_frames: 512,
+        inputs: 0,
+        outputs: 2,
+    };
+    for name in BEND_SURVEY {
+        let Some(plugin) = catalog
+            .plugins()
+            .into_iter()
+            .find(|p| p.name == *name && p.is_instrument())
+            .cloned()
+        else {
+            println!("{name}: not installed");
+            continue;
+        };
+        let mut host = HostProcess::spawn(&HostCommand {
+            program: env!("CARGO_BIN_EXE_daw-plugin-host").into(),
+            args: Vec::new(),
+        })
+        .unwrap();
+        let id = next_instance();
+        let spec = PluginSpec::Vst3 {
+            bundle: plugin.bundle.clone(),
+            cid: plugin.cid.clone(),
+            name: plugin.name.clone(),
+            vendor: plugin.vendor.clone(),
+        };
+        if let Err(e) = host.create(id, spec, None) {
+            println!("{name}: could not start: {e}");
+            continue;
+        }
+        let (route, found) = host.bends(id).unwrap_or((BendRoute::None, String::new()));
+        println!("{name}: route {}", route_name(&route));
+        println!("{name}: found {}", short(&found));
+        for p in host.params(id).unwrap_or_default() {
+            let n = p.name.to_lowercase();
+            let bendish = ["bend", "pb", "mpe", "range", "pitch"]
+                .iter()
+                .any(|w| n.contains(w));
+            if bendish {
+                println!(
+                    "{name}:   param \"{}\" [{}] {:.3} unit \"{}\" steps {}",
+                    p.name, p.group, p.value, p.unit, p.steps
+                );
+            }
+        }
+        let Ok(mut block) = host.activate(id, layout, 48_000.) else {
+            println!("{name}: could not activate");
+            continue;
+        };
+        // A C, then a C with a full upward bend: by tuning (per-note), by
+        // the host's MPE channel at full travel (its 48), or the pitch bend
+        // parameter at its top.
+        let bend_param = match &route {
+            BendRoute::Channel { param } => Some(*param),
+            _ => None,
+        };
+        let mut rises = |note: i32, bent: bool| {
+            let mut sound = Vec::new();
+            for n in 0..(48_000 / 512) {
+                let mut notes = Vec::new();
+                let mut params = Vec::new();
+                if n == 0 {
+                    notes.push(NoteEvent::start(0, note, 60, 0.8));
+                    if let Some(param) = bend_param {
+                        let value = if bent { 1.0 } else { 0.5 };
+                        params.push(ParamChange {
+                            id: param,
+                            offset: 0,
+                            value,
+                        });
+                    } else if bent {
+                        notes.push(NoteEvent::tune(0, note, 60, 48.));
+                    }
+                }
+                if n == 46 {
+                    notes.push(NoteEvent::end(0, note, 60));
+                }
+                let (mut l, mut r) = (vec![0.; 512], vec![0.; 512]);
+                block.process_with_notes(
+                    &[],
+                    &params,
+                    &notes,
+                    Context {
+                        tempo_bpm: 120.,
+                        position_beats: 0.,
+                        playing: true,
+                        offline: false,
+                    },
+                    &mut [&mut l, &mut r],
+                    Some(Instant::now() + Duration::from_millis(500)),
+                );
+                if (10..38).contains(&n) {
+                    sound.extend(l);
+                }
+            }
+            sound.windows(2).filter(|w| w[0] <= 0. && w[1] > 0.).count()
+        };
+        let (plain, bent) = (rises(200, false), rises(201, true));
+        if plain == 0 {
+            println!("{name}: its first patch made no sound to measure");
+        } else {
+            let semitones = 12. * (bent as f64 / plain as f64).log2();
+            println!("{name}: C rises {plain}, fully bent {bent}: about {semitones:+.1} semitones");
+        }
+        drop(block);
+        let _ = host.destroy(id);
+    }
+}
+
+fn route_name(route: &BendRoute) -> String {
+    match route {
+        BendRoute::NoteExpression => "per-note tuning (note expression)".into(),
+        BendRoute::Mpe { .. } => "MPE (a pitch bend per channel)".into(),
+        BendRoute::Channel { param } => format!("one pitch bend (parameter {param})"),
+        BendRoute::None => "none".into(),
+    }
+}
+
+/// The host's findings, with a long run of the same pitch bend parameter
+/// shortened.
+fn short(found: &str) -> String {
+    found.chars().take(400).collect()
+}
 
 #[test]
 #[ignore = "needs the user's installed plugins"]
