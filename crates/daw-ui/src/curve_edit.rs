@@ -1,6 +1,6 @@
 //! Editing curves (`docs/design/curve-editor.md`): adding, removing and
-//! moving points, bending handles, switching a point's kind, snapping and
-//! stamping. Pure functions on [`Curve`]s; the editor (`curve_editor.rs`)
+//! moving points, bending handles, switching a point's kind and snapping.
+//! Pure functions on [`Curve`]s; the editor (`curve_editor.rs`)
 //! turns gestures into these.
 //!
 //! Handle lengths and the line a Smooth point keeps are measured on screen,
@@ -201,41 +201,6 @@ pub fn snap_value(value: f64) -> f64 {
     (value * VALUE_STEPS).round() / VALUE_STEPS
 }
 
-/// `shape` repeated once in each of `cells` equal parts of the window. Where
-/// one copy ends on the value the next starts from, with no handles either
-/// side, the two points become one.
-pub fn stamp(shape: &Curve, cells: usize) -> Curve {
-    let cells = cells.max(1);
-    let width = 1. / cells as f64;
-    let mut points: Vec<CurvePoint> = Vec::with_capacity(shape.points.len() * cells);
-    for cell in 0..cells {
-        let start = cell as f64 * width;
-        for (i, p) in shape.points.iter().enumerate() {
-            let scaled = |h: Handle| Handle::new(h.at * width, h.value);
-            let point = CurvePoint {
-                at: if cell + 1 == cells && i + 1 == shape.points.len() {
-                    1.
-                } else {
-                    start + p.at * width
-                },
-                handle_in: scaled(p.handle_in),
-                handle_out: scaled(p.handle_out),
-                ..*p
-            };
-            if i == 0
-                && let Some(end) = points.last()
-                && end.value == point.value
-                && !end.has_handles()
-                && !point.has_handles()
-            {
-                continue;
-            }
-            points.push(point);
-        }
-    }
-    Curve { points }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,39 +364,5 @@ mod tests {
         assert_eq!(snap_at(0.4, 0), 0., "at least one cell");
         assert_eq!(snap_value(0.3), 0.25);
         assert_eq!(snap_value(0.9), 0.875);
-    }
-
-    #[test]
-    fn stamps_repeat_once_per_cell() {
-        let ramp = corners(&[(0., 0.), (1., 1.)]);
-        let stamped = stamp(&ramp, 2);
-        assert_eq!(
-            stamped,
-            corners(&[(0., 0.), (0.5, 1.), (0.5, 0.), (1., 1.)]),
-            "a jump between copies"
-        );
-        assert_eq!(stamp(&ramp, 1), ramp);
-    }
-
-    #[test]
-    fn copies_that_meet_on_one_value_share_a_point() {
-        let stamped = stamp(&triangle(), 2);
-        assert_eq!(
-            stamped,
-            corners(&[(0., 0.), (0.25, 1.), (0.5, 0.), (0.75, 1.), (1., 0.)])
-        );
-    }
-
-    #[test]
-    fn stamped_handles_shrink_with_their_cells() {
-        let mut shape = triangle();
-        shape = set_kind(&shape, 1, PointKind::Smooth, 1.);
-        let stamped = stamp(&shape, 4);
-        let p = stamped.points[1];
-        assert!(close(p.at, 0.125));
-        assert!(close(p.handle_out.at, shape.points[1].handle_out.at / 4.));
-        assert!(close(p.handle_out.value, shape.points[1].handle_out.value));
-        assert_eq!(stamped.points.last().unwrap().at, 1.);
-        daw_engine::validate_curve(&stamped).unwrap();
     }
 }

@@ -378,18 +378,16 @@ impl ProjectView {
         }
     }
 
-    /// Writes a stamp across the whole window, once per grid cell.
+    /// Writes a stamp's shape across the whole window, in place of the
+    /// curve.
     fn apply_stamp(&mut self, stamp: StampRef) {
         let Some(curve) = self.stamp_curve(stamp) else {
             return;
         };
-        let cells = self
-            .shaped_signal()
-            .map_or(1, |(_, s)| cells(s.window, self.shape_grid));
         if let Some(editor) = &mut self.shape_editor {
             editor.selected = None;
         }
-        self.change_shape(|source| source.shape = curve_edit::stamp(&curve, cells));
+        self.change_shape(|source| source.shape = curve);
     }
 
     /// Keeps the current curve as a new saved stamp.
@@ -785,7 +783,7 @@ impl ProjectView {
             .child(label)
             .children(delete)
             .tooltip(tooltip::text(format!(
-                "{name}: fill the window, once per grid cell"
+                "{name}: fill the window with this shape"
             )))
             .on_click(cx.listener(move |this, _, _, _| this.apply_stamp(stamp)))
     }

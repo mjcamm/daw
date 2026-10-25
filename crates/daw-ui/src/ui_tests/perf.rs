@@ -464,10 +464,15 @@ fn perf_signals_with_shape_panel() {
             panic!("a notes signal");
         };
         // A dense shape: a triangle in every 1/16 of a 4-bar window.
-        let triangle = crate::stamps::built_in()[2].1.clone();
+        let mut points = vec![daw_engine::CurvePoint::corner(0., 0.)];
+        for cell in 0..64 {
+            let at = |part: f64| (f64::from(cell) + part) / 64.;
+            points.push(daw_engine::CurvePoint::corner(at(0.5), 1.));
+            points.push(daw_engine::CurvePoint::corner(at(1.), 0.));
+        }
         let source = NotesSource {
             window: Ticks::from_bars(4),
-            shape: crate::curve_edit::stamp(&triangle, 64),
+            shape: daw_engine::Curve { points },
             ..source.clone()
         };
         let id = signal.id;

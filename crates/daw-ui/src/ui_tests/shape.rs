@@ -210,20 +210,20 @@ fn the_toolbar_sets_the_mode_and_the_window() {
     assert_eq!(shape(&mut h).window, NotesSource::WINDOWS[1]);
 }
 
-/// docs/behaviours.md: "A stamp card fills the window once per grid cell;
+/// docs/behaviours.md: "A stamp card fills the whole window with its shape;
 /// Save as stamp ...; a saved stamp's × deletes it".
 #[test]
 fn stamps_fill_the_window_and_saved_ones_can_be_deleted() {
     let mut h = signals_page("shape-stamps");
     open_shape(&mut h);
-    // A 1/4 grid: four ramps across the bar.
+    // One ramp across the whole bar, whatever the grid.
     h.view.update(h.cx, |v, _| {
         v.shape_grid.grid = crate::block_edit::Grid::Quarter;
     });
     h.redraw_all();
     let ramp = h.bounds("stamp-0").center();
     h.click(ramp, 1);
-    let ramps = crate::curve_edit::stamp(&Curve::line(0., 1.), 4);
+    let ramps = Curve::line(0., 1.);
     assert_eq!(shape(&mut h).shape, ramps);
 
     let save = h.bounds("shape-save-stamp").center();

@@ -35,7 +35,7 @@ Knows curves, not signals: it shows one curve over a window, edits it, and repor
 
 ## Stamps
 
-A stamp replaces the whole curve with a shape, **repeated once per grid cell** across the window (a 1-bar window on a 1/4 grid gets four), filling the full height. The result is ordinary points, edited like any other.
+A stamp replaces the whole curve with its shape, **once across the whole window** (the user's call, 2026-10-25, changed from one copy per grid cell), filling the full height. The result is ordinary points, edited like any other.
 
 - **Built in:** Ramp up, Ramp down, Triangle, Square, Sine (Smooth points), Duck (straight to the bottom, curving back up to the centre).
 - **Saved stamps:** **Save as stamp** keeps the current curve as a new stamp, "Stamp N". Saved for the user across every project in `stamps.json` beside the preferences (`%APPDATA%\daw\`, `daw-host`). Songs never depend on it: stamping copies the points.

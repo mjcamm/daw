@@ -127,7 +127,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | Drag a point to move it (between its neighbours; the ends only up and down); heard as it moves, one undo step | `shape::dragging_a_point_moves_it_heard_as_it_moves_and_undoes_in_one_step` |
 | Corner, Smooth or Broken for the selected point; a selected curved point's handles drag to bend (Smooth keeps them in line) | `shape::a_selected_point_turns_smooth_or_broken_and_its_handles_bend_the_curve` |
 | Trigger or Loop; the window (1/8 to 4 bars); the grid on its own snap chip | `shape::the_toolbar_sets_the_mode_and_the_window` |
-| A stamp card fills the window, once per grid cell; Save as stamp keeps the curve for every project; a saved stamp's × deletes it, double-click its name renames it; cards that don't fit go under › | `shape::stamps_fill_the_window_and_saved_ones_can_be_deleted` |
+| A stamp card fills the whole window with its shape (one copy, whatever the grid); Save as stamp keeps the curve for every project; a saved stamp's × deletes it, double-click its name renames it; cards that don't fit go under › | `shape::stamps_fill_the_window_and_saved_ones_can_be_deleted` |
 
 ## Inspector (`inspector.md`)
 

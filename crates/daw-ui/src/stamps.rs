@@ -1,5 +1,5 @@
 //! The built-in stamps (`docs/design/curve-editor.md`): shapes a stamp card
-//! writes across a curve, once per grid cell. Saved stamps live in
+//! writes across the whole window. Saved stamps live in
 //! `daw_host::stamps`.
 
 use daw_engine::{Curve, CurvePoint, Handle, PointKind};
