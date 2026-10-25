@@ -423,7 +423,8 @@ pub struct Block {
     /// `None` stretches one cycle across the whole block.
     pub cycle: Option<Ticks>,
     pub shape: Shape,
-    /// How strongly the block acts, `0..=1`.
+    /// How strongly the block acts, `0..=MAX_DEPTH`: 1 is as drawn, 2 twice
+    /// as strong.
     pub depth: f64,
     /// Use `1 - x` instead of the shape value `x`.
     pub invert: bool,
@@ -567,6 +568,9 @@ impl NotesSource {
 }
 
 impl Block {
+    /// The strongest a block acts: twice as drawn.
+    pub const MAX_DEPTH: f64 = 2.0;
+
     /// A block at full depth with no repeat, nudge or fades.
     pub fn new(start: Ticks, length: Ticks, shape: Shape) -> Self {
         Self {

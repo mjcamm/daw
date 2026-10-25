@@ -102,7 +102,7 @@ Run just these with `cargo test -p daw-ui --features ui-tests ui_tests` (add a n
 | A looped block's right end only drags repeats (never shorter than one cycle); its first cycle's end still sets the cycle; windows on listening layers still resize | `parameters::a_looped_blocks_end_drags_repeats_never_resizes` |
 | The cursor on Parameters and Signals lanes follows the blocks as they are: after a drag, moving away and back; a resize cursor holds through an edge drag, off the lane too | `parameters::after_a_drag_moving_away_and_back_shows_the_right_cursor` |
 | Drag a point; double-click adds a point; right-click removes one | – |
-| Selecting a block opens the inspector with its settings: depth and fades on sliders (double-click resets), repeat and nudge dragged sideways, invert a switch; heard as they move, one undo step each (Parameters and Signals) | `parameters::a_selected_blocks_settings_are_in_the_inspector` |
+| Selecting a block opens the inspector with its settings: depth (0% to 200%, 100% in the middle) and fades on sliders (double-click resets), repeat and nudge dragged sideways, invert a switch; heard as they move, one undo step each (Parameters and Signals) | `parameters::a_selected_blocks_settings_are_in_the_inspector` |
 | A window on a listening layer has no repeat setting | `parameters::a_windows_settings_have_no_repeat` |
 | Delete removes the selected block | – |
 | Layer rows: drag to reorder, rename, blend mode, mix, show/hide, delete | – |

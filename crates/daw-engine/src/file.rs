@@ -40,7 +40,8 @@ pub const FORMAT: &str = "daw-project";
 /// `window`, `shape`) in place of the ADSR envelope.
 /// Version 21 adds audio signals (`SignalSource::Audio`); nothing to
 /// convert.
-pub const VERSION: u32 = 21;
+/// Version 22 lets a block's depth reach 2 (200%); nothing to convert.
+pub const VERSION: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFile {

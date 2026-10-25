@@ -654,7 +654,7 @@ impl Setting {
     pub fn position(self, block: &Block) -> Option<f64> {
         let share = |t: Ticks| t.0 as f64 / block.length.0.max(1) as f64;
         match self {
-            Self::Depth => Some(block.depth),
+            Self::Depth => Some(block.depth / Block::MAX_DEPTH),
             Self::FadeIn => Some(share(block.fade_in)),
             Self::FadeOut => Some(share(block.fade_out)),
             Self::Cycle | Self::Nudge => None,
@@ -662,7 +662,8 @@ impl Setting {
     }
 
     /// `original` with this setting's slider at `at`: depth from none to
-    /// full, a fade from none to the whole block, on the grid of `snap`.
+    /// twice as drawn (as drawn in the middle), a fade from none to the
+    /// whole block, on the grid of `snap`.
     pub fn at_position(self, original: &Block, at: f64, snap: Snap) -> Block {
         let at = at.clamp(0., 1.);
         let step = snap.min_length().0.max(1) as f64;
@@ -672,7 +673,7 @@ impl Setting {
         };
         let mut block = original.clone();
         match self {
-            Self::Depth => block.depth = at,
+            Self::Depth => block.depth = at * Block::MAX_DEPTH,
             Self::FadeIn => block.fade_in = length(at),
             Self::FadeOut => block.fade_out = length(at),
             Self::Cycle | Self::Nudge => {}
@@ -711,7 +712,7 @@ pub fn scrub(original: &Block, setting: Setting, dx: f32, snap: Snap) -> Block {
         Setting::Depth => {
             let percent =
                 (original.depth * 100.).round() + f64::from((dx / DEPTH_PX_PER_PERCENT).round());
-            block.depth = (percent / 100.).clamp(0., 1.);
+            block.depth = (percent / 100.).clamp(0., Block::MAX_DEPTH);
         }
         Setting::FadeIn => {
             block.fade_in = shifted(original.fade_in)
@@ -1212,7 +1213,12 @@ mod tests {
     fn settings_scrub_in_steps() {
         let b = block(0, 4);
         assert_eq!(scrub(&b, Setting::Depth, -20., BEATS).depth, 0.9);
-        assert_eq!(scrub(&b, Setting::Depth, 50., BEATS).depth, 1.);
+        assert_eq!(scrub(&b, Setting::Depth, 50., BEATS).depth, 1.25);
+        assert_eq!(
+            scrub(&b, Setting::Depth, 900., BEATS).depth,
+            2.,
+            "at most 200%"
+        );
         assert_eq!(scrub(&b, Setting::FadeIn, 24., BEATS).fade_in, beats(2));
         assert_eq!(
             scrub(&b, Setting::FadeOut, -24., BEATS).fade_out,
@@ -1231,7 +1237,8 @@ mod tests {
             fade_in: beats(1),
             ..block(0, 4)
         };
-        assert_eq!(Setting::Depth.position(&b), Some(0.8));
+        // 100% in the middle, 200% at the end.
+        assert_eq!(Setting::Depth.position(&b), Some(0.4));
         assert_eq!(
             Setting::FadeIn.position(&b),
             Some(0.25),
@@ -1244,7 +1251,9 @@ mod tests {
             "dragged sideways instead"
         );
         assert_eq!(Setting::Nudge.position(&b), None);
-        assert_eq!(Setting::Depth.at_position(&b, 0.25, BEATS).depth, 0.25);
+        assert_eq!(Setting::Depth.at_position(&b, 0.25, BEATS).depth, 0.5);
+        assert_eq!(Setting::Depth.at_position(&b, 0.5, BEATS).depth, 1.);
+        assert_eq!(Setting::Depth.at_position(&b, 1., BEATS).depth, 2.);
         // Fades land on the grid, or anywhere when sliding.
         assert_eq!(
             Setting::FadeOut.at_position(&b, 0.5, BEATS).fade_out,

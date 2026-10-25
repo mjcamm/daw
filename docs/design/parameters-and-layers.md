@@ -40,7 +40,7 @@ New layers default to Add. Earlier versions had Replace, Add, Subtract, Multiply
 - The shape is a list of points across one **cycle**. A block's cycle length can be shorter than the block, in which case the shape repeats; that is how a one-beat wobble fills four bars. By default the cycle is the whole block.
 - Each segment between points is linear, held (a step), or curved.
 - Per-block controls:
-  - **Depth:** 0 to 1.
+  - **Depth:** 0 to 2, shown 0% to 200% (the user's call, 2026-10-25): 100% is the block as drawn, in the middle of its slider; past it the block acts more strongly (file version 22).
   - **Invert:** use `1 - x`.
   - **Nudge:** shifts where the shape is read, without moving the block.
   - **Fade in / fade out:** ramp the weight from 0 at the block edges, so blocks never click in or out.

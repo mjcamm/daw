@@ -17,7 +17,7 @@ pub fn validate_block(block: &Block) -> Result<(), InvalidBlock> {
     if block.fade_in < Ticks::ZERO || block.fade_out < Ticks::ZERO {
         return Err(InvalidBlock::NegativeFade);
     }
-    if !(0.0..=1.0).contains(&block.depth) {
+    if !(0.0..=Block::MAX_DEPTH).contains(&block.depth) {
         return Err(InvalidBlock::Depth);
     }
     validate_shape(&block.shape)
@@ -152,8 +152,11 @@ mod tests {
 
     #[test]
     fn rejects_bad_depth() {
-        for depth in [-0.1, 1.1, f64::NAN] {
+        for depth in [-0.1, 2.1, f64::NAN] {
             assert_eq!(check(|b| b.depth = depth), Err(InvalidBlock::Depth));
+        }
+        for depth in [0.0, 1.5, 2.0] {
+            assert_eq!(check(|b| b.depth = depth), Ok(()), "{depth}");
         }
     }
 

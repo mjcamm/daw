@@ -922,7 +922,7 @@ pub enum InvalidBlock {
     EmptyLength,
     EmptyCycle,
     NegativeFade,
-    /// Depth must be within `0..=1`.
+    /// Depth must be within `0..=Block::MAX_DEPTH`.
     Depth,
     /// A shape needs at least one point.
     NoPoints,
@@ -1106,7 +1106,7 @@ impl fmt::Display for InvalidBlock {
             Self::EmptyLength => f.write_str("has no length"),
             Self::EmptyCycle => f.write_str("has a cycle with no length"),
             Self::NegativeFade => f.write_str("has a negative fade"),
-            Self::Depth => f.write_str("depth is outside 0..=1"),
+            Self::Depth => f.write_str("depth is outside 0..=2"),
             Self::NoPoints => f.write_str("shape has no points"),
             Self::PointOrder { index } => {
                 write!(f, "point {index} is outside 0..=1 or out of order")

@@ -2533,7 +2533,7 @@ mod tests {
             CommandError::IndexOutOfRange { index: 2, len: 1 }
         );
         let mut bad = block(10, 1);
-        bad.depth = 2.0;
+        bad.depth = 2.5;
         assert_eq!(
             assert_rejected(&mut project, add_block(1, 2, bad)),
             CommandError::InvalidBlock {

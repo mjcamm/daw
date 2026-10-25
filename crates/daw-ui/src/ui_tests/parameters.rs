@@ -143,10 +143,11 @@ fn a_selected_blocks_settings_are_in_the_inspector() {
     select_block(&mut h, lane, ppb);
     assert!(h.view.read_with(h.cx, |v, _| v.inspector_open), "opens");
 
-    // Depth: from full, a quarter of the slider's travel left is 75%.
+    // Depth: from 100% in the middle, a quarter of the slider's travel
+    // left is 50% (the slider runs from 0% to 200%).
     let depth = h.bounds("block-depth");
     let travel = depth.size.width / px(1.) - 9.;
-    let from = point(depth.right() - px(4.5), depth.center().y);
+    let from = depth.center();
     let to = point(from.x - px(travel / 4.), from.y);
     h.press(from);
     h.move_held(to);
@@ -159,9 +160,9 @@ fn a_selected_blocks_settings_are_in_the_inspector() {
             .expect("volume");
         param.layers[0].1.blocks[0].1.depth
     });
-    assert!((heard - 0.75).abs() < 1e-3, "heard as it moves: {heard}");
+    assert!((heard - 0.5).abs() < 1e-3, "heard as it moves: {heard}");
     h.release(to);
-    assert!((the_block(&mut h).depth - 0.75).abs() < 1e-3);
+    assert!((the_block(&mut h).depth - 0.5).abs() < 1e-3);
     h.keys("ctrl-z");
     assert_eq!(the_block(&mut h).depth, 1., "one undo step");
 

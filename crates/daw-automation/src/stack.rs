@@ -420,6 +420,20 @@ mod tests {
     }
 
     #[test]
+    fn depth_past_full_strengthens_the_effect() {
+        // A quarter up at double depth: half way up.
+        let mut b = block(0.0, 1.0, Shape::constant(0.625));
+        b.depth = 2.0;
+        let a = automation(0.0, vec![layer(BlendMode::Add, vec![b])]);
+        assert!(close(a.value_at(0.5), 0.5));
+        // A duck to half at double depth silences.
+        let mut duck = block(0.0, 1.0, Shape::constant(0.25));
+        duck.depth = 2.0;
+        let a = automation(0.8, vec![layer(BlendMode::Multiply, vec![duck])]);
+        assert!(close(a.value_at(0.5), 0.0));
+    }
+
+    #[test]
     fn finds_the_right_block_among_many() {
         let blocks: Vec<Block> = (0..100)
             .map(|i| block(f64::from(i) * 2.0, 1.0, Shape::constant(0.5)))
