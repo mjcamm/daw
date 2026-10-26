@@ -242,6 +242,8 @@ pub struct DawBlock {
     done: Event,
     timer: Timer,
     issued: u64,
+    /// Frames of the block sent and not yet finished.
+    in_flight: Option<usize>,
     alive: Arc<AtomicBool>,
     stats: Arc<BlockStats>,
     instance: u64,
@@ -276,6 +278,7 @@ impl DawBlock {
             done: Event::create(&names.done)?,
             timer: Timer::new()?,
             issued: 0,
+            in_flight: None,
             alive,
             stats: Arc::default(),
             instance,
@@ -323,18 +326,10 @@ impl DawBlock {
         deadline: Option<Instant>,
     ) -> Outcome {
         let frames = outputs.first().map_or(0, |o| o.len());
-        let outcome = self.exchange(
-            frames,
-            |ch| inputs.get(ch).copied(),
-            params,
-            notes,
-            context,
-            deadline,
-        );
-        if outcome == Outcome::Done {
-            self.read_outputs(outputs, frames);
+        match self.send(frames, inputs, params, notes, context) {
+            Ok(()) => self.finish(outputs, deadline),
+            Err(outcome) => outcome,
         }
-        outcome
     }
 
     /// As [`DawBlock::process`], with `audio` as both the inputs and the
@@ -347,38 +342,68 @@ impl DawBlock {
         deadline: Option<Instant>,
     ) -> Outcome {
         let frames = audio.first().map_or(0, |a| a.len());
-        let outcome = self.exchange(
+        let sent = self.send_with(
             frames,
             |ch| audio.get(ch).map(|a| &**a),
             params,
             &[],
             context,
-            deadline,
         );
+        match sent {
+            Ok(()) => self.finish(audio, deadline),
+            Err(outcome) => outcome,
+        }
+    }
+
+    /// Hands a block of `frames` to the host without waiting for it, so
+    /// several instances can work on their blocks side by side; collect it
+    /// with [`DawBlock::finish`]. `Err(Busy)` while the host is still on
+    /// an earlier late block, `Err(Dead)` once it is gone: play silence.
+    /// Missing input channels are silent; parameter changes and notes past
+    /// what a block holds are dropped.
+    pub fn send(
+        &mut self,
+        frames: usize,
+        inputs: &[&[f32]],
+        params: &[ParamChange],
+        notes: &[NoteEvent],
+        context: Context,
+    ) -> Result<(), Outcome> {
+        self.send_with(frames, |ch| inputs.get(ch).copied(), params, notes, context)
+    }
+
+    /// Waits until `deadline` (`None`: as long as it takes, as for offline
+    /// render) for the block [`DawBlock::send`] handed over, and copies its
+    /// outputs into `outputs` if `Done`. `Busy` if no block was sent.
+    pub fn finish(&mut self, outputs: &mut [&mut [f32]], deadline: Option<Instant>) -> Outcome {
+        let Some(frames) = self.in_flight.take() else {
+            return Outcome::Busy;
+        };
+        let outcome = self.wait(deadline);
         if outcome == Outcome::Done {
-            self.read_outputs(audio, frames);
+            self.read_outputs(outputs, frames);
         }
         outcome
     }
 
-    /// Writes a block, issues it and waits for it.
-    fn exchange<'a>(
+    /// Writes a block and issues it.
+    fn send_with<'a>(
         &mut self,
         frames: usize,
         input: impl Fn(usize) -> Option<&'a [f32]>,
         params: &[ParamChange],
         notes: &[NoteEvent],
         context: Context,
-        deadline: Option<Instant>,
-    ) -> Outcome {
+    ) -> Result<(), Outcome> {
+        self.in_flight = None;
         if !self.alive.load(Ordering::Acquire) {
-            return Outcome::Dead;
+            return Err(Outcome::Dead);
         }
         let layout = self.shared.layout;
         let h = self.shared.header();
         if h.finished.load(Ordering::Acquire) != self.issued {
             self.stats.missed();
-            return Outcome::Busy;
+            return Err(Outcome::Busy);
         }
         let frames = frames.min(layout.max_frames as usize);
         for ch in 0..layout.inputs as usize {
@@ -410,7 +435,13 @@ impl DawBlock {
         self.issued += 1;
         h.issued.store(self.issued, Ordering::Release);
         self.go.set();
+        self.in_flight = Some(frames);
+        Ok(())
+    }
 
+    /// Waits for the block issued last until `deadline`.
+    fn wait(&mut self, deadline: Option<Instant>) -> Outcome {
+        let h = self.shared.header();
         loop {
             if h.finished.load(Ordering::Acquire) == self.issued {
                 self.stats.done();
