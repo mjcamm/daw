@@ -13,8 +13,8 @@ use daw_host::preferences::{Appearance, AudioSettings, StoredPreferences};
 use daw_host::projects::{self, RecentProjects};
 use daw_host::{DeviceChoices, device_choices, drivers};
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Subscription, Window, actions, div, prelude::*,
-    px,
+    AnyElement, App, Context, Entity, FontWeight, Subscription, Window, WindowAppearance, actions,
+    div, prelude::*, px,
 };
 
 actions!(app, [Quit, OpenPreferences]);
@@ -122,7 +122,7 @@ impl AppView {
         let appearance = cx.observe_window_appearance(window, |this: &mut Self, window, cx| {
             this.apply_theme(window, cx);
         });
-        cx.set_global(Theme::for_preference(
+        cx.set_global(theme_for(
             preferences.preferences.appearance,
             window.appearance(),
         ));
@@ -247,7 +247,7 @@ impl AppView {
     /// Sets the theme from the appearance preference (and, for System, the
     /// window's appearance), and redraws.
     fn apply_theme(&self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.set_global(Theme::for_preference(
+        cx.set_global(theme_for(
             self.preferences.preferences.appearance,
             window.appearance(),
         ));
@@ -1065,4 +1065,14 @@ impl Render for AppView {
 /// the action first when it can, saving an open project.
 pub fn register_global_actions(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
+}
+
+/// The theme for a preference: light, dark, or following the window's (the
+/// system's) appearance.
+fn theme_for(preference: Appearance, window: WindowAppearance) -> Theme {
+    match preference {
+        Appearance::System => Theme::for_appearance(window),
+        Appearance::Light => Theme::light(),
+        Appearance::Dark => Theme::dark(),
+    }
 }

@@ -1,7 +1,6 @@
 //! Theme tokens from `docs/design/look-and-feel.md`. Views never hard-code a
 //! colour; they read one of these.
 
-use daw_host::preferences::Appearance;
 use gpui::{App, Global, Hsla, Rgba, WindowAppearance, rgb, rgba};
 
 /// One content colour (for nodes, clips, signals) as it appears in a theme.
@@ -16,7 +15,6 @@ pub struct ContentColor {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code, reason = "the full token set; later pages use the rest")]
 pub struct Theme {
     pub dark: bool,
     pub window: Hsla,
@@ -88,16 +86,6 @@ fn bright(color: u32) -> ContentColor {
 }
 
 impl Theme {
-    /// The theme for a preference: light, dark, or following the window's
-    /// (the system's) appearance.
-    pub fn for_preference(preference: Appearance, window: WindowAppearance) -> Self {
-        match preference {
-            Appearance::System => Self::for_appearance(window),
-            Appearance::Light => Self::light(),
-            Appearance::Dark => Self::dark(),
-        }
-    }
-
     pub fn for_appearance(appearance: WindowAppearance) -> Self {
         match appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),

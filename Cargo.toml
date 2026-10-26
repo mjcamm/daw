@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 daw-automation = { path = "crates/daw-automation" }
+daw-device = { path = "crates/daw-device" }
 daw-dsp = { path = "crates/daw-dsp" }
 daw-engine = { path = "crates/daw-engine" }
 daw-host = { path = "crates/daw-host" }
@@ -20,11 +21,13 @@ daw-protocol = { path = "crates/daw-protocol" }
 daw-rt = { path = "crates/daw-rt" }
 daw-stretch = { path = "crates/daw-stretch" }
 daw-testkit = { path = "crates/daw-testkit" }
+daw-widgets = { path = "crates/daw-widgets" }
 
 base64 = "0.22.1"
 audio_thread_priority = { version = "0.35.1", default-features = false }
 cpal = { version = "0.18.2", features = ["realtime"] }
 dirs = "7.0.0"
+gpui = "0.2.2"
 hound = "3.5.1"
 mp3lame-encoder = "0.2.5"
 rtrb = "0.4.0"

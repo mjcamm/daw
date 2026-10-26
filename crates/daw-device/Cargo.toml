@@ -1,0 +1,17 @@
+[package]
+name = "daw-device"
+description = "Audio output devices: choices, opening with the user's settings, a render callback with timing stats."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal.workspace = true
+daw-rt.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

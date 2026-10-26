@@ -17,10 +17,8 @@ mod curve_editor;
 mod export_dialog;
 mod follow_inspector;
 mod frame;
-mod frame_log;
 mod gpu;
 mod header;
-mod icons;
 mod inspector;
 mod launch;
 mod layout;
@@ -34,24 +32,17 @@ mod metronome_ui;
 mod mixer;
 mod motion;
 mod note_edit;
-mod paint;
 mod pane;
 mod param_picker;
 mod parameters;
 mod piano_roll;
 mod plugin_settings;
 mod project;
-mod scroll;
 mod session;
 mod shape_panel;
 mod signals;
-mod slider;
 mod stamps;
-mod switch;
-mod text_input;
-mod theme;
 mod timeline;
-mod tooltip;
 mod tree;
 mod tree_editor;
 #[cfg(all(test, feature = "ui-tests"))]
@@ -60,6 +51,7 @@ mod waveform;
 mod zoom;
 
 use app::{AppView, OpenPreferences, Quit};
+use daw_widgets::{frame_log, icons, paint, scroll, slider, switch, text_input, theme, tooltip};
 use gpui::{
     App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, prelude::*,
     px, size,

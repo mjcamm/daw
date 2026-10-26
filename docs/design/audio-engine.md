@@ -51,10 +51,10 @@ In the UI, every drag reports the edit it would make if let go now (`ProjectView
 | `daw-engine/src/file.rs`, `upgrade.rs` | The project file (version 16, `file::VERSION`) and converting older versions |
 | `daw-dsp/src/` | Standalone DSP: synth, sampler, filter, envelopes, pan, smoothing |
 | `daw-rt/src/` | The allocation guard and `without_denormals` |
-| `daw-host/src/lib.rs` | Devices through `cpal`: drivers, device choices, opening a stream, `CallbackStats` load |
+| `daw-device/src/lib.rs` | Devices through `cpal`: drivers, device choices, opening a stream, `CallbackStats` load (no engine knowledge; `daw-host` re-exports it and adds `engine_config`) |
 | `daw-host/src/preferences.rs` | App preferences, including `AudioSettings` |
 | `daw-host/src/projects.rs`, `demo.rs` | Project folders, sample import, recent projects; the demo and starter song |
-| `daw-host/examples/devices.rs` | Prints what each audio device reports |
+| `daw-device/examples/devices.rs` | Prints what each audio device reports |
 | `daw-testkit/src/` | Offline `render`, `VARIED_BLOCKS`, `assert_reference!` |
 
 ## Adding a built-in instrument or effect

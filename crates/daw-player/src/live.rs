@@ -17,7 +17,7 @@ const COMPARE_TOLERANCE: f32 = 0.0;
 
 pub fn play(bars: u32, compare: bool) -> Result<()> {
     let device = OutputDevice::open_default()?;
-    let config = device.engine_config();
+    let config = daw_host::engine_config(&device);
     let channels = usize::from(config.channels);
     println!(
         "Playing {bars} bars at {} BPM on {} ({} Hz, {} channels). Ctrl+C to quit.",
@@ -28,7 +28,7 @@ pub fn play(bars: u32, compare: bool) -> Result<()> {
     );
     println!("{}", demo::DESCRIPTION);
 
-    let (mut engine, processor) = Engine::new(config);
+    let (mut engine, mut processor) = Engine::new(config);
     if let Some(command) = daw_host::plugins::host_command() {
         engine.set_plugin_host(command);
     }
@@ -42,18 +42,21 @@ pub fn play(bars: u32, compare: bool) -> Result<()> {
     let compare_frames = frames_for_bars(bars.min(COMPARE_BARS), config.sample_rate);
     let mut capture = compare.then(|| Vec::<f32>::with_capacity(compare_frames * channels));
     let (mut capture_tx, mut capture_rx) = rtrb::RingBuffer::new(1);
-    let output = device.start_with_tap(processor, move |data| {
-        if let Some(buffer) = capture.as_mut() {
-            let room = buffer.capacity() - buffer.len();
-            buffer.extend_from_slice(&data[..room.min(data.len())]);
-            if buffer.len() == buffer.capacity()
-                && let Some(full) = capture.take()
-            {
-                // Capacity 1 and pushed once, so this cannot fail.
-                let _ = capture_tx.push(full);
+    let output = device.start_with_tap(
+        move |out| processor.process(out),
+        move |data| {
+            if let Some(buffer) = capture.as_mut() {
+                let room = buffer.capacity() - buffer.len();
+                buffer.extend_from_slice(&data[..room.min(data.len())]);
+                if buffer.len() == buffer.capacity()
+                    && let Some(full) = capture.take()
+                {
+                    // Capacity 1 and pushed once, so this cannot fail.
+                    let _ = capture_tx.push(full);
+                }
             }
-        }
-    })?;
+        },
+    )?;
 
     let song = Duration::from_secs_f64(f64::from(bars) * 4.0 * 60.0 / demo::TEMPO_BPM);
     let tail = Duration::from_secs_f64(TAIL_SECONDS);

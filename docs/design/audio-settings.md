@@ -18,7 +18,7 @@ File → Preferences… (Ctrl+,) opens a two-pane window: sections down the left
 
 Below them: the running status ("Running: WASAPI · Speakers · 48 kHz · 481 samples · 10.0 ms · 8 threads", the buffer the device actually uses) or why it could not start, and **Test tone** (one second of A4 at −12 dB through the output, over whatever plays; needs an open project).
 
-Every change applies at once: the stream restarts with `Engine::reconnect`, which keeps the song, undo history, position, playing and the loop. A setup that fails falls back to the system default. Settings are saved in the app's preferences (`daw_host::preferences::AudioSettings`) and used for every project. `cargo run -p daw-host --example devices` lists what each device reports.
+Every change applies at once: the stream restarts with `Engine::reconnect`, which keeps the song, undo history, position, playing and the loop. A setup that fails falls back to the system default. Settings are saved in the app's preferences (`daw_host::preferences::AudioSettings`) and used for every project. `cargo run -p daw-device --example devices` lists what each device reports.
 
 ## CPU meter
 

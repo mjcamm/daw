@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-cpal.workspace = true
+daw-device.workspace = true
 daw-dsp.workspace = true
 daw-engine.workspace = true
 daw-plugins.workspace = true

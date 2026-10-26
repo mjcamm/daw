@@ -84,6 +84,14 @@ pub struct TextInput {
     plain: bool,
 }
 
+impl std::fmt::Debug for TextInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextInput")
+            .field("content", &self.content)
+            .finish_non_exhaustive()
+    }
+}
+
 impl EventEmitter<TextInputEvent> for TextInput {}
 
 impl TextInput {

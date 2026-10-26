@@ -114,8 +114,8 @@ impl Session {
     ) -> Result<Self, String> {
         let config = device
             .as_ref()
-            .map_or_else(|_| EngineConfig::default(), OutputDevice::engine_config);
-        let (mut engine, processor) = Engine::new(config);
+            .map_or_else(|_| EngineConfig::default(), daw_host::engine_config);
+        let (mut engine, mut processor) = Engine::new(config);
         // Tests run no plugins (their binary can't be a plugin host).
         if let Some(command) = daw_host::plugins::host_command()
             && !cfg!(test)
@@ -125,10 +125,11 @@ impl Session {
         engine.set_sample_dir(Some(folder.clone()));
         setup(&mut engine)?;
         let info = device.as_ref().ok().map(audio_info);
-        let (output, audio_error) = match device.and_then(|d| d.start(processor)) {
-            Ok(output) => (Some(output), None),
-            Err(e) => (None, Some(e.to_string())),
-        };
+        let (output, audio_error) =
+            match device.and_then(|d| d.start(move |out| processor.process(out))) {
+                Ok(output) => (Some(output), None),
+                Err(e) => (None, Some(e.to_string())),
+            };
         let revision = engine.content_revision();
         let lines = crate::lines::Lines::new(&engine.to_file(), revision, &folder);
         Ok(Self {
@@ -210,8 +211,10 @@ impl Session {
         let device = open_device(settings);
         let result = device.and_then(|device| {
             let info = audio_info(&device);
-            let processor = self.engine.reconnect(device.engine_config());
-            device.start(processor).map(|output| (output, info))
+            let mut processor = self.engine.reconnect(daw_host::engine_config(&device));
+            device
+                .start(move |out| processor.process(out))
+                .map(|output| (output, info))
         });
         match result {
             Ok((output, info)) => {
@@ -474,6 +477,6 @@ fn audio_info(device: &OutputDevice) -> AudioInfo {
         device: device.name().to_owned(),
         sample_rate: device.sample_rate(),
         buffer_frames: device.buffer_frames(),
-        threads: device.engine_config().threads,
+        threads: daw_host::engine_config(device).threads,
     }
 }

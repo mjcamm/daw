@@ -1435,6 +1435,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "daw-device"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "daw-rt",
+ "serde",
+]
+
+[[package]]
 name = "daw-dsp"
 version = "0.1.0"
 
@@ -1461,7 +1470,7 @@ dependencies = [
 name = "daw-host"
 version = "0.1.0"
 dependencies = [
- "cpal",
+ "daw-device",
  "daw-dsp",
  "daw-engine",
  "daw-plugins",
@@ -1552,8 +1561,16 @@ dependencies = [
  "daw-host",
  "daw-plugins",
  "daw-rt",
+ "daw-widgets",
  "gpui",
  "hound",
+]
+
+[[package]]
+name = "daw-widgets"
+version = "0.1.0"
+dependencies = [
+ "gpui",
  "unicode-segmentation",
 ]
 

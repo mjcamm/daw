@@ -1,0 +1,16 @@
+[package]
+name = "daw-widgets"
+description = "The look and feel: theme tokens, widgets, painting helpers and icons, shared by the DAW and the performance app."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui.workspace = true
+unicode-segmentation.workspace = true
+
+[lints]
+workspace = true

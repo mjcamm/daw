@@ -1,6 +1,7 @@
 //! The app's preferences, stored as JSON beside the recent projects list.
 
 use crate::projects::app_config_dir;
+pub use daw_device::AudioSettings;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
@@ -37,23 +38,6 @@ pub struct Preferences {
     pub plugin_folders: Vec<PathBuf>,
     /// The click track: on or off, volume, sound, accent, pitch.
     pub metronome: daw_engine::Metronome,
-}
-
-/// The audio setup the user chose. Each `None` leaves it to the system (or
-/// the app): the default driver, device, rate and buffer, automatic
-/// threads.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AudioSettings {
-    /// The driver by name, e.g. "WASAPI" or "ASIO".
-    pub driver: Option<String>,
-    /// The output device, by its system id.
-    pub device: Option<String>,
-    pub sample_rate: Option<u32>,
-    /// Frames per buffer: smaller is less delay but more work per second.
-    pub buffer_frames: Option<u32>,
-    /// Threads that render, the audio thread included.
-    pub threads: Option<usize>,
 }
 
 /// Preferences and where they are kept.

@@ -63,11 +63,11 @@ Application::new()
 ## Icons and assets
 
 - `svg().path("icons/play.svg").size(px(14.)).text_color(color)`. The SVG is used as a mask and coloured by `text_color`, so stroke-based icon sets (Lucide) work.
-- Paths are resolved through the app's `AssetSource` (`load(&self, path) -> gpui::Result<Option<Cow<'static, [u8]>>>` and `list`). This app embeds icons with `include_bytes!` in `crates/daw-ui/src/icons.rs`.
+- Paths are resolved through the app's `AssetSource` (`load(&self, path) -> gpui::Result<Option<Cow<'static, [u8]>>>` and `list`). This app embeds icons with `include_bytes!` in `crates/daw-widgets/src/icons.rs`.
 
 ## Text input
 
-- GPUI has no text field widget. `crates/daw-ui/src/text_input.rs` is ours, adapted from `examples/input.rs`: cursor, selection, IME, clipboard, Enter/Escape events. Create with `cx.new(|cx| TextInput::new(text, placeholder, cx))`, focus with `window.focus(&input.read(cx).focus_handle(cx))` (needs the `Focusable` trait in scope), and listen with `cx.subscribe_in`.
+- GPUI has no text field widget. `crates/daw-widgets/src/text_input.rs` is ours, adapted from `examples/input.rs`: cursor, selection, IME, clipboard, Enter/Escape events. Create with `cx.new(|cx| TextInput::new(text, placeholder, cx))`, focus with `window.focus(&input.read(cx).focus_handle(cx))` (needs the `Focusable` trait in scope), and listen with `cx.subscribe_in`.
 - `gpui-component` (a widget library) is built on a republished GPUI fork (`gpui-pre`), not crates.io `gpui`, so its types don't mix with ours.
 
 ## Menu bar and modals
